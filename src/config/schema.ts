@@ -52,7 +52,8 @@ const GithubFeedSchema = z.strictObject({
   id: sourceId,
   type: z.literal("github"),
   name: text,
-  repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, { error: "must be owner/repo" }),
+  // Owners cannot contain dots; repos may start with one (.github) but "." and ".." would escape the API path.
+  repo: z.string().regex(/^[\w-]+\/(?!\.\.?$)[\w.-]+$/, { error: "must be owner/repo" }),
   feed: z.enum(["releases", "tags"]).default("releases"),
   includePrereleases: z.boolean().default(false),
 });

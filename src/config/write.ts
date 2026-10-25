@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { ConfigError } from "./load.js";
@@ -14,6 +14,7 @@ const HEADER = [
 export async function writeConfig(
   dir: string,
   input: { context: ContextInput; sources: SourcesInput },
+  options: { overwrite?: boolean } = {},
 ): Promise<{ contextPath: string; sourcesPath: string }> {
   const context = ContextSchema.safeParse(input.context);
   const sources = SourcesSchema.safeParse(input.sources);
@@ -24,24 +25,52 @@ export async function writeConfig(
   // Validate both before touching the disk so a bad answer never leaves half a config behind.
   if (errors.length > 0) throw new ConfigError(errors.join("\n"));
 
-  await mkdir(dir, { recursive: true });
   const contextPath = join(dir, "context.yml");
   const sourcesPath = join(dir, "sources.yml");
+  if (!options.overwrite) {
+    const existing = [];
+    for (const path of [contextPath, sourcesPath]) {
+      if (await exists(path)) existing.push(path);
+    }
+    if (existing.length > 0) {
+      throw new ConfigError(`refusing to overwrite existing config: ${existing.join(", ")}`);
+    }
+  }
+
+  await mkdir(dir, { recursive: true });
   // The input, not the parsed value, is written so defaults stay implicit and the file stays short.
-  await writeAtomic(contextPath, HEADER + stringify(input.context, { lineWidth: 0 }));
-  await writeAtomic(sourcesPath, HEADER + stringify(input.sources, { lineWidth: 0 }));
+  const files = [
+    { path: contextPath, content: HEADER + stringify(input.context, { lineWidth: 0 }) },
+    { path: sourcesPath, content: HEADER + stringify(input.sources, { lineWidth: 0 }) },
+  ].map((f) => ({ ...f, tmp: `${f.path}.${randomBytes(6).toString("hex")}.tmp` }));
+  // Stage both files before replacing either, so the slow, failure-prone part (writing content)
+  // cannot leave a new context.yml next to an old sources.yml. The renames that follow are
+  // same-directory metadata operations, so the window between them is not worth a rollback.
+  let current = files[0]!.path;
+  try {
+    for (const f of files) {
+      current = f.path;
+      await writeFile(f.tmp, f.content, { mode: 0o600, flag: "wx" });
+      // mode is masked by the umask, so set it explicitly.
+      await chmod(f.tmp, 0o600);
+    }
+    for (const f of files) {
+      current = f.path;
+      await rename(f.tmp, f.path);
+    }
+  } catch (err) {
+    await Promise.all(files.map((f) => rm(f.tmp, { force: true })));
+    throw new ConfigError(`cannot write ${current}`, { cause: err });
+  }
   return { contextPath, sourcesPath };
 }
 
-async function writeAtomic(path: string, content: string): Promise<void> {
-  const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+async function exists(path: string): Promise<boolean> {
   try {
-    await writeFile(tmp, content, { mode: 0o600, flag: "wx" });
-    // mode is masked by the umask, so set it explicitly.
-    await chmod(tmp, 0o600);
-    await rename(tmp, path);
+    await stat(path);
+    return true;
   } catch (err) {
-    await rm(tmp, { force: true });
-    throw new ConfigError(`cannot write ${path}`, { cause: err });
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
   }
 }

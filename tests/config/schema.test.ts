@@ -99,9 +99,18 @@ describe("SourcesSchema", () => {
     [{ ...rss, url: "/feed" }, "sources.yml: feeds[0].url: must be an absolute http(s) URL"],
     [{ ...rss, id: "Blog" }, "sources.yml: feeds[0].id: must be lowercase letters, digits, - or _"],
     [{ id: "gh", type: "github", name: "x", repo: "next.js" }, "sources.yml: feeds[0].repo: must be owner/repo"],
+    [{ id: "gh", type: "github", name: "x", repo: "../.." }, "sources.yml: feeds[0].repo: must be owner/repo"],
+    [{ id: "gh", type: "github", name: "x", repo: "x/.." }, "sources.yml: feeds[0].repo: must be owner/repo"],
+    [{ id: "gh", type: "github", name: "x", repo: "x/." }, "sources.yml: feeds[0].repo: must be owner/repo"],
+    [{ id: "gh", type: "github", name: "x", repo: "./x" }, "sources.yml: feeds[0].repo: must be owner/repo"],
+    [{ id: "gh", type: "github", name: "x", repo: "a.b/c" }, "sources.yml: feeds[0].repo: must be owner/repo"],
     [{ ...rss, type: "atom" }, "sources.yml: feeds[0].type: invalid option"],
   ])("rejects an invalid feed %o", (feed, expected) => {
     expect(sourcesErrors({ version: 1, feeds: [feed] })).toEqual([expected]);
+  });
+
+  it.each(["vercel/next.js", "org/.github", "my_org/repo-name"])("accepts the github repo %s", (repo) => {
+    expect(sourcesErrors({ version: 1, feeds: [{ id: "gh", type: "github", name: "x", repo }] })).toEqual([]);
   });
 
   it("rejects github-only keys on an rss feed", () => {

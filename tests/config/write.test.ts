@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigError, loadConfig } from "../../src/config/load.js";
 import { ContextSchema, type ContextInput, SourcesSchema, type SourcesInput } from "../../src/config/schema.js";
 import { writeConfig } from "../../src/config/write.js";
@@ -21,6 +21,28 @@ const sources: SourcesInput = {
   queries: [{ id: "q", query: "Qwen release", topic: "news" }],
 };
 
+// Lets a test make the write of one staged file fail, to check that nothing is replaced.
+const failWrite = vi.hoisted(() => ({ match: undefined as string | undefined }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...fs,
+    writeFile: (async (path, ...rest) => {
+      if (failWrite.match !== undefined && String(path).includes(failWrite.match)) {
+        throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+      }
+      return fs.writeFile(path, ...rest);
+    }) as typeof fs.writeFile,
+  };
+});
+
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+}
+
 let dir: string;
 let previousUmask: number;
 
@@ -30,6 +52,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  failWrite.match = undefined;
   process.umask(previousUmask);
   await rm(dir, { recursive: true, force: true });
 });
@@ -60,11 +83,46 @@ describe("writeConfig", () => {
     }
   });
 
-  it("overwrites existing files and leaves no temporary files", async () => {
+  it("overwrites existing files when asked and leaves no temporary files", async () => {
     await writeConfig(dir, { context, sources });
-    await writeConfig(dir, { context: { ...context, language: "English" }, sources });
+    await writeConfig(dir, { context: { ...context, language: "English" }, sources }, { overwrite: true });
     expect((await readdir(dir)).sort()).toEqual(["context.yml", "sources.yml"]);
     expect((await loadConfig({ configDir: dir, env: {} })).context.language).toBe("English");
+  });
+
+  it("refuses to overwrite existing files by default", async () => {
+    await writeConfig(dir, { context, sources });
+    const before = await readFile(join(dir, "context.yml"), "utf8");
+    const err = await rejection(writeConfig(dir, { context: { ...context, language: "English" }, sources }));
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).message).toBe(
+      `refusing to overwrite existing config: ${join(dir, "context.yml")}, ${join(dir, "sources.yml")}`,
+    );
+    expect(await readFile(join(dir, "context.yml"), "utf8")).toBe(before);
+    expect((await readdir(dir)).sort()).toEqual(["context.yml", "sources.yml"]);
+  });
+
+  it("refuses when only one of the files exists", async () => {
+    await writeFile(join(dir, "sources.yml"), "# hand-edited\n");
+    const err = await rejection(writeConfig(dir, { context, sources }));
+    expect((err as ConfigError).message).toBe(`refusing to overwrite existing config: ${join(dir, "sources.yml")}`);
+    expect(await readdir(dir)).toEqual(["sources.yml"]);
+    expect(await readFile(join(dir, "sources.yml"), "utf8")).toBe("# hand-edited\n");
+  });
+
+  it("replaces neither file when staging the second one fails", async () => {
+    await writeConfig(dir, { context, sources });
+    const before = await Promise.all(["context.yml", "sources.yml"].map((f) => readFile(join(dir, f), "utf8")));
+    failWrite.match = "sources.yml";
+    const err = await rejection(
+      writeConfig(dir, { context: { ...context, language: "English" }, sources }, { overwrite: true }),
+    );
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).message).toBe(`cannot write ${join(dir, "sources.yml")}`);
+    expect((err as ConfigError).cause).toMatchObject({ code: "ENOSPC" });
+    expect((await readdir(dir)).sort()).toEqual(["context.yml", "sources.yml"]);
+    const after = await Promise.all(["context.yml", "sources.yml"].map((f) => readFile(join(dir, f), "utf8")));
+    expect(after).toEqual(before);
   });
 
   it("writes nothing when either input is invalid", async () => {
