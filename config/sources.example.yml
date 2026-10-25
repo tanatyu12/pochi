@@ -1,0 +1,27 @@
+# Copy to config/sources.yml (or run `pochi init`). In CI, put the contents in the
+# POCHI_SOURCES_YAML secret instead; it takes precedence over the file.
+version: 1
+
+defaults:
+  itemsPerFeed: 3
+  maxContentChars: 500
+
+# ids must be unique across feeds and queries. At least one feed or query is required.
+feeds:
+  - id: nextjs
+    type: github
+    name: Next.js releases
+    repo: vercel/next.js
+    feed: releases            # releases | tags
+    includePrereleases: false
+  - id: simonw
+    type: rss
+    name: Simon Willison
+    url: https://simonwillison.net/atom/everything/
+
+# Web searches via Tavily. Skipped unless TAVILY_API_KEY is set.
+queries:
+  - id: qwen-news
+    query: Qwen model release
+    topic: news               # news | general
+    maxResults: 5
