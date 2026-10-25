@@ -193,6 +193,16 @@ describe("fetchText", () => {
       expect(!outcome.ok && outcome.error).toMatchObject({ kind: "network", cause: { message: "ECONNRESET" } });
     });
 
+    it("puts the underlying reason of a fetch failure in the message", async () => {
+      mockFetch({
+        [URL_A]: () => {
+          throw new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND a.test") });
+        },
+      });
+      const err = await expectHttpError(fetchText(URL_A, { retry: { server: 0 } }), { kind: "network" });
+      expect(err.message).toBe(`request failed: ${URL_A}: getaddrinfo ENOTFOUND a.test`);
+    });
+
     it("waits for Retry-After on 429", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const fm = mockFetch({ [URL_A]: [reply.status(429, { "retry-after": "2" }), reply.text("ok")] });
@@ -203,14 +213,19 @@ describe("fetchText", () => {
       expect(await result).toMatchObject({ ok: true });
     });
 
-    it("caps Retry-After at 30 seconds", async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    it("gives up at once when Retry-After exceeds 30 seconds", async () => {
       const fm = mockFetch({ [URL_A]: [reply.status(429, { "retry-after": "120" }), reply.text("ok")] });
-      const result = settle(fetchText(URL_A));
-      await vi.advanceTimersByTimeAsync(29_999);
+      await expectHttpError(fetchText(URL_A), { status: 429, retryAfterMs: 120_000 });
       expect(fm.calls).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    it("waits for a Retry-After of exactly 30 seconds", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const fm = mockFetch({ [URL_A]: [reply.status(429, { "retry-after": "30" }), reply.text("ok")] });
+      const result = settle(fetchText(URL_A));
+      await vi.advanceTimersByTimeAsync(30_000);
       expect(await result).toMatchObject({ ok: true });
+      expect(fm.calls).toHaveLength(2);
     });
 
     it("waits one second when 429 has no Retry-After", async () => {
@@ -253,6 +268,24 @@ describe("postJson", () => {
     expect(req?.body).toBe('{"text":"hi"}');
     expect(req?.headers.get("content-type")).toBe("application/json");
     expect(req?.headers.get("authorization")).toBe("Bearer x");
+  });
+
+  it.each([
+    ["5xx", reply.status(503)],
+    ["a network error", reply.networkError()],
+  ])("does not resend after %s by default", async (_, failure) => {
+    const fm = mockFetch({ [URL_A]: [failure, reply.text("ok")] });
+    await expectHttpError(postJson(URL_A, {}), {});
+    expect(fm.calls).toHaveLength(1);
+  });
+
+  it("resends when the caller opts in", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fm = mockFetch({ [URL_A]: [reply.status(503), reply.text("ok")] });
+    const result = settle(postJson(URL_A, {}, { retry: { server: 1 } }));
+    await vi.runAllTimersAsync();
+    expect(await result).toMatchObject({ ok: true });
+    expect(fm.calls).toHaveLength(2);
   });
 
   it("keeps the webhook URL out of error messages", async () => {

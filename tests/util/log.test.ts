@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { configureLog, log, redact } from "../../src/util/log.js";
+import { configureLog, log, redact, resetLog } from "../../src/util/log.js";
 
 afterEach(() => {
-  configureLog({});
+  resetLog();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
@@ -24,6 +24,11 @@ describe("redact", () => {
   it("masks secret env values whatever their format", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "custom-key-123456");
     expect(redact("auth custom-key-123456 failed")).toBe("auth *** failed");
+  });
+
+  it("masks secret env values that appear percent-encoded", () => {
+    vi.stubEnv("TAVILY_API_KEY", "abc+def/ghi=");
+    expect(redact("GET https://api.test/?key=abc%2Bdef%2Fghi%3D failed")).toBe("GET https://api.test/?key=*** failed");
   });
 
   it("ignores short env values", () => {
@@ -61,6 +66,16 @@ describe("log", () => {
     log.warn("x");
     log.error("x");
     expect(lines.map((l) => l.split(":")[1]?.trim())).toEqual(expected);
+  });
+
+  it("keeps the writer when only the level changes, and the level when only the writer changes", () => {
+    const lines: string[] = [];
+    configureLog({ write: (s) => lines.push(s) });
+    configureLog({ level: "verbose" });
+    log.debug("first");
+    configureLog({ write: (s) => lines.push(s.toUpperCase()) });
+    log.debug("second");
+    expect(lines).toEqual(["pochi: debug: first\n", "POCHI: DEBUG: SECOND\n"]);
   });
 
   it("writes to stderr, never stdout", () => {

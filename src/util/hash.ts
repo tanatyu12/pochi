@@ -11,23 +11,34 @@ export function itemId(...parts: string[]): string {
   return sha256Hex(parts.join("\u0000")).slice(0, 32);
 }
 
-export function normalizeUrl(raw: string, base?: string | URL): string | undefined {
+export function parseHttpUrl(raw: string, base?: string | URL): URL | undefined {
   let url: URL;
   try {
-    url = new URL(raw.trim(), base);
+    url = new URL(raw, base);
   } catch {
     return undefined;
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  return url.protocol === "http:" || url.protocol === "https:" ? url : undefined;
+}
+
+export function normalizeUrl(raw: string, base?: string | URL): string | undefined {
+  const url = parseHttpUrl(raw.trim(), base);
+  if (!url) return undefined;
   url.hash = "";
-  for (const key of [...url.searchParams.keys()]) {
-    if (key.toLowerCase().startsWith("utm_") || TRACKING_PARAMS.has(key.toLowerCase())) {
-      url.searchParams.delete(key);
-    }
-  }
+  // Filter the raw pairs: URLSearchParams would re-encode the whole query (%20 -> +),
+  // so the same URL would normalize differently depending on whether it had a utm_ param.
+  const kept = url.search
+    .slice(1)
+    .split("&")
+    .filter((pair) => pair !== "" && !isTrackingParam(pair.split("=", 1)[0] ?? ""));
+  url.search = kept.length > 0 ? `?${kept.join("&")}` : "";
   if (url.pathname.length > 1 && url.pathname.endsWith("/")) {
     url.pathname = url.pathname.replace(/\/+$/, "") || "/";
   }
-  // URL keeps a bare "?" after the last param is deleted.
-  return url.toString().replace(/\?$/, "");
+  return url.toString();
+}
+
+function isTrackingParam(key: string): boolean {
+  const lower = key.toLowerCase();
+  return lower.startsWith("utm_") || TRACKING_PARAMS.has(lower);
 }

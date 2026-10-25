@@ -29,12 +29,25 @@ describe("normalizeUrl", () => {
     ["https://example.com/a?fbclid=1&gclid=2", "https://example.com/a"],
     ["https://example.com/a?page=2&utm_campaign=z", "https://example.com/a?page=2"],
     ["  https://example.com/a  ", "https://example.com/a"],
+    ["https://example.com/a?q=a%20b&utm_source=rss", "https://example.com/a?q=a%20b"],
+    ["https://example.com/a?q=a%20b", "https://example.com/a?q=a%20b"],
+    ["https://example.com/a?q=a+b&gclid=1", "https://example.com/a?q=a+b"],
+    ["https://example.com/a?", "https://example.com/a"],
+    ["https://example.com/a?&&id=1&", "https://example.com/a?id=1"],
     ["javascript:alert(1)", undefined],
     ["mailto:a@example.com", undefined],
     ["not a url", undefined],
   ])("normalizes %j", (input, expected) => {
     expect(normalizeUrl(input)).toBe(expected);
   });
+
+  it.each(["q=a%20b", "q=a+b", "q=~'()*", "q=%E6%97%A5%E6%9C%AC", "q=日本"])(
+    "gives the same result for %s with or without tracking params",
+    (query) => {
+      const plain = normalizeUrl(`https://example.com/a?${query}`);
+      expect(normalizeUrl(`https://example.com/a?utm_source=rss&${query}&fbclid=1`)).toBe(plain);
+    },
+  );
 
   it("resolves relative URLs against a base", () => {
     expect(normalizeUrl("../post/", "https://example.com/blog/feed.xml")).toBe("https://example.com/post");

@@ -36,10 +36,35 @@ export function daysBetween(from: string, to: string): number {
   return Math.round((dateMs(to) - dateMs(from)) / DAY_MS);
 }
 
+// V8's fallback parser accepts junk ("1" is 2001-01-01) and rolls over impossible days
+// ("2026-02-30" is March 2), so only the formats feeds use reach new Date.
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?$/i;
+const RFC_2822_DATE =
+  /^(?:[a-z]{3},\s*)?(\d{1,2})\s+([a-z]{3})\s+(\d{4})\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:[+-]\d{4}|[a-z]{1,5}))?$/i;
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
 export function parseDate(s: string | undefined): Date | undefined {
-  if (!s) return undefined;
-  const d = new Date(s.trim());
+  const trimmed = s?.trim();
+  if (!trimmed) return undefined;
+  let year: number;
+  let month: number;
+  let day: number;
+  const iso = ISO_DATE.exec(trimmed);
+  const rfc = iso ? null : RFC_2822_DATE.exec(trimmed);
+  if (iso) {
+    [year, month, day] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+  } else if (rfc) {
+    [year, month, day] = [Number(rfc[3]), MONTHS.indexOf(rfc[2]?.toLowerCase() ?? "") + 1, Number(rfc[1])];
+  } else {
+    return undefined;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return undefined;
+  const d = new Date(trimmed);
   return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
 function dateMs(isoDate: string): number {

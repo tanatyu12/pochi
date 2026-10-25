@@ -12,7 +12,9 @@ export function redact(s: string): string {
   let out = s;
   for (const name of SECRET_ENV) {
     const value = process.env[name]?.trim();
-    if (value && value.length >= MIN_SECRET_LENGTH) out = out.replaceAll(value, "***");
+    if (!value || value.length < MIN_SECRET_LENGTH) continue;
+    // URLs carry the secret percent-encoded (e.g. a key with "+" or "/" in a query string).
+    out = out.replaceAll(value, "***").replaceAll(encodeURIComponent(value), "***");
   }
   for (const [re, replacement] of PATTERNS) out = out.replace(re, replacement);
   return out;
@@ -32,9 +34,15 @@ const defaultWrite = (s: string) => {
 let threshold = THRESHOLD.normal;
 let write: (s: string) => void = defaultWrite;
 
+// Fields left out keep their current value.
 export function configureLog(opts: { level?: LogLevel; write?: (s: string) => void }): void {
-  threshold = THRESHOLD[opts.level ?? "normal"];
-  write = opts.write ?? defaultWrite;
+  if (opts.level) threshold = THRESHOLD[opts.level];
+  if (opts.write) write = opts.write;
+}
+
+export function resetLog(): void {
+  threshold = THRESHOLD.normal;
+  write = defaultWrite;
 }
 
 function emit(severity: Severity, message: string, err?: unknown): void {

@@ -1,5 +1,6 @@
 import { TextDecoder } from "node:util";
 import { VERSION } from "../version.js";
+import { parseHttpUrl } from "./hash.js";
 import { redact } from "./log.js";
 import { sleep } from "./time.js";
 
@@ -16,10 +17,14 @@ export interface HttpOptions {
   maxBytes?: number;
   signal?: AbortSignal;
   retry?: {
-    /** Retries for 5xx, network errors and timeouts. */
+    /**
+     * Retries for 5xx, network errors and timeouts. Defaults to 1 for GET and 0 for POST,
+     * because the server may already have handled a POST that failed this way.
+     */
     server?: number;
     /** Retries for 429. */
     rateLimit?: number;
+    /** A 429 asking to wait longer than this fails at once instead of retrying. */
     maxRetryAfterMs?: number;
   };
 }
@@ -76,10 +81,10 @@ interface RequestInit {
 
 async function request(url: string, init: RequestInit, opts: HttpOptions): Promise<HttpResponse> {
   const safeUrl = redact(url);
-  if (!isHttpUrl(url)) {
+  if (!parseHttpUrl(url)) {
     throw new HttpError("invalid_url", safeUrl, `only http(s) URLs are allowed: ${safeUrl}`);
   }
-  let serverRetries = opts.retry?.server ?? 1;
+  let serverRetries = opts.retry?.server ?? (init.method === "POST" ? 0 : 1);
   let rateLimitRetries = opts.retry?.rateLimit ?? 1;
   const maxRetryAfterMs = opts.retry?.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
 
@@ -89,9 +94,9 @@ async function request(url: string, init: RequestInit, opts: HttpOptions): Promi
     } catch (err) {
       if (!(err instanceof HttpError)) throw err;
       let delayMs: number;
-      if (err.status === 429 && rateLimitRetries > 0) {
+      if (err.status === 429 && rateLimitRetries > 0 && (err.retryAfterMs ?? 0) <= maxRetryAfterMs) {
         rateLimitRetries--;
-        delayMs = Math.min(err.retryAfterMs ?? RETRY_DELAY_MS, maxRetryAfterMs);
+        delayMs = err.retryAfterMs ?? RETRY_DELAY_MS;
       } else if (isServerSide(err) && serverRetries > 0) {
         serverRetries--;
         delayMs = RETRY_DELAY_MS;
@@ -134,7 +139,9 @@ async function attempt(
     if (timeout.aborted) {
       throw new HttpError("timeout", safeUrl, `timed out after ${timeoutMs}ms: ${safeUrl}`, { cause: err });
     }
-    throw new HttpError("network", safeUrl, `request failed: ${safeUrl}`, { cause: err });
+    throw new HttpError("network", safeUrl, `request failed: ${safeUrl}: ${redact(describeCause(err))}`, {
+      cause: err,
+    });
   }
 }
 
@@ -160,8 +167,8 @@ async function readText(res: Response, maxBytes: number, safeUrl: string): Promi
       chunks.push(value);
     }
   }
-  const text = decoderFor(res.headers.get("content-type")).decode(Buffer.concat(chunks));
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  // TextDecoder drops a leading BOM by default.
+  return decoderFor(res.headers.get("content-type")).decode(Buffer.concat(chunks));
 }
 
 // Honour the declared charset (e.g. Shift_JIS blogs); fall back to UTF-8 for unknown labels.
@@ -190,11 +197,8 @@ function isServerSide(err: HttpError): boolean {
   return err.kind === "network" || err.kind === "timeout" || (err.status ?? 0) >= 500;
 }
 
-function isHttpUrl(url: string): boolean {
-  try {
-    const { protocol } = new URL(url);
-    return protocol === "http:" || protocol === "https:";
-  } catch {
-    return false;
-  }
+// Node's fetch throws a bare "fetch failed" and keeps the reason (ENOTFOUND, a TLS error...) in cause.
+function describeCause(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  return err.cause instanceof Error ? err.cause.message : err.message;
 }

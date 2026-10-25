@@ -58,11 +58,16 @@ describe("dates", () => {
     ["2026-10-25T22:17:03Z", "2026-10-25T22:17:03.000Z"],
     ["Sun, 25 Oct 2026 22:17:03 GMT", "2026-10-25T22:17:03.000Z"],
     ["Sun, 25 Oct 2026 22:17:03 +0900", "2026-10-25T13:17:03.000Z"],
+    ["Sun, 25 Oct 2026 22:17:03 EST", "2026-10-26T03:17:03.000Z"],
+    ["25 Oct 2026 22:17 GMT", "2026-10-25T22:17:00.000Z"],
+    ["2026-10-25", "2026-10-25T00:00:00.000Z"],
+    ["2026-10-25T22:17:03+09:00", "2026-10-25T13:17:03.000Z"],
+    ["2028-02-29T00:00:00Z", "2028-02-29T00:00:00.000Z"],
   ])("parses %s", (input, expected) => {
     expect(parseDate(input)?.toISOString()).toBe(expected);
   });
 
-  it.each([undefined, "", "not a date"])("returns undefined for %j", (input) => {
+  it.each([undefined, "", "not a date", "1", "Version 2", "2026-02-30", "2026-13-01", "31 Apr 2026 10:00 GMT"])("returns undefined for %j", (input) => {
     expect(parseDate(input)).toBeUndefined();
   });
 });
