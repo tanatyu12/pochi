@@ -1,0 +1,35 @@
+# Copy to config/context.yml (or run `pochi init`). In CI, put the contents in the
+# POCHI_CONTEXT_YAML secret instead; it takes precedence over the file.
+version: 1
+
+project:
+  name: my-app
+  description: A Next.js SaaS app with a Postgres backend and an LLM-powered support chat.
+
+# What you want to hear about (1-20 entries).
+problems:
+  - Breaking changes and security fixes in Next.js and React
+  - Cheaper or faster LLMs for customer support chat
+
+# What to drop even if it looks related (0-30 entries).
+exclude:
+  - Funding news and company acquisitions
+
+# Language for the summaries the LLM writes. Slack labels stay in English.
+language: English
+
+llm:
+  provider: auto        # auto | api | cli (auto uses ANTHROPIC_API_KEY if set, else the claude CLI)
+  triageModel: ~        # default: claude-haiku-5-5 (api) / haiku (cli)
+  analyzeModel: ~       # default: claude-sonnet-5-5 (api) / sonnet (cli)
+  maxItemsPerCall: 40
+  maxItemsPerRun: 150
+
+notify:
+  slack:
+    postWhenEmpty: false
+    minImpact: Low      # High | Medium | Low
+
+state:
+  ttlDays: 45           # must be greater than maxItemAgeDays
+  maxItemAgeDays: 14
