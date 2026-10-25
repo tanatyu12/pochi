@@ -302,7 +302,7 @@ README に書く注意点：
 | ID | 段階 | タスク | 依存 | 受け入れ条件 | 状態 |
 | --- | --- | --- | --- | --- | --- |
 | T1 | M0 土台 | プロジェクトの土台（package.json、tsconfig、vitest、build.mjs、.gitignore、cli.ts の --version、errors.ts、git init） | なし | npm run build で実行可能な dist ができ、--version が表示される。typecheck と test が通る | 完了 |
-| T2 | M0 土台 | ユーティリティ（http、log と redact、pLimit、hash と normalizeUrl、time）と mockFetch | T1 | タイムアウト、サイズ上限、BOM、429・5xx・404 の扱い、redact、同時実行数上限のテスト | 未着手 |
+| T2 | M0 土台 | ユーティリティ（http、log と redact、pLimit、hash と normalizeUrl、time）と mockFetch | T1 | タイムアウト、サイズ上限、BOM、429・5xx・404 の扱い、redact、同時実行数上限のテスト | 完了 |
 | T3 | M0 土台 | 設定のスキーマ・読み込み・書き出しと example ファイル | T1 | example が検証を通る。環境変数がファイルより優先される。エラーに値が出ない | 未着手 |
 | T4 | M1 情報収集 | html.ts | T1 | 二重エスケープ、絵文字や日本語での切り詰めを含むテスト | 未着手 |
 | T5 | M1 情報収集 | rss.ts（feedsmith）。最初に feedsmith の API をフィクスチャで確かめる | T2, T4 | RSS2、Atom、RDF、JSON Feed、BOM、壊れた XML のフィクスチャ | 未着手 |
