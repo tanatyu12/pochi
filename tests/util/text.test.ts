@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collapseWhitespace, truncate } from "../../src/util/text.js";
+import { collapseWhitespace, truncate, truncateUnits } from "../../src/util/text.js";
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -28,5 +28,20 @@ describe("truncate", () => {
   ])("truncates %j to %d", (text, max, expected) => {
     expect(truncate(text, max)).toBe(expected);
     expect(truncate(text, max)).not.toMatch(LONE_SURROGATE);
+  });
+});
+
+describe("truncateUnits", () => {
+  it.each([
+    [["a", "b", "c"], 3, "abc"],
+    [["&amp;", "&amp;", "&amp;"], 15, "&amp;&amp;&amp;"],
+    [["&amp;", "&amp;", "&amp;"], 14, "&amp;&amp;…"],
+    [["&amp;", "&amp;"], 5, "…"],
+    [["😀", "😀", "😀"], 5, "😀😀…"],
+    [["a", " ", "b", "c"], 3, "a…"],
+    [["a"], 0, ""],
+  ])("cuts %j to %d", (units, max, expected) => {
+    expect(truncateUnits(units, max)).toBe(expected);
+    expect(truncateUnits(units, max).length).toBeLessThanOrEqual(Math.max(max, 0));
   });
 });

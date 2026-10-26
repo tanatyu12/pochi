@@ -1,3 +1,5 @@
+import type { Impact } from "./config/schema.js";
+
 export type SourceKind = "rss" | "github" | "tavily";
 
 /** A collected article, normalized across sources. */
@@ -17,4 +19,15 @@ export interface Item {
   publishedAt?: string;
   /** Plain text, at most maxContentChars. */
   content: string;
+}
+
+/** What the Analyze step said about a relevant item. */
+export interface Insight {
+  item: Item;
+  title: string;
+  /** May be empty when the model left it blank. */
+  summary: string;
+  impact: Impact;
+  /** May be empty when the model left it blank. */
+  action: string;
 }
