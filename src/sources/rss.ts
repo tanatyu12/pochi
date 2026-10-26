@@ -4,7 +4,7 @@ import type { Item, SourceKind } from "../types.js";
 import { itemId, normalizeUrl, parseHttpUrl } from "../util/hash.js";
 import { fetchText } from "../util/http.js";
 import { parseDate } from "../util/time.js";
-import { htmlToText, truncate } from "./html.js";
+import { htmlToLine, htmlToText, inlineHtmlToLine, plainTextToText, truncate } from "./html.js";
 
 const TITLE_MAX_CHARS = 300;
 
@@ -15,7 +15,8 @@ const TITLE_MAX_CHARS = 300;
 export interface RawEntry {
   guid?: string;
   link?: string;
-  title?: { value: string; html: boolean };
+  /** "inline": HTML whose only markup is formatting tags, as RSS titles are in practice. */
+  title?: { value: string; format: "text" | "html" | "inline" };
   published?: string;
   html?: string;
   text?: string;
@@ -63,38 +64,56 @@ function fromRss(item: RssItem): RawEntry {
   return {
     guid,
     link: nonEmpty(item.link) ?? guidLink,
-    title: htmlTitle(item.title),
+    title: inlineTitle(item.title),
     published: nonEmpty(item.pubDate) ?? nonEmpty(item.dc?.dates?.[0]),
     html: nonEmpty(item.content?.encoded) ?? nonEmpty(item.description),
   };
 }
 
 function fromAtom(entry: AtomEntry): RawEntry {
-  const body = entry.content?.value ? entry.content : entry.summary;
-  const bodyValue = nonEmpty(body?.value);
-  const isText = body?.type === undefined || body.type === "text";
+  const body = [entry.content, entry.summary]
+    .map((c) => ({ value: nonEmpty(c?.value), kind: atomTextKind(c?.type) }))
+    .find((c) => c.value !== undefined && c.kind !== undefined);
   const title = nonEmpty(entry.title?.value);
+  const titleKind = atomTextKind(entry.title?.type);
   return {
     guid: nonEmpty(entry.id),
     link: atomLink(entry.links ?? []),
-    title: title === undefined ? undefined : { value: title, html: isHtmlType(entry.title?.type) },
+    title: title === undefined || titleKind === undefined ? undefined : { value: title, format: titleKind },
     published: nonEmpty(entry.published) ?? nonEmpty(entry.updated),
-    html: isText ? undefined : bodyValue,
-    text: isText ? bodyValue : undefined,
+    html: body?.kind === "html" ? body.value : undefined,
+    text: body?.kind === "text" ? body.value : undefined,
   };
 }
 
-// The entry's own page: rel="alternate" (the default when rel is missing), HTML first.
+// RFC 4287: text, html, xhtml or a MIME type. Other MIME types hold base64 or XML we cannot
+// show, so they count as no value.
+function atomTextKind(type: string | undefined): "text" | "html" | undefined {
+  const t = mediaType(type);
+  if (t === undefined || t === "text") return "text";
+  if (t === "html" || t === "xhtml" || t === "text/html" || t === "application/xhtml+xml") return "html";
+  return t.startsWith("text/") ? "text" : undefined;
+}
+
+// The entry's own page: rel="alternate" (the default when rel is missing), HTML first. Other
+// rels (self, edit, enclosure, replies) point elsewhere, so without an alternate there is none.
 function atomLink(links: NonNullable<AtomEntry["links"]>): string | undefined {
-  const alternates = links.filter((l) => l.href && (l.rel === undefined || l.rel === "alternate"));
-  const html = alternates.find((l) => l.type === undefined || l.type === "text/html");
-  return nonEmpty((html ?? alternates[0] ?? links[0])?.href);
+  const alternates = links.filter((l) => nonEmpty(l.href) && (l.rel === undefined || l.rel === "alternate"));
+  const html = alternates.find((l) => l.type === undefined || mediaType(l.type) === "text/html");
+  return nonEmpty((html ?? alternates[0])?.href);
+}
+
+// "text/html; charset=utf-8" → "text/html"
+function mediaType(type: string | undefined): string | undefined {
+  return nonEmpty(type?.split(";")[0])?.toLowerCase();
 }
 
 function fromRdf(item: RdfItem): RawEntry {
   return {
+    // rdf:about is the item's URI, steadier than a link that may gain query parameters.
+    guid: nonEmpty(item.rdf?.about),
     link: nonEmpty(item.link),
-    title: htmlTitle(item.title),
+    title: inlineTitle(item.title),
     published: nonEmpty(item.dc?.dates?.[0]),
     html: nonEmpty(item.content?.encoded) ?? nonEmpty(item.description),
   };
@@ -107,21 +126,18 @@ function fromJson(item: JsonItem): RawEntry {
     guid: nonEmpty(item.id),
     link: nonEmpty(item.url) ?? nonEmpty(item.external_url),
     // JSON Feed titles are plain text.
-    title: title === undefined ? undefined : { value: title, html: false },
+    title: title === undefined ? undefined : { value: title, format: "text" },
     published: nonEmpty(item.date_published) ?? nonEmpty(item.date_modified),
     html,
     text: html ? undefined : (nonEmpty(item.content_text) ?? nonEmpty(item.summary)),
   };
 }
 
-// RSS and RDF titles often carry markup or entities, so they are read as HTML.
-function htmlTitle(value: string | undefined): RawEntry["title"] {
+// RSS and RDF titles often carry entities and formatting tags, but an escaped tag name such
+// as "<dialog>" looks the same once decoded, so only formatting tags are dropped.
+function inlineTitle(value: string | undefined): RawEntry["title"] {
   const v = nonEmpty(value);
-  return v === undefined ? undefined : { value: v, html: true };
-}
-
-function isHtmlType(type: string | undefined): boolean {
-  return type === "html" || type === "xhtml";
+  return v === undefined ? undefined : { value: v, format: "inline" };
 }
 
 function nonEmpty(s: string | undefined): string | undefined {
@@ -142,20 +158,31 @@ export interface ToItemsOptions {
   maxContentChars: number;
 }
 
-/** Keeps the newest `itemsPerFeed` entries that have a usable link. Undated entries go last. */
+/**
+ * Keeps the newest `itemsPerFeed` entries that have a usable link, one per guid or URL.
+ * Undated entries go last.
+ */
 export function toItems(entries: RawEntry[], source: ItemSource, opts: ToItemsOptions): Item[] {
   const linked = entries.flatMap((entry, pos) => {
     const url = entry.link ? parseHttpUrl(entry.link, opts.baseUrl)?.toString() : undefined;
     if (!url) return [];
-    return [{ entry, url, pos, date: parseDate(entry.published) }];
+    const normalized = normalizeUrl(url) ?? url;
+    return [{ entry, url, normalized, key: entry.guid ?? normalized, pos, date: parseDate(entry.published) }];
   });
   linked.sort((a, b) => {
     if (a.date && b.date) return b.date.getTime() - a.date.getTime() || a.pos - b.pos;
     if (a.date || b.date) return a.date ? -1 : 1;
     return a.pos - b.pos;
   });
-  return linked.slice(0, Math.max(0, opts.itemsPerFeed)).map(({ entry, url, date }) => ({
-    id: itemId(source.id, entry.guid ?? normalizeUrl(url) ?? url),
+  // After sorting, so the newest copy of a repeated entry is the one kept.
+  const seen = new Set<string>();
+  const unique = linked.filter(({ key, normalized }) => {
+    if (seen.has(key) || seen.has(normalized)) return false;
+    seen.add(key).add(normalized);
+    return true;
+  });
+  return unique.slice(0, Math.max(0, opts.itemsPerFeed)).map(({ entry, url, key, date }) => ({
+    id: itemId(source.id, key),
     sourceId: source.id,
     sourceName: source.name,
     kind: source.kind ?? "rss",
@@ -164,22 +191,19 @@ export function toItems(entries: RawEntry[], source: ItemSource, opts: ToItemsOp
     publishedAt: date?.toISOString(),
     content: entry.html
       ? htmlToText(entry.html, opts.maxContentChars)
-      : plainText(entry.text ?? "", opts.maxContentChars),
+      : plainTextToText(entry.text ?? "", opts.maxContentChars),
   }));
 }
 
 function toTitle(title: RawEntry["title"]): string {
   if (!title) return "";
-  const text = title.html ? htmlToText(title.value, Number.POSITIVE_INFINITY) : title.value;
-  return truncate(text.replace(/\s+/g, " ").trim(), TITLE_MAX_CHARS);
-}
-
-function plainText(text: string, maxChars: number): string {
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.replace(/\s+/g, " ").trim())
-    .filter((l) => l !== "");
-  return truncate(lines.join("\n"), maxChars);
+  const text =
+    title.format === "html"
+      ? htmlToLine(title.value)
+      : title.format === "inline"
+        ? inlineHtmlToLine(title.value)
+        : title.value.replace(/\s+/g, " ").trim();
+  return truncate(text, TITLE_MAX_CHARS);
 }
 
 export async function fetchRssItems(

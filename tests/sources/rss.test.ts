@@ -24,7 +24,7 @@ describe("parseFeedText", () => {
     expect(entries[0]).toEqual({
       guid: "https://blog.example.com/?p=1",
       link: "https://blog.example.com/older",
-      title: { value: "Older post", html: true },
+      title: { value: "Older post", format: "inline" },
       published: "Mon, 19 Oct 2026 09:00:00 +0000",
       html: "<p>Older &amp; wiser</p>",
     });
@@ -32,7 +32,7 @@ describe("parseFeedText", () => {
     expect(entries[1]).toMatchObject({
       guid: "post-3",
       link: "/posts/newest?utm_source=rss",
-      title: { value: "Newest <em>post</em> &amp; more", html: true },
+      title: { value: "Newest <em>post</em> &amp; more", format: "inline" },
       html: "<h2>Intro</h2><p>Full <b>body</b> text.</p>",
     });
     expect(entries[3]?.published).toBe("2026-10-22T08:00:00Z");
@@ -45,7 +45,7 @@ describe("parseFeedText", () => {
     expect(one).toEqual({
       guid: "tag:example.com,2026:1",
       link: "/entries/1",
-      title: { value: "Entry &lt;one&gt;", html: true },
+      title: { value: "Entry &lt;one&gt;", format: "html" },
       published: "2026-10-23T10:00:00Z",
       html: "<p>Content <b>one</b></p>",
       text: undefined,
@@ -53,18 +53,19 @@ describe("parseFeedText", () => {
     expect(two).toEqual({
       guid: "tag:example.com,2026:2",
       link: "https://example.com/entries/2",
-      title: { value: "Entry two", html: false },
+      title: { value: "Entry two", format: "text" },
       published: "2026-10-25T08:00:00+09:00",
       html: undefined,
       text: "Plain &lt;summary&gt; only",
     });
   });
 
-  it("reads RDF with dc:date", () => {
+  it("reads RDF with dc:date and rdf:about as the guid", () => {
     expect(parseFeedText(fixture("rdf.xml"))).toEqual([
       {
+        guid: "https://rdf.example.jp/entry/1",
         link: "https://rdf.example.jp/entry/1",
-        title: { value: "日本語の記事", html: true },
+        title: { value: "日本語の記事", format: "inline" },
         published: "2026-10-21T09:00:00+09:00",
         html: "本文です。",
       },
@@ -88,6 +89,37 @@ describe("parseFeedText", () => {
     const [release] = parseFeedText(fixture("github-releases.atom"));
     expect(release?.html).toContain("<h3>Core Changes</h3>");
     expect(release?.html).toContain("Fix &lt;Link&gt; prefetch");
+  });
+
+  const atom = (entry: string) =>
+    `<feed xmlns="http://www.w3.org/2005/Atom"><title>x</title><id>x</id><updated>2026-10-01T00:00:00Z</updated>` +
+    `<entry><id>e</id><title>t</title><updated>2026-10-01T00:00:00Z</updated>${entry}</entry></feed>`;
+
+  it("reads Atom content with a text/* MIME type as literal text", () => {
+    const [entry] = parseFeedText(atom(`<content type="text/plain">hello &lt;b&gt;</content>`));
+    expect(entry).toMatchObject({ text: "hello <b>", html: undefined });
+  });
+
+  it.each([
+    ["an unusable MIME type", `<content type="application/octet-stream">aGVsbG8=</content>`],
+    ["only whitespace", `<content type="html">   </content>`],
+  ])("falls back to the summary when the content has %s", (_, content) => {
+    const [entry] = parseFeedText(atom(`${content}<summary>sum</summary>`));
+    expect(entry).toMatchObject({ text: "sum", html: undefined });
+  });
+
+  it.each([
+    ["self", `<link rel="self" href="https://x.example/api/1"/>`],
+    ["enclosure", `<link rel="enclosure" type="audio/mpeg" href="https://x.example/1.mp3"/>`],
+  ])("takes no link from a lone rel=%s", (_, link) => {
+    expect(parseFeedText(atom(link))[0]?.link).toBeUndefined();
+  });
+
+  it("matches the HTML alternate by media type, ignoring parameters", () => {
+    const links =
+      `<link rel="alternate" type="application/xhtml+xml" href="https://x.example/1"/>` +
+      `<link rel="alternate" type="Text/HTML; charset=utf-8" href="https://x.example/2"/>`;
+    expect(parseFeedText(atom(links))[0]?.link).toBe("https://x.example/2");
   });
 
   it.each([
@@ -169,6 +201,20 @@ describe("toItems", () => {
     expect(otherSource?.id).not.toBe(byGuid?.id);
   });
 
+  it("keeps one item per guid or URL, the newest, before counting itemsPerFeed", () => {
+    const entries = [
+      entry({ guid: "a", link: "/a", published: "2026-10-01T00:00:00Z" }),
+      entry({ guid: "a", link: "/a", published: "2026-10-03T00:00:00Z" }),
+      entry({ guid: "a2", link: "/a?utm_source=rss", published: "2026-10-02T00:00:00Z" }),
+      entry({ guid: "b", link: "/b", published: "2026-09-01T00:00:00Z" }),
+    ];
+    const items = toItems(entries, source, { ...opts, itemsPerFeed: 2 });
+    expect(items.map((i) => [i.id, i.publishedAt])).toEqual([
+      [itemId("blog", "a"), "2026-10-03T00:00:00.000Z"],
+      [itemId("blog", "b"), "2026-09-01T00:00:00.000Z"],
+    ]);
+  });
+
   it("fills source fields and defaults kind to rss", () => {
     const [item] = toItems([entry({})], source, opts);
     expect(item).toMatchObject({ sourceId: "blog", sourceName: "Example Blog", kind: "rss" });
@@ -181,10 +227,23 @@ describe("toItems", () => {
     expect(items[0]?.title).toBe("Newest post & more");
     const [atom] = toItems(parseFeedText(fixture("atom.xml")), source, opts);
     expect(atom?.title).toBe("Entry two");
-    const [html] = toItems([entry({ title: { value: "<p>Line\none</p><p>two</p>", html: true } })], source, opts);
+    const [html] = toItems([entry({ title: { value: "<p>Line\none</p><p>two</p>", format: "html" } })], source, opts);
     expect(html?.title).toBe("Line one two");
-    const [literal] = toItems([entry({ title: { value: "a &amp; <b>", html: false } })], source, opts);
+    const [literal] = toItems([entry({ title: { value: "a &amp; <b>", format: "text" } })], source, opts);
     expect(literal?.title).toBe("a &amp; <b>");
+  });
+
+  it("keeps escaped tag names in titles", () => {
+    const rss = (title: string) =>
+      `<rss version="2.0"><channel><title>x</title><link>https://x.example/</link><description>d</description>` +
+      `<item><title>${title}</title><link>https://x.example/1</link></item></channel></rss>`;
+    const title = (text: string) => toItems(parseFeedText(text), source, opts)[0]?.title;
+    expect(title(rss("Why &lt;canvas&gt; matters"))).toBe("Why <canvas> matters");
+    expect(title(rss("&amp;lt;Suspense&amp;gt; and &lt;b&gt;bold&lt;/b&gt;"))).toBe("<Suspense> and bold");
+    const atomHtml = toItems([entry({ title: { value: "&lt;Link&gt; prefetch", format: "html" } })], source, opts);
+    expect(atomHtml[0]?.title).toBe("<Link> prefetch");
+    const inline = toItems([entry({ title: { value: "a<br>b <code>c</code> d<b>e</b>", format: "inline" } })], source, opts);
+    expect(inline[0]?.title).toBe("a b <code>c</code> de");
   });
 
   it("falls back to the URL for untitled entries", () => {
@@ -193,7 +252,7 @@ describe("toItems", () => {
   });
 
   it("cuts titles at 300 code points without splitting emoji", () => {
-    const [item] = toItems([entry({ title: { value: "🎉".repeat(400), html: true } })], source, opts);
+    const [item] = toItems([entry({ title: { value: "🎉".repeat(400), format: "inline" } })], source, opts);
     const chars = Array.from(item?.title ?? "");
     expect(chars).toHaveLength(300);
     expect(chars.at(-1)).toBe("…");
@@ -212,6 +271,10 @@ describe("toItems", () => {
     expect(items.find((i) => i.url.includes("elsewhere"))?.content).toBe("Use &amp; literally, and a < b");
     const [lines] = toItems([entry({ text: " a   b \n\n\n c " })], source, opts);
     expect(lines?.content).toBe("a b\nc");
+    const text = ["Intro", "x".repeat(100), "# Breaking Changes", "y".repeat(100)].join("\n");
+    const [cut] = toItems([entry({ text })], source, { ...opts, maxContentChars: 120 });
+    // The preamble gives way to the heading and its section, as in htmlToText.
+    expect(cut?.content).toMatch(/^Intro\n# Breaking Changes\ny+…$/);
   });
 
   it("leaves content empty when the entry has no body", () => {
