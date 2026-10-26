@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Context, ContextSchema, type Impact } from "../../src/config/schema.js";
 import { ExitCode, exitCodeOf } from "../../src/errors.js";
 import {
@@ -9,7 +9,7 @@ import {
   type LlmErrorKind,
   type TriageOutput,
 } from "../../src/llm/schema.js";
-import { ANALYZE_BATCH_SIZE, filterAndAnalyze } from "../../src/pipeline/filter.js";
+import { ANALYZE_BATCH_SIZE, filterAndAnalyze, RETRY_DELAY_MS } from "../../src/pipeline/filter.js";
 import type { Item } from "../../src/types.js";
 import { configureLog, resetLog } from "../../src/util/log.js";
 
@@ -106,7 +106,10 @@ beforeEach(() => {
   configureLog({ level: "verbose", write: (s) => logs.push(s) });
 });
 
-afterEach(() => resetLog());
+afterEach(() => {
+  vi.useRealTimers();
+  resetLog();
+});
 
 describe("filterAndAnalyze batching", () => {
   it("does not call the model for no items", async () => {
@@ -205,67 +208,143 @@ describe("filterAndAnalyze short ids", () => {
 });
 
 describe("filterAndAnalyze failures", () => {
-  it("retries a failed batch once", async () => {
-    const llm = fakeLlm({ triage: (call, n) => (n === 0 ? fail("rate_limit") : relevantAll(call, n)) });
-    const result = await filterAndAnalyze(llm.client, makeContext(), items(2));
+  // Transient failures are retried after RETRY_DELAY_MS; the tests do not wait for it.
+  const NOW = { retryDelayMs: 0 };
+
+  it.each(["rate_limit", "timeout", "transport"] as const)("retries a batch that failed with %s once", async (kind) => {
+    const llm = fakeLlm({ triage: (call, n) => (n === 0 ? fail(kind) : relevantAll(call, n)) });
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(2), NOW);
     expect(llm.of("triage")).toHaveLength(2);
+    expect(llm.of("triage")[1]?.titles).toEqual(["Title 1", "Title 2"]);
     expect(result.insights).toHaveLength(2);
     expect(result.stats.triageFailed).toBe(0);
+  });
+
+  it("waits RETRY_DELAY_MS before retrying", async () => {
+    vi.useFakeTimers();
+    const llm = fakeLlm({ triage: (call, n) => (n === 0 ? fail("rate_limit") : relevantAll(call, n)) });
+    const promise = filterAndAnalyze(llm.client, makeContext(), items(2));
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS - 1);
+    expect(llm.of("triage")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await promise).insights).toHaveLength(2);
+    expect(llm.of("triage")).toHaveLength(2);
+  });
+
+  it("throws the abort reason when aborted while waiting to retry", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const reason = new Error("stop");
+    const llm = fakeLlm({ triage: () => fail("rate_limit") });
+    const promise = filterAndAnalyze(llm.client, makeContext(), items(2), { signal: controller.signal });
+    const settled = promise.catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(1_000);
+    controller.abort(reason);
+    expect(await settled).toBe(reason);
+    expect(llm.calls).toHaveLength(1);
   });
 
   it("leaves a batch that fails twice undecided and carries on", async () => {
     // Batch 2 (calls 1 and 2) fails both times; batches 1 and 3 succeed.
     const llm = fakeLlm({ triage: (call, n) => (n === 1 || n === 2 ? fail() : relevantAll(call, n)) });
-    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6));
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6), NOW);
     expect(llm.of("triage")).toHaveLength(4);
     expect(titles(result.undecided)).toEqual(["Title 3", "Title 4"]);
     expect(result.insights).toHaveLength(4);
     expect(result.stats).toMatchObject({ triageBatches: 3, triageFailed: 1 });
+    expect(result.error).toBeUndefined();
     expect(logs.join("")).toContain("triage batch 2/3 failed");
+  });
+
+  it.each(["max_tokens", "refusal", "invalid_output"] as const)(
+    "sends a batch that failed with %s in halves instead of as is",
+    async (kind) => {
+      const llm = fakeLlm({ analyze: (call, n) => (n === 0 ? fail(kind) : insightAll()(call, n)) });
+      const result = await filterAndAnalyze(llm.client, makeContext(), items(5), NOW);
+      expect(llm.of("analyze").map((c) => c.titles)).toEqual([
+        ["Title 1", "Title 2", "Title 3", "Title 4", "Title 5"],
+        ["Title 1", "Title 2", "Title 3"],
+        ["Title 4", "Title 5"],
+      ]);
+      expect(result.insights).toHaveLength(5);
+      expect(result.stats.analyzeFailed).toBe(0);
+    },
+  );
+
+  it("narrows a failure down to the one item causing it and leaves only that item undecided", async () => {
+    const llm = fakeLlm({
+      analyze: (call, n) => (call.titles.includes("Title 3") ? fail("refusal") : insightAll()(call, n)),
+    });
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(4), NOW);
+    // 1-4, then 1-2 and 3-4, then 3 and 4.
+    expect(llm.of("analyze")).toHaveLength(5);
+    expect(titles(result.undecided)).toEqual(["Title 3"]);
+    expect(result.insights).toHaveLength(3);
+    expect(result.stats).toMatchObject({ analyzeBatches: 1, analyzeFailed: 0 });
+    expect(result.error).toBeUndefined();
+  });
+
+  it("does not split or retry a single item that fails because of its content", async () => {
+    const llm = fakeLlm({ triage: () => fail("max_tokens") });
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(1), NOW);
+    expect(llm.of("triage")).toHaveLength(1);
+    expect(titles(result.undecided)).toEqual(["Title 1"]);
+    expect(result.error?.kind).toBe("max_tokens");
   });
 
   it.each(["auth", "unavailable"] as const)("stops calling after %s, without retrying", async (kind) => {
     const llm = fakeLlm({ triage: (call, n) => (n === 1 ? fail(kind) : relevantAll(call, n)) });
-    const promise = filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6));
-    // Batch 1 succeeded, but analyze has no call left to make, so the run has nothing to send.
-    const err = await promise.then(
-      () => expect.unreachable("expected a rejection"),
-      (e: unknown) => e as LlmError,
-    );
-    expect(err.kind).toBe(kind);
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6), NOW);
+    // Batch 1 succeeded, but analyze has no call left to make, so the stage reports the error.
+    expect(result.error?.kind).toBe(kind);
     expect(llm.of("triage")).toHaveLength(2);
     expect(llm.of("analyze")).toHaveLength(0);
+    expect(titles(result.undecided)).toEqual(["Title 3", "Title 4", "Title 5", "Title 6", "Title 1", "Title 2"]);
   });
 
-  it("throws exit 3 when every triage batch fails", async () => {
+  it("keeps the triage answers when a later fatal error leaves analyze with nothing", async () => {
+    const llm = fakeLlm({
+      triage: (call, n) =>
+        n === 1 ? fail("auth") : { decisions: call.ids.map((id, i) => ({ id, relevant: i === 0, reason: "r" })) },
+    });
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(4), NOW);
+    expect(titles(result.irrelevant)).toEqual(["Title 2"]);
+    expect(result.error).toBeInstanceOf(LlmError);
+    expect(result.error?.message).toContain("analyze: the only batch failed");
+  });
+
+  it("returns exit 3 when every triage batch fails, without calling analyze", async () => {
     const llm = fakeLlm({ triage: () => fail("timeout") });
-    const err = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(3)).then(
-      () => expect.unreachable("expected a rejection"),
-      (e: unknown) => e as LlmError,
-    );
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(3), NOW);
+    const err = result.error!;
     expect(err).toBeInstanceOf(LlmError);
     expect(err.kind).toBe("timeout");
     expect(exitCodeOf(err)).toBe(ExitCode.LLM);
     expect(err.message).toContain("all 2 batches failed");
     expect(llm.of("triage")).toHaveLength(4);
+    expect(llm.of("analyze")).toHaveLength(0);
+    expect(result.undecided).toHaveLength(3);
   });
 
-  it("throws exit 3 when every analyze batch fails", async () => {
-    const llm = fakeLlm({ analyze: () => fail("invalid_output") });
-    const err = await filterAndAnalyze(llm.client, makeContext(), items(3)).then(
-      () => expect.unreachable("expected a rejection"),
-      (e: unknown) => e as LlmError,
-    );
-    expect(err.kind).toBe("invalid_output");
-    expect(err.message).toContain("analyze: the only batch failed");
+  it("returns exit 3 when every analyze batch fails, with the triage answers", async () => {
+    const llm = fakeLlm({
+      triage: (call) => ({ decisions: call.ids.map((id, i) => ({ id, relevant: i < 3, reason: "r" })) }),
+      analyze: () => fail("transport"),
+    });
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(4), NOW);
+    expect(result.error?.kind).toBe("transport");
+    expect(result.error?.message).toContain("analyze: the only batch failed");
+    expect(titles(result.irrelevant)).toEqual(["Title 4"]);
+    expect(result.undecided).toHaveLength(3);
   });
 
-  it("does not throw when analyze only partly fails", async () => {
+  it("does not report an error when analyze only partly fails", async () => {
     const llm = fakeLlm({ analyze: (call, n) => (n < 2 ? fail() : insightAll()(call, n)) });
-    const result = await filterAndAnalyze(llm.client, makeContext(), items(20));
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(20), NOW);
     expect(result.stats).toMatchObject({ analyzeBatches: 2, analyzeFailed: 1 });
     expect(result.undecided).toHaveLength(15);
     expect(result.insights).toHaveLength(5);
+    expect(result.error).toBeUndefined();
   });
 
   it("does not call analyze when nothing is relevant", async () => {

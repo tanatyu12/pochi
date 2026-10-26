@@ -3,7 +3,7 @@ import { analyzeRequest, shortId, triageRequest } from "../llm/prompts.js";
 import { type GenerateRequest, type LlmClient, LlmError, type LlmErrorKind, type LlmTier } from "../llm/schema.js";
 import type { Insight, Item } from "../types.js";
 import { log } from "../util/log.js";
-import { parseDate } from "../util/time.js";
+import { parseDate, sleep } from "../util/time.js";
 
 // Analyze sends whole articles (up to maxContentChars each), so its batches are smaller than triage's.
 export const ANALYZE_BATCH_SIZE = 15;
@@ -11,6 +11,10 @@ export const ANALYZE_BATCH_SIZE = 15;
 const IMPACT_RANK: Record<Impact, number> = { High: 0, Medium: 1, Low: 2 };
 // Every later call would fail the same way, so these stop the run's remaining batches.
 const FATAL_KINDS: ReadonlySet<LlmErrorKind> = new Set(["auth", "unavailable"]);
+// Caused by the batch itself, so resending it as is fails again; its halves are sent instead.
+const SPLIT_KINDS: ReadonlySet<LlmErrorKind> = new Set(["max_tokens", "refusal", "invalid_output"]);
+// The SDK and claude have already retried with their own backoff; this gives a limit time to pass.
+export const RETRY_DELAY_MS = 10_000;
 
 export interface FilterResult {
   /** To notify: by impact (High first), then newest first. */
@@ -20,18 +24,24 @@ export interface FilterResult {
   /** Not recorded, so the next run judges them again: failed batches, unanswered items, over maxItemsPerRun. */
   undecided: Item[];
   stats: { triageBatches: number; triageFailed: number; analyzeBatches: number; analyzeFailed: number };
+  /**
+   * Set when every batch of a stage failed. The caller records irrelevant first (those answers
+   * are paid for), then throws this (exit 3).
+   */
+  error?: LlmError;
 }
 
 /**
  * Triage in batches of maxItemsPerCall, then Analyze the relevant items in batches of
- * ANALYZE_BATCH_SIZE. A failed batch is retried once and its items left undecided; only when
- * every batch of a stage fails does this throw (LlmError, exit 3).
+ * ANALYZE_BATCH_SIZE. A batch that fails transiently is retried once after retryDelayMs; one
+ * that fails because of its content is split in halves. Items still without an answer are left
+ * undecided. Throws only the abort reason and errors that are not LlmErrors.
  */
 export async function filterAndAnalyze(
   llm: LlmClient,
   context: Context,
   items: readonly Item[],
-  { signal }: { signal?: AbortSignal } = {},
+  { signal, retryDelayMs = RETRY_DELAY_MS }: { signal?: AbortSignal; retryDelayMs?: number } = {},
 ): Promise<FilterResult> {
   const result: FilterResult = {
     insights: [],
@@ -40,6 +50,7 @@ export async function filterAndAnalyze(
     stats: { triageBatches: 0, triageFailed: 0, analyzeBatches: 0, analyzeFailed: 0 },
   };
   if (items.length === 0) return result;
+  const byNewest = newestFirst(items);
 
   let selected: readonly Item[] = items;
   if (items.length > context.llm.maxItemsPerRun) {
@@ -51,7 +62,7 @@ export async function filterAndAnalyze(
     );
   }
 
-  const run: StageRun = { llm, signal, undecided: result.undecided };
+  const run: StageRun = { llm, signal, retryDelayMs, undecided: result.undecided };
   const relevant: Item[] = [];
   const triage = await runStage(
     run,
@@ -75,7 +86,8 @@ export async function filterAndAnalyze(
   );
   result.stats.triageBatches = triage.batches;
   result.stats.triageFailed = triage.failed;
-  throwIfAllFailed("triage", triage);
+  result.error = stageError("triage", triage);
+  if (result.error) return result;
 
   const threshold = IMPACT_RANK[context.notify.slack.minImpact];
   const analyze = await runStage(
@@ -105,7 +117,7 @@ export async function filterAndAnalyze(
   );
   result.stats.analyzeBatches = analyze.batches;
   result.stats.analyzeFailed = analyze.failed;
-  throwIfAllFailed("analyze", analyze);
+  result.error = stageError("analyze", analyze);
 
   result.insights.sort((a, b) => IMPACT_RANK[a.impact] - IMPACT_RANK[b.impact] || byNewest(a.item, b.item));
   return result;
@@ -114,6 +126,7 @@ export async function filterAndAnalyze(
 interface StageRun {
   llm: LlmClient;
   signal: AbortSignal | undefined;
+  retryDelayMs: number;
   undecided: Item[];
   /** Set by an auth or unavailable error; every batch after it is skipped, in both stages. */
   fatal?: LlmError;
@@ -121,6 +134,7 @@ interface StageRun {
 
 interface StageOutcome {
   batches: number;
+  /** Batches that got no answer at all, not even for one of their halves. */
   failed: number;
   last?: LlmError;
 }
@@ -133,46 +147,56 @@ async function runStage<T>(
   apply: (batch: Item[], reply: T) => void,
 ): Promise<StageOutcome> {
   const outcome: StageOutcome = { batches: batches.length, failed: 0 };
-  for (const [n, batch] of batches.entries()) {
+  const runBatch = async (batch: Item[], label: string): Promise<boolean> => {
     if (run.fatal) {
-      outcome.failed++;
       outcome.last = run.fatal;
       run.undecided.push(...batch);
-      continue;
+      return false;
     }
     let reply: T;
     try {
-      reply = await generateWithRetry(run, build(batch), `${stage} batch ${n + 1}/${batches.length}`);
+      reply = await generateWithRetry(run, build(batch), label);
     } catch (err) {
       if (!(err instanceof LlmError)) throw err;
-      outcome.failed++;
       outcome.last = err;
-      run.undecided.push(...batch);
-      log.warn(`${stage} batch ${n + 1}/${batches.length} failed; its ${batch.length} items wait for the next run`, err);
       if (FATAL_KINDS.has(err.kind)) run.fatal = err;
-      continue;
+      if (SPLIT_KINDS.has(err.kind) && batch.length > 1 && !run.fatal) {
+        log.debug(`${label} failed (${err.kind}); sending its ${batch.length} items in halves`);
+        const half = Math.ceil(batch.length / 2);
+        const first = await runBatch(batch.slice(0, half), `${label} (part 1)`);
+        const second = await runBatch(batch.slice(half), `${label} (part 2)`);
+        return first || second;
+      }
+      run.undecided.push(...batch);
+      log.warn(`${label} failed; its ${batch.length} items wait for the next run`, err);
+      return false;
     }
     apply(batch, reply);
+    return true;
+  };
+  for (const [n, batch] of batches.entries()) {
+    if (!(await runBatch(batch, `${stage} batch ${n + 1}/${batches.length}`))) outcome.failed++;
   }
   return outcome;
 }
 
-// Only LlmErrors are retried: an abort is the caller's decision, anything else is a bug.
+// Only transient LlmErrors are retried: an abort is the caller's decision, anything else is a bug.
 async function generateWithRetry<T>(run: StageRun, req: GenerateRequest<T>, label: string): Promise<T> {
   try {
     return await run.llm.generate(req, { signal: run.signal });
   } catch (err) {
-    if (!(err instanceof LlmError) || FATAL_KINDS.has(err.kind)) throw err;
+    if (!(err instanceof LlmError) || FATAL_KINDS.has(err.kind) || SPLIT_KINDS.has(err.kind)) throw err;
     if (run.signal?.aborted) throw run.signal.reason;
-    log.debug(`${label} failed (${err.kind}); retrying once`);
+    log.debug(`${label} failed (${err.kind}); retrying once in ${run.retryDelayMs}ms`);
+    await sleep(run.retryDelayMs, run.signal);
     return await run.llm.generate(req, { signal: run.signal });
   }
 }
 
-function throwIfAllFailed(stage: LlmTier, outcome: StageOutcome): void {
-  if (outcome.batches === 0 || outcome.failed < outcome.batches || !outcome.last) return;
+function stageError(stage: LlmTier, outcome: StageOutcome): LlmError | undefined {
+  if (outcome.batches === 0 || outcome.failed < outcome.batches || !outcome.last) return undefined;
   const batches = outcome.batches === 1 ? "the only batch" : `all ${outcome.batches} batches`;
-  throw new LlmError(outcome.last.kind, `${stage}: ${batches} failed (last: ${outcome.last.message})`);
+  return new LlmError(outcome.last.kind, `${stage}: ${batches} failed (last: ${outcome.last.message})`);
 }
 
 /**
@@ -203,10 +227,16 @@ function chunk<T>(list: readonly T[], size: number): T[][] {
   return chunks;
 }
 
-// Newest first, undated last; Array.prototype.sort is stable, so ties keep their order.
-function byNewest(a: Item, b: Item): number {
-  const ta = parseDate(a.publishedAt)?.getTime();
-  const tb = parseDate(b.publishedAt)?.getTime();
-  if (ta === undefined || tb === undefined) return ta === tb ? 0 : ta === undefined ? 1 : -1;
-  return tb - ta;
+/**
+ * Newest first, undated last; Array.prototype.sort is stable, so ties keep their order. Each date
+ * is parsed once here rather than on every comparison.
+ */
+function newestFirst(items: readonly Item[]): (a: Item, b: Item) => number {
+  const published = new Map(items.map((item) => [item, parseDate(item.publishedAt)?.getTime()]));
+  return (a, b) => {
+    const ta = published.get(a);
+    const tb = published.get(b);
+    if (ta === undefined || tb === undefined) return ta === tb ? 0 : ta === undefined ? 1 : -1;
+    return tb - ta;
+  };
 }
