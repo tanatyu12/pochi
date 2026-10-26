@@ -68,14 +68,19 @@ export async function collectAll(sources: Sources, opts: CollectOptions = {}): P
     configs.push(...sources.queries.map((query) => ({ kind: "tavily" as const, query })));
   } else if (sources.queries.length > 0) {
     skipped.push(...sources.queries.map((q) => q.id));
-    log.info(`TAVILY_API_KEY is not set; skipping ${skipped.length} ${skipped.length === 1 ? "query" : "queries"}`);
+    const message = `TAVILY_API_KEY is not set; skipping ${skipped.length} ${skipped.length === 1 ? "query" : "queries"}`;
+    // With nothing else to fetch, the run would quietly collect nothing.
+    if (configs.length === 0) log.warn(message);
+    else log.info(message);
   }
 
-  const limit = pLimit(opts.concurrency ?? DEFAULT_CONCURRENCY);
+  const limit = pLimit(concurrencyOf(opts.concurrency));
   // Indexed by source, so the result does not depend on which fetch finishes first.
   const settled = await Promise.all(
     configs.map((config) =>
-      limit(async () => {
+      limit(async (): Promise<Settled> => {
+        // Queued sources are not started once the run is interrupted.
+        if (signal?.aborted) return { aborted: true };
         const info = sourceInfo(config);
         try {
           const items = await fetchSource(config, sources.defaults, signal);
@@ -83,14 +88,16 @@ export async function collectAll(sources: Sources, opts: CollectOptions = {}): P
           return { items };
         } catch (error) {
           // An abort is not the source's fault; it is rethrown below instead.
-          if (!signal?.aborted) log.warn(`source ${info.id} failed`, error);
+          if (isAbort(error, signal)) return { aborted: true };
+          log.warn(`source ${info.id} failed`, error);
           return { failure: { sourceId: info.id, sourceName: info.name, kind: info.kind, error } };
         }
       }),
     ),
   );
-  // Otherwise an interrupted run would look like one where every source failed.
-  if (signal?.aborted) throw signal.reason;
+  // Otherwise an interrupted run would look like one where every source failed. An abort
+  // that arrives after every fetch has finished cut nothing short, so the results stand.
+  if (signal && settled.some((s) => s.aborted)) throw signal.reason;
 
   return {
     items: dedupe(settled.flatMap((s) => s.items ?? [])),
@@ -103,6 +110,21 @@ export async function collectAll(sources: Sources, opts: CollectOptions = {}): P
 /** Every key the state file should know this item by, so a page is not notified twice. */
 export function stateKeys(item: Item): string[] {
   return item.id === item.urlKey ? [item.id] : [item.id, item.urlKey];
+}
+
+type Settled = { items?: Item[]; failure?: SourceFailure; aborted?: true };
+
+function concurrencyOf(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_CONCURRENCY;
+  if (Number.isInteger(value) && value >= 1) return value;
+  log.warn(`invalid concurrency ${value}; using ${DEFAULT_CONCURRENCY}`);
+  return DEFAULT_CONCURRENCY;
+}
+
+// util/http rethrows the caller's abort as is; AbortError covers fetchers that wrap it.
+function isAbort(error: unknown, signal: AbortSignal | undefined): boolean {
+  if (!signal?.aborted) return false;
+  return error === signal.reason || (error instanceof Error && error.name === "AbortError");
 }
 
 // Sources dedupe within themselves; across them, the same page can come from a feed and a

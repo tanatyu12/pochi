@@ -130,6 +130,15 @@ describe("collectAll", () => {
     expect(logged.filter((l) => l.includes("TAVILY_API_KEY is not set; skipping 2 queries"))).toHaveLength(1);
   });
 
+  it("warns when skipping the queries leaves nothing to fetch", async () => {
+    vi.stubEnv("TAVILY_API_KEY", undefined);
+    mockFetch({});
+    const result = await collectAll(config([], ["q1"]));
+
+    expect(result).toEqual({ items: [], attempted: 0, failures: [], skipped: ["q1"] });
+    expect(logged.filter((l) => l.includes("warn: TAVILY_API_KEY is not set; skipping 1 query"))).toHaveLength(1);
+  });
+
   it("searches Tavily when the key is set", async () => {
     const mock = mockFetch({ [SEARCH]: tavily("https://news.example.com/x") });
     const result = await collectAll(config([], ["q1"]));
@@ -174,6 +183,14 @@ describe("collectAll", () => {
     expect(result.items.map((i) => i.sourceId)).toEqual(ids);
   });
 
+  it.each([0, 1.5, Number.NaN])("falls back to the default for concurrency %s instead of throwing", async (concurrency) => {
+    mockFetch({ [feedUrl("a")]: rss("https://a.example.com/1") });
+    const result = await collectAll(config(["a"]), { concurrency });
+
+    expect(result.items).toHaveLength(1);
+    expect(logged.filter((l) => l.includes(`warn: invalid concurrency ${concurrency}; using 4`))).toHaveLength(1);
+  });
+
   it("rethrows an abort instead of recording it as failures", async () => {
     const controller = new AbortController();
     mockFetch({
@@ -186,6 +203,53 @@ describe("collectAll", () => {
 
     await expect(collectAll(config(["a"]), { signal: controller.signal })).rejects.toThrow("interrupted");
     expect(logged.filter((l) => l.includes("warn:"))).toEqual([]);
+  });
+  it("does not start queued sources once aborted", async () => {
+    const controller = new AbortController();
+    const mock = mockFetch({
+      [feedUrl("a")]: (req, signal) => {
+        const hang = reply.hang()(req, signal);
+        controller.abort(new Error("interrupted"));
+        return hang;
+      },
+      [feedUrl("b")]: rss("https://b.example.com/1"),
+    });
+
+    await expect(collectAll(config(["a", "b"]), { signal: controller.signal, concurrency: 1 })).rejects.toThrow(
+      "interrupted",
+    );
+    expect(mock.callsTo(feedUrl("b"))).toHaveLength(0);
+  });
+
+  it("keeps the results when the abort arrives after every fetch has finished", async () => {
+    const controller = new AbortController();
+    configureLog({
+      level: "verbose",
+      write: (s) => {
+        logged.push(s);
+        if (s.includes("source a: 1 item")) controller.abort(new Error("interrupted"));
+      },
+    });
+    mockFetch({ [feedUrl("a")]: rss("https://a.example.com/1") });
+    const result = await collectAll(config(["a"]), { signal: controller.signal });
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(result.items).toHaveLength(1);
+  });
+
+  it("still warns about a real failure that ends after the abort", async () => {
+    const controller = new AbortController();
+    mockFetch({
+      [feedUrl("a")]: reply.hang(),
+      [feedUrl("b")]: (req, signal) => {
+        controller.abort(new Error("interrupted"));
+        return reply.status(404)(req, signal);
+      },
+    });
+
+    await expect(collectAll(config(["a", "b"]), { signal: controller.signal })).rejects.toThrow("interrupted");
+    expect(logged.filter((l) => l.includes("warn: source b failed"))).toHaveLength(1);
+    expect(logged.filter((l) => l.includes("warn: source a"))).toEqual([]);
   });
 });
 

@@ -218,10 +218,10 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 結果は Tavily の関連度順のまま、URL のない結果、正規化 URL の重複、http(s) でない URL を除く（1件の欠けで応答全体を失わないよう、url はスキーマ上 null を許す）。件数は maxResults で決まり、itemsPerFeed は適用しない。sourceName は検索語、日付は published_date（news のみ）
   - JSON でない応答や形の違う応答は `FeedParseError` を投げる（github.ts と共通の `sources/api.ts` の `parseApi`）
 - **index.ts** `collectAll(sources, { signal?, concurrency? })` は `{ items, attempted, failures, skipped }` を返す
-  - 同時実行は4件まで。ソースごとに try/catch し、失敗（sourceId・sourceName・kind・error）を記録して warn を出し、次に進む。例外は投げない
-  - TAVILY_API_KEY がなければ queries を取得せず、`skipped` に id を入れて info を1回出す。スキップした分は `attempted` に数えない
+  - 同時実行は4件まで（concurrency が正の整数でなければ warn を出して4にする）。ソースごとに try/catch し、失敗（sourceId・sourceName・kind・error）を記録して warn を出し、次に進む。中断以外で例外は投げない
+  - TAVILY_API_KEY がなければ queries を取得せず、`skipped` に id を入れて info を1回出す（ほかに取得するソースがなければ warn）。スキップした分は `attempted` に数えない
   - 結果は完了順ではなく設定の順（feeds → queries）に並べ、id と urlKey で重複を除く。先に出た記事（フィードの記事と Tavily の同じ URL ならフィード側）を残す
-  - signal で中断されたら失敗として記録せず、その reason を投げる（「全ソースの失敗」と区別するため）
+  - signal で中断されたら、待っているソースは始めず、中断で止まった取得は失敗として記録せず、その reason を投げる（「全ソースの失敗」と区別するため）。中断と同時に起きた中断以外の失敗は warn を出す。全ソースの取得が終わってから中断された場合は結果をそのまま返す
   - 終了コードは決めない。全ソースの失敗（5）の判定は commands/run が `attempted` と `failures` から行う
   - `fetchSource` は1ソースを kind に応じて rss / github / tavily に振り分ける（doctor --fetch 向け）
 
@@ -262,7 +262,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - ラベルは英語固定、LLM が生成する文は language に従う
 - **commands/run.ts**
   1. 設定を読む（失敗すれば終了コード2）
-  2. dry-run でなければ SLACK_WEBHOOK_URL を確認する（なければ2）
+  2. dry-run でなければ SLACK_WEBHOOK_URL を確認する（なければ2）。feeds が空で queries があり、TAVILY_API_KEY がなければ2（取得するソースがない）
   3. LLM を解決する（失敗すれば3）。手順2と3は記事の取得や LLM の課金より前に済ませる
   4. 状態ファイルを読み、期限切れのエントリを削除する
   5. 記事を収集する（全ソースが失敗すれば5）
