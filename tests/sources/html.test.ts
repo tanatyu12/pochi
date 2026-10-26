@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { htmlToText, truncate } from "../../src/sources/html.js";
+import { htmlToLine, htmlToText, inlineHtmlToLine, plainTextToText, truncate } from "../../src/sources/html.js";
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -277,5 +277,44 @@ describe("truncate", () => {
   ])("truncates %j to %d", (text, max, expected) => {
     expect(truncate(text, max)).toBe(expected);
     expect(truncate(text, max)).not.toMatch(LONE_SURROGATE);
+  });
+});
+
+describe("htmlToLine", () => {
+  it.each([
+    ["<p>Line\none</p><p>two</p>", "Line one two"],
+    ["<h2>Title</h2> <em>x</em>", "Title x"],
+    // Escaped tags are text, with no second unwrap as in GitHub bodies.
+    ["&lt;Link&gt; prefetch", "<Link> prefetch"],
+    ["a\u0001b", "ab"],
+  ])("converts %j", (html, expected) => {
+    expect(htmlToLine(html)).toBe(expected);
+  });
+});
+
+describe("inlineHtmlToLine", () => {
+  it.each([
+    ["Newest <em>post</em> &amp; more", "Newest post & more"],
+    ["Why <canvas> matters", "Why <canvas> matters"],
+    ['<a href="/x">The</a> <dialog> <Strong>element</Strong>', "The <dialog> element"],
+    ["&lt;b&gt;literal&lt;/b&gt;", "<b>literal</b>"],
+    ["one<br/>two", "one two"],
+    ["<section>kept</section>", "<section>kept</section>"],
+  ])("converts %j", (html, expected) => {
+    expect(inlineHtmlToLine(html)).toBe(expected);
+  });
+});
+
+describe("plainTextToText", () => {
+  it("keeps markup literal and normalizes lines", () => {
+    expect(plainTextToText(" a &amp; <b>  c \r\n\r\n d ", 100)).toBe("a &amp; <b> c\nd");
+  });
+
+  it("cuts like an HTML body, keeping headings", () => {
+    const text = ["Intro", "x".repeat(100), "# Breaking Changes", "y".repeat(100)].join("\n");
+    const out = plainTextToText(text, 120);
+    // The preamble gives way to the heading and its section, as in htmlToText.
+    expect(out).toMatch(/^Intro\n# Breaking Changes\ny+…$/);
+    expect(Array.from(out).length).toBeLessThanOrEqual(120);
   });
 });

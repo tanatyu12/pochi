@@ -32,6 +32,9 @@ const CELL_TAG = /<\/?t[dh]\b[^>]*>/gi;
 // Only things shaped like tags, so "a < b" in prose survives.
 const TAG = /<\/?[a-z][a-z0-9-]*(?:\s[^<>]*)?\/?>|<[!?][^<>]*>/gi;
 const LEADING_TAG = /^\s*<(?:[a-z][a-z0-9-]*|!--)/i;
+// Formatting tags that RSS titles carry in CDATA. Any other tag-shaped text, such as
+// "<canvas>" in "Why <canvas> matters", is more likely an escaped tag name and stays.
+const INLINE_TAG = /<\/?(?:b|i|em|strong|u|s|strike|small|big|mark|sub|sup|span|font|a|abbr|cite|q|br)\b[^<>]*>/gi;
 
 const MARKDOWN_HEADING = /^#{1,6}\s+\S/;
 // WordPress appends this footer to every feed entry.
@@ -47,6 +50,26 @@ export function htmlToText(html: string, maxChars: number): string {
   // HTML. Unwrap one more level at most. Escaped tags next to real ones are literal text.
   if (!hasTag(raw) && LEADING_TAG.test(text)) text = toText(text);
   return fitLines(toLines(text), maxChars);
+}
+
+/** One line of plain text from HTML, without the double-escaping unwrap of htmlToText. */
+export function htmlToLine(html: string): string {
+  return oneLine(toText(html.replace(CONTROL_CHARS, "")));
+}
+
+/** One line of plain text from HTML whose only markup is formatting tags. */
+export function inlineHtmlToLine(html: string): string {
+  const stripped = html.replace(INLINE_TAG, (tag) => (/^<\/?br\b/i.test(tag) ? " " : ""));
+  return oneLine(decodeHTML(stripped).replace(CONTROL_CHARS, ""));
+}
+
+/** Literal text, normalized and cut like an HTML body. */
+export function plainTextToText(text: string, maxChars: number): string {
+  return fitLines(toLines(text.replace(CONTROL_CHARS, "")), maxChars);
+}
+
+function oneLine(text: string): string {
+  return text.replace(MARKER_CHARS, "").replace(/\s+/g, " ").trim();
 }
 
 // Cuts by code point so emoji and CJK are never split mid-character.

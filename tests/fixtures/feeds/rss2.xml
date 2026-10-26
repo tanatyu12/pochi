@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Example Blog</title>
+    <link>https://blog.example.com/</link>
+    <description>Posts</description>
+    <item>
+      <title>Older post</title>
+      <link>https://blog.example.com/older</link>
+      <guid>https://blog.example.com/?p=1</guid>
+      <pubDate>Mon, 19 Oct 2026 09:00:00 +0000</pubDate>
+      <description>&lt;p&gt;Older &amp;amp; wiser&lt;/p&gt;</description>
+    </item>
+    <item>
+      <title><![CDATA[Newest <em>post</em> &amp; more]]></title>
+      <link>/posts/newest?utm_source=rss</link>
+      <guid isPermaLink="false">post-3</guid>
+      <pubDate>Sat, 24 Oct 2026 12:30:00 +0900</pubDate>
+      <description>Short summary</description>
+      <content:encoded><![CDATA[<h2>Intro</h2><p>Full <b>body</b> text.</p>]]></content:encoded>
+    </item>
+    <item>
+      <title>Undated post</title>
+      <link>https://blog.example.com/undated</link>
+      <description>No date here</description>
+    </item>
+    <item>
+      <title>Dublin Core dated</title>
+      <link>https://blog.example.com/dc</link>
+      <dc:date>2026-10-22T08:00:00Z</dc:date>
+      <description>Dated by dc:date</description>
+    </item>
+    <item>
+      <guid>https://blog.example.com/permalink-only</guid>
+      <pubDate>Tue, 20 Oct 2026 09:00:00 +0000</pubDate>
+      <description>Untitled, linked by guid</description>
+    </item>
+    <item>
+      <title>No link at all</title>
+      <guid isPermaLink="false">orphan</guid>
+      <description>Cannot be linked</description>
+    </item>
+  </channel>
+</rss>

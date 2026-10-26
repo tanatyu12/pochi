@@ -116,7 +116,7 @@ id は feeds と queries を通して一意とし、feeds か queries のどち�
 
 | フィールド | 内容 |
 | --- | --- |
-| id | sha256 の先頭32桁。rss と github は sourceId ＋ guid（なければ正規化 URL、それもなければ title）から作る。Tavily は "tavily" ＋ 正規化 URL から作り、クエリをまたいで重複を除く |
+| id | sha256 の先頭32桁。rss と github は sourceId ＋ guid（なければ正規化 URL）から作る。リンクのない記事は捨てるので title は使わない。Tavily は "tavily" ＋ 正規化 URL から作り、クエリをまたいで重複を除く |
 | sourceId / sourceName / kind | 取得元（kind は rss / github / tavily） |
 | title | 300字まで |
 | url | 絶対 URL |
@@ -190,8 +190,11 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   5. 収まらなければ見出しを優先して切り詰める。見出し → 各節の1行目 → 2行目…の順に採用し、入りきらない段は残りの字数を均等に分ける。元の順序で連結し、最後の行が切り詰められていなければ末尾に改行と「…」を付ける。見出しがなければ先頭からコードポイント単位で切り詰める
   - 本文の抽出（Readability 方式）はしない。入力はページ全体ではなくフィードの本文で、Tavily は抽出済みのテキストを返す
 - **rss.ts**
-  - `parseFeedText` は feedsmith で RSS / Atom / RDF / JSON Feed を共通の RawEntry に変換する
-  - `toItems` は記事を日付の新しい順に並べ、最新 N 件を取る。相対リンクはフィードの URL を基準に解決する
+  - `parseFeedText` は feedsmith で RSS / Atom / RDF / JSON Feed を共通の RawEntry に変換する。feedsmith は XML のエンティティを1段デコードした値を返すので、本文は HTML（`html`）か文字どおりのテキスト（JSON Feed の content_text、Atom の type="text" と text/* の MIME）かを区別して持つ。Atom の type が html / xhtml / text/html / application/xhtml+xml なら HTML、それ以外の MIME（base64 など）は使えないものとして扱う。解析できなければ入力を含まない FeedParseError を投げる（「not a feed」または「malformed feed」）
+  - 本文は content:encoded → description（RSS / RDF）、content → summary（Atom。空白だけ、または使えない type の content は飛ばす）、content_html → content_text → summary（JSON Feed）の順に採る。日付は pubDate / published / date_published を優先し、なければ dc:date / updated / date_modified。Atom のリンクは rel="alternate"（rel なしを含む）のうち、メディアタイプ（; 以降の引数は無視）が text/html のものを優先する。alternate がなければリンクなしとする（self / enclosure などは記事のページではない）。RDF は rdf:about を guid にする。RSS で link がなければ、絶対 URL の permalink guid を使う
+  - タイトル：RSS / RDF は装飾タグ（b、em、strong、span、a、br など）だけを除いてからエンティティをデコードする。デコード後は CDATA のタグとエスケープされたタグ名を区別できないため、`<canvas>` のようなタグ名は残す。Atom は type に従い、html なら HTML として1段だけテキストにする（本文向けの二重エスケープ解除はしない）。JSON Feed と Atom の text はそのまま使う
+  - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、guid または正規化 URL が同じ記事は最も新しいものだけを残してから、最新 N 件を取る。plain text の本文も HTML の本文と同じ見出し優先の切り詰めを行う。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
+  - `fetchRssItems` は取得・解析・変換をまとめた薄い関数
 - **github.ts**
   - `verifyRepo` はまず releases.atom を取得する（404 なら「存在しない」）。0件なら tags.atom を試す
   - `isPrerelease` はタグ名の -alpha / -beta / -rc / -canary / -next / -preview / -nightly / -dev で判定する。プレリリースを除いてから件数を絞る
@@ -307,7 +310,7 @@ README に書く注意点：
 | T2 | M0 土台 | ユーティリティ（http、log と redact、pLimit、hash と normalizeUrl、time）と mockFetch | T1 | タイムアウト、サイズ上限、BOM、429・5xx・404 の扱い、redact、同時実行数上限のテスト | 完了 |
 | T3 | M0 土台 | 設定のスキーマ・読み込み・書き出しと example ファイル | T1 | example が検証を通る。環境変数がファイルより優先される。エラーに値が出ない | 完了 |
 | T4 | M1 情報収集 | html.ts | T1 | 二重エスケープ、絵文字や日本語での切り詰めを含むテスト | 完了 |
-| T5 | M1 情報収集 | rss.ts（feedsmith）。最初に feedsmith の API をフィクスチャで確かめる | T2, T4 | RSS2、Atom、RDF、JSON Feed、BOM、壊れた XML のフィクスチャ | 未着手 |
+| T5 | M1 情報収集 | rss.ts（feedsmith）。最初に feedsmith の API をフィクスチャで確かめる | T2, T4 | RSS2、Atom、RDF、JSON Feed、BOM、壊れた XML のフィクスチャ | 完了 |
 | T6 | M1 情報収集 | github.ts | T5 | verifyRepo の4パターン、プレリリース判定を表形式でテスト | 未着手 |
 | T7 | M1 情報収集 | discover.ts（T6・T8 と並行可） | T5 | 属性の順序、単引用符、大文字、base 要素、相対パス、代替パスを試す順序、URL 自体がフィードの場合 | 未着手 |
 | T8 | M1 情報収集 | tavily.ts（T6・T7 と並行可） | T2, T4 | リクエストの本文とヘッダーを検証。401 と 429 の扱い | 未着手 |
@@ -352,7 +355,7 @@ README に書く注意点：
 
 | リスク | 対応 |
 | --- | --- |
-| feedsmith が返すデータの形が想定と違う | T5 の最初にフィクスチャで確かめる |
+| feedsmith が返すデータの形が想定と違う | T5 で確認済み。tests/sources/rss.test.ts の特性テストで形を固定した |
 | zodOutputFormat が zod v4 に対応していない | T11 の最初に確かめる。対応していなければ JSON Schema を直接渡す |
 | CLIモードで structured_output が返らないことがある | T12 で実機確認し、result を解析する代替経路も用意する |
 | 状態ファイルの push が競合する | concurrency と pull --rebase で防ぐ |
