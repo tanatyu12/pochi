@@ -1,8 +1,9 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`buildSlackMessages > matches the payload for two findings 1`] = `
+exports[`buildSlackMessages > matches the payload for two insights 1`] = `
 [
   {
+    "fallback": [Function],
     "itemIds": [
       "id1",
       "id2",

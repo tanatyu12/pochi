@@ -21,11 +21,13 @@ export interface Item {
   content: string;
 }
 
-/** An item that passed Analyze, with the model's write-up (in the configured language). */
-export interface Finding {
+/** What the Analyze step said about a relevant item. */
+export interface Insight {
   item: Item;
   title: string;
+  /** May be empty when the model left it blank. */
   summary: string;
   impact: Impact;
+  /** May be empty when the model left it blank. */
   action: string;
 }
