@@ -231,10 +231,11 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 
 ### LLM（llm/, pipeline/）
 
-- **adapter.ts** `resolveLlm`：共通インターフェースは `LlmClient.generate<T>({system, prompt, schema, tier})`
-  - ANTHROPIC_API_KEY があれば APIモード
-  - なければ `claude --version` が成功するとき CLIモード
-  - どちらも使えなければ unavailable エラー（Windows は CLIモード非対応）
+- **adapter.ts** `resolveLlm(context.llm, { env?, platform?, spawn?, command?, signal? })` は `{ client, models, cliVersion? }` を返す。共通インターフェースは `LlmClient.generate<T>({system, prompt, schema, tier})`
+  - provider が auto のとき：ANTHROPIC_API_KEY（空白だけは未設定扱い）があれば APIモード、なければ `claude --version` が成功するとき CLIモード。どちらも使えなければ unavailable（Windows は CLIモード非対応で、claude を起動しない）
+  - provider が api でキーがなければ auth。provider が cli ならキーがあっても CLIモードとし、Windows や `claude --version` の失敗は unavailable
+  - モデル名は triageModel / analyzeModel、なければモードの既定（`DEFAULT_API_MODELS` / `DEFAULT_CLI_MODELS`）
+  - `claude --version` は shell: false、10秒でタイムアウト（SIGKILL）。終了コード0で何か出力したときだけ成功とし、その1行目（200字まで）を `cliVersion` として doctor に渡す
 - **api.ts**
   - `createApiLlm({ models, client? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
   - `messages.create` に `output_config.format`（`toJsonSchema` の JSON Schema。CLI と同じもの。schema ごとにキャッシュする）を渡し、`stop_reason` を確かめてから text ブロックを連結して JSON.parse し、zod で検証する。`zodOutputFormat` は zod v4 で動くが、`messages.parse` は stop_reason を見る前に全 text ブロックを解析して汎用の例外を投げるため、refusal や途中で切れた応答を区別できず使わない
@@ -257,12 +258,14 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - Triage では「迷ったら無関係」とし、本文は `truncate` で300字まで渡す。Analyze には、収集時に maxContentChars（既定2000）で切った本文をそのまま渡す。URL はエスケープせず、`parseHttpUrl` で正規化した href を渡す。記事や技術名が0件のときはリクエストを作らず、例外を投げる
   - リポジトリ候補は最大3件（`MAX_REPO_CANDIDATES`）、検索クエリの提案は最大5件（`MAX_QUERY_SUGGESTIONS`）とする。スキーマでは件数を制限しないので、呼び出し側（T19）がこの定数で切り詰める
   - Analyze の影響度の基準：High は今週対応が必要（破壊的変更、セキュリティ、非推奨化）、Medium は計画に入れる、Low は参考情報
-- **filter.ts** `filterAndAnalyze`
-  - Triage は40件ずつ順に実行し、関連する記事を Analyze に15件ずつ渡す
-  - 失敗したバッチは1回再試行し、それでも失敗した記事は未決とする
+- **filter.ts** `filterAndAnalyze(llm, context, items, { signal? })` は `{ insights, irrelevant, undecided, stats }` を返す。insights（`Insight`、types.ts）は通知する分、irrelevant は状態 i にする分、undecided は状態に記録せず翌日に再判定する分
+  - maxItemsPerRun を超えたら日付の新しい順（日付なしは後ろ）に上限まで採り、残りは未決とする
+  - Triage は maxItemsPerCall（既定40）件ずつ順に実行し、関連する記事を Analyze に15件ずつ渡す。0件なら LLM を呼ばない
+  - 回答の ID はバッチ内の短縮 ID で記事に戻す。未知の ID は破棄し、同じ ID は最初の回答だけを使う。回答のない記事は未決。Analyze の title が空なら記事のタイトルで補う
+  - 失敗したバッチ（LlmError）は1回再試行し、それでも失敗した記事は未決とする。auth と unavailable は再試行せず、以降のバッチ（Analyze を含む）も呼ばずに未決とする。中断は再試行せず signal の reason を投げ、LlmError 以外の例外はそのまま投げる
   - minImpact 未満の記事は状態 i として記録し、通知しない
-  - 並び順は影響度（High → Low）、同じ影響度なら日付の新しい順
-  - 全バッチが失敗したときだけ終了コード3にする
+  - 並び順は影響度（High → Low）、同じ影響度なら日付の新しい順（日付なしは後ろ）
+  - Triage か Analyze のどちらかで、その段の全バッチが失敗したときだけ LlmError（終了コード3、kind は最後の失敗のもの）を投げる。関連する記事が0件で Analyze のバッチがない場合は失敗としない
 
 ### 通知とコマンド
 
@@ -345,8 +348,8 @@ README に書く注意点：
 | T10 | M2 LLM | llm/schema と prompts | T3 | JSON Schema のスナップショット。記事に紛れ込ませた閉じタグで囲みを抜けられない | 完了 |
 | T11 | M2 LLM | api.ts（T12 と並行可）。最初に zodOutputFormat が zod v4 で動くか確かめる | T10 | 偽クライアントで成功・null・refusal・max_tokens・エラー変換を確認。リクエストに temperature と tool_choice が含まれない | 完了 |
 | T12 | M2 LLM | cli.ts と fakeSpawn（T11 と並行可） | T10 | 引数のスナップショット、stdin 経由、cwd が専用の一時ディレクトリ、shell なし、出力形式ごとのフィクスチャ、タイムアウト、10MB 上限。手元の claude で実際に1回呼ぶ | 完了 |
-| T13 | M2 LLM | adapter と pipeline/filter | T11, T12 | モード解決の全パターン、バッチ分割、短縮 ID の対応付け、一部失敗と全失敗、minImpact、並び順 | 未着手 |
-| T14 | M3 通知・状態 | state/store（M0 の直後から着手可） | T2 | 最終観測日を基準にした期限切れ削除、touch、壊れたファイルの退避、アトミックな書き込み、キーのソート || 完了 |
+| T13 | M2 LLM | adapter と pipeline/filter | T11, T12 | モード解決の全パターン、バッチ分割、短縮 ID の対応付け、一部失敗と全失敗、minImpact、並び順 | 完了 |
+| T14 | M3 通知・状態 | state/store（M0 の直後から着手可） | T2 | 最終観測日を基準にした期限切れ削除、touch、壊れたファイルの退避、アトミックな書き込み、キーのソート | 完了 |
 | T15 | M3 通知・状態 | notifiers/slack（M0 の直後から着手可） | T2 | エスケープ、100件を3メッセージに分割、ブロック数の上限、429 と 400 の扱い、一部成功時は届いた記事の ID だけを返す | 未着手 |
 | T16 | M3 通知・状態 | commands/run と各フラグ | T9, T13, T14, T15 | 正常系、dry-run、Slack 失敗で4、全ソース失敗で5、LLM なしなら取得前に3 | 未着手 |
 | T17 | M3 通知・状態 | commands/doctor（T16 と並行可） | T3, T9, T13 | 出力に秘密情報が含まれないことをテストで確認 | 未着手 |
