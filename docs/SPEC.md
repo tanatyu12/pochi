@@ -117,6 +117,7 @@ id は feeds と queries を通して一意とし、feeds か queries のどち�
 | フィールド | 内容 |
 | --- | --- |
 | id | sha256 の先頭32桁。rss と github は sourceId ＋ guid（なければ正規化 URL）から作る。リンクのない記事は捨てるので title は使わない。Tavily は "tavily" ＋ 正規化 URL から作り、クエリをまたいで重複を除く |
+| urlKey | "url" ＋ 正規化 URL の sha256 の先頭32桁。どのソースから来ても同じページなら同じ値になる |
 | sourceId / sourceName / kind | 取得元（kind は rss / github / tavily） |
 | title | 300字まで |
 | url | 絶対 URL |
@@ -132,6 +133,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
   "entries": { "<id>": { "s": "n", "f": "2026-10-20", "l": "2026-10-25" } } }
 ```
 
+- キーは記事の `stateKeys(item)`（id と urlKey）。どれか1つでも entries にあれば既知とみなし、l の更新や状態の記録は全キーに対して行う。id だけで引くと、収集時に URL の重複として落とした側や、別の日に別のソースから来た同じページが再通知される
 - s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）
 - f は初めて見た日、l は最後にフィード上で見た日
 - 古いエントリは l を基準に ttlDays で削除する。更新の止まったブログの記事はフィードに残り続けるため、通知日を基準にすると期限後に再通知されてしまう
@@ -218,7 +220,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 - **index.ts** `collectAll(sources, { signal?, concurrency? })` は `{ items, attempted, failures, skipped }` を返す
   - 同時実行は4件まで。ソースごとに try/catch し、失敗（sourceId・sourceName・kind・error）を記録して warn を出し、次に進む。例外は投げない
   - TAVILY_API_KEY がなければ queries を取得せず、`skipped` に id を入れて info を1回出す。スキップした分は `attempted` に数えない
-  - 結果は完了順ではなく設定の順（feeds → queries）に並べ、id と正規化 URL で重複を除く。先に出た記事（フィードの記事と Tavily の同じ URL ならフィード側）を残す
+  - 結果は完了順ではなく設定の順（feeds → queries）に並べ、id と urlKey で重複を除く。先に出た記事（フィードの記事と Tavily の同じ URL ならフィード側）を残す
   - signal で中断されたら失敗として記録せず、その reason を投げる（「全ソースの失敗」と区別するため）
   - 終了コードは決めない。全ソースの失敗（5）の判定は commands/run が `attempted` と `failures` から行う
   - `fetchSource` は1ソースを kind に応じて rss / github / tavily に振り分ける（doctor --fetch 向け）
@@ -264,7 +266,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   3. LLM を解決する（失敗すれば3）。手順2と3は記事の取得や LLM の課金より前に済ませる
   4. 状態ファイルを読み、期限切れのエントリを削除する
   5. 記事を収集する（全ソースが失敗すれば5）
-  6. 既知の記事は最終観測日 l だけ更新する。新規で maxItemAgeDays より古い記事は状態 i にする
+  6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。新規で maxItemAgeDays より古い記事は状態 i にする
   7. Triage と Analyze を実行する
   8. Slack に送る。dry-run のときは stdout に出し、状態は書かない
   9. 状態を保存する（Slack への送信が失敗していれば4）

@@ -11,6 +11,11 @@ export function itemId(...parts: string[]): string {
   return sha256Hex(parts.join("\u0000")).slice(0, 32);
 }
 
+/** Takes a URL already passed through normalizeUrl. */
+export function urlKey(normalized: string): string {
+  return itemId("url", normalized);
+}
+
 export function parseHttpUrl(raw: string, base?: string | URL): URL | undefined {
   let url: URL;
   try {

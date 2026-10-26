@@ -11,6 +11,8 @@ export interface Item {
   title: string;
   /** Absolute http(s) URL. */
   url: string;
+  /** Hash of the normalized URL: the same page has the same key whichever source returned it. */
+  urlKey: string;
   /** ISO 8601. */
   publishedAt?: string;
   /** Plain text, at most maxContentChars. */

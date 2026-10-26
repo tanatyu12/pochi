@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RssFeed, Sources } from "../../src/config/schema.js";
-import { collectAll, fetchSource } from "../../src/sources/index.js";
+import { collectAll, fetchSource, stateKeys } from "../../src/sources/index.js";
+import { urlKey } from "../../src/util/hash.js";
 import { HttpError } from "../../src/util/http.js";
 import { configureLog, resetLog } from "../../src/util/log.js";
 import { mockFetch, reply, type Reply } from "../helpers/mockFetch.js";
@@ -98,6 +99,21 @@ describe("collectAll", () => {
       ["rss", "https://news.example.com/x"],
       ["tavily", "https://news.example.com/z"],
     ]);
+  });
+
+  it("keys the kept item by the URL the dropped copy shares, so the state file covers both", async () => {
+    mockFetch({
+      [feedUrl("a")]: rss("https://news.example.com/x"),
+      [SEARCH]: tavily("https://news.example.com/x?utm_source=tavily"),
+    });
+    const [kept] = (await collectAll(config(["a"], ["q1"]))).items;
+
+    // A later run where only Tavily returns the page finds this key in the state file.
+    const [later] = (await collectAll(config([], ["q1"]))).items;
+    expect(later!.kind).toBe("tavily");
+    expect(later!.urlKey).toBe(urlKey("https://news.example.com/x"));
+    expect(stateKeys(kept!)).toContain(later!.urlKey);
+    expect(stateKeys(kept!)).toEqual([kept!.id, later!.urlKey]);
   });
 
   it("does not call Tavily without a key, and does not count the queries as attempted", async () => {

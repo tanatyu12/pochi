@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QueryConfig } from "../../src/config/schema.js";
 import { FeedParseError } from "../../src/sources/rss.js";
 import { fetchTavilyItems, tavilyApiKey } from "../../src/sources/tavily.js";
-import { itemId } from "../../src/util/hash.js";
+import { itemId, urlKey } from "../../src/util/hash.js";
 import { HttpError } from "../../src/util/http.js";
 import { resetLog } from "../../src/util/log.js";
 import { mockFetch, reply } from "../helpers/mockFetch.js";
@@ -91,6 +91,7 @@ describe("fetchTavilyItems", () => {
       kind: "tavily",
       title: "Qwen 4 released with 1M context",
       url: "https://example.com/news/qwen-4?utm_source=tavily",
+      urlKey: urlKey("https://example.com/news/qwen-4"),
       publishedAt: "2026-10-20T08:00:00.000Z",
       content: "Alibaba released Qwen 4 today.",
     });

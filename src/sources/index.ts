@@ -1,7 +1,6 @@
 import type { GithubFeed, QueryConfig, RssFeed, Sources } from "../config/schema.js";
 import type { Item, SourceKind } from "../types.js";
 import { pLimit } from "../util/concurrency.js";
-import { normalizeUrl } from "../util/hash.js";
 import { log } from "../util/log.js";
 import { fetchGithubItems } from "./github.js";
 import { fetchRssItems } from "./rss.js";
@@ -101,16 +100,18 @@ export async function collectAll(sources: Sources, opts: CollectOptions = {}): P
   };
 }
 
+/** Every key the state file should know this item by, so a page is not notified twice. */
+export function stateKeys(item: Item): string[] {
+  return item.id === item.urlKey ? [item.id] : [item.id, item.urlKey];
+}
+
 // Sources dedupe within themselves; across them, the same page can come from a feed and a
 // Tavily query under different ids, so the URL is checked too.
 function dedupe(items: Item[]): Item[] {
-  const ids = new Set<string>();
-  const urls = new Set<string>();
+  const keys = new Set<string>();
   return items.filter((item) => {
-    const url = normalizeUrl(item.url) ?? item.url;
-    if (ids.has(item.id) || urls.has(url)) return false;
-    ids.add(item.id);
-    urls.add(url);
+    if (keys.has(item.id) || keys.has(item.urlKey)) return false;
+    keys.add(item.id).add(item.urlKey);
     return true;
   });
 }
