@@ -119,6 +119,11 @@ export function statusOf(state: State, keys: readonly string[]): EntryStatus | u
   return strongest(existing(state, keys).map((e) => e.s));
 }
 
+/** The earliest day any of the keys was first seen, or undefined for an item the state does not know. */
+export function firstSeen(state: State, keys: readonly string[]): string | undefined {
+  return existing(state, keys).reduce<string | undefined>((min, e) => (min === undefined || e.f < min ? e.f : min), undefined);
+}
+
 /**
  * Marks a known item as seen today under every key. Keys the state lacks (a page first seen under
  * another source) inherit the known entry, so the next run finds it by any of them.

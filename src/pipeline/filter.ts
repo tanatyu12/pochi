@@ -91,8 +91,10 @@ export async function filterAndAnalyze(
   const byNewest = newestFirst([...items, ...pretriaged]);
 
   // maxItemsPerRun covers both: pretriaged items first (their triage is paid for), then new ones.
+  // Up to half is kept for new items, so a backlog of pretriaged ones cannot starve them.
   const limit = context.llm.maxItemsPerRun;
-  const [analyzeFirst, overPretriaged] = newestUpTo(pretriaged, limit, byNewest);
+  const reserved = Math.min(items.length, Math.floor(limit / 2));
+  const [analyzeFirst, overPretriaged] = newestUpTo(pretriaged, limit - reserved, byNewest);
   const [selected, overNew] = newestUpTo(items, limit - analyzeFirst.length, byNewest);
   result.pending.push(...overPretriaged);
   result.undecided.push(...overNew);

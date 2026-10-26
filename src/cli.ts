@@ -1,18 +1,43 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
+import { runCommand } from "./commands/run.js";
 import { ExitCode, PochiError, exitCodeOf } from "./errors.js";
+import { redact } from "./util/log.js";
 import { VERSION } from "./version.js";
 
-export function createProgram(): Command {
-  return new Command()
+export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
+  const program = new Command()
     .name("pochi")
     .description("Daily tech briefing for your project, delivered to Slack")
-    .version(VERSION);
+    .version(VERSION)
+    // Before .command(): subcommands copy the parent's settings when they are created.
+    .exitOverride();
+  program
+    .command("run")
+    .description("Collect, filter and post today's briefing")
+    .option("--dry-run", "print the briefing instead of posting it, and leave the state file as is")
+    .option("--state <path>", "state file (default: $POCHI_STATE_PATH or state/notified.json)")
+    .option("--no-state", "neither read nor write a state file")
+    .option("--json", "print the result as JSON on stdout")
+    .option("--config-dir <dir>", "directory with context.yml and sources.yml", "config")
+    .option("--verbose", "log debug messages")
+    .option("--quiet", "log only warnings and errors")
+    .action((o) => runCommand(o, { signal: opts.signal }));
+  return program;
 }
 
 export async function main(argv: readonly string[] = process.argv): Promise<number> {
-  const program = createProgram().exitOverride();
+  // The first Ctrl-C lets the run record what it already paid for; a second one does not wait.
+  // SIGTERM only asks: cancelling an Actions run sends it after SIGINT, and SIGKILL follows anyway.
+  const controller = new AbortController();
+  const onSigint = () => {
+    if (controller.signal.aborted) process.exit(ExitCode.INTERRUPTED);
+    controller.abort();
+  };
+  const onSigterm = () => controller.abort();
+  process.on("SIGINT", onSigint).on("SIGTERM", onSigterm);
+  const program = createProgram({ signal: controller.signal });
   try {
     await program.parseAsync(argv);
     return ExitCode.OK;
@@ -23,8 +48,10 @@ export async function main(argv: readonly string[] = process.argv): Promise<numb
       if (err.exitCode === 0) return ExitCode.OK;
       return err.exitCode === 1 ? ExitCode.CONFIG : err.exitCode;
     }
-    process.stderr.write(formatError(err));
+    process.stderr.write(redact(formatError(err)));
     return exitCodeOf(err);
+  } finally {
+    process.off("SIGINT", onSigint).off("SIGTERM", onSigterm);
   }
 }
 

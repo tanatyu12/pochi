@@ -134,7 +134,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 ```
 
 - キーは記事の `stateKeys(item)`（id と urlKey）。どれか1つでも entries にあれば既知とみなし、l の更新や状態の記録は全キーに対して行う。id だけで引くと、収集時に URL の重複として落とした側や、別の日に別のソースから来た同じページが再通知される
-- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
+- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う。初めて見てから maxItemAgeDays を過ぎても r のままなら i にして打ち切る。touch で l が更新され続けて期限切れにならず、Slack に拒否され続ける記事を毎日解析し直してしまうため）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
 - f は初めて見た日、l は最後にフィード上で見た日
 - 古いエントリは l を基準に ttlDays で削除する。更新の止まったブログの記事はフィードに残り続けるため、通知日を基準にすると期限後に再通知されてしまう
 - キーはソートし、1エントリ1行で書く（毎日のコミットの差分を変わったエントリだけにするため）。一時ファイルに書いてから rename する
@@ -262,7 +262,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - Analyze の影響度の基準：High は今週対応が必要（破壊的変更、セキュリティ、非推奨化）、Medium は計画に入れる、Low は参考情報
 - **filter.ts** `filterAndAnalyze(llm, context, items, { signal?, retryDelayMs?, pretriaged? })` は `{ insights, irrelevant, undecided, pending, stats, error?, aborted }` を返す。insights（`Insight`、types.ts）は通知する分、irrelevant は状態 i にする分、undecided は状態に記録せず翌日に Triage からやり直す分、pending は状態 r にする分（関連ありで Analyze が済んでいない）
   - pretriaged には状態 r の既知の記事を渡す。Triage を飛ばして Analyze に回す
-  - maxItemsPerRun は pretriaged と新しい記事を合わせた上限。先に pretriaged を、残りの枠に新しい記事を、それぞれ日付の新しい順（日付なしは後ろ）に採る。あふれた pretriaged は pending（r のまま）、あふれた新しい記事は未決とする
+  - maxItemsPerRun は pretriaged と新しい記事を合わせた上限。先に pretriaged を、残りの枠に新しい記事を、それぞれ日付の新しい順（日付なしは後ろ）に採る。ただし新しい記事のために枠の半分（切り捨て。新しい記事がそれより少なければその件数）を残し、溜まった r が新しい記事を締め出さないようにする。あふれた pretriaged は pending（r のまま）、あふれた新しい記事は未決とする
   - Triage は maxItemsPerCall（既定40）件ずつ、関連する記事と pretriaged を Analyze に15件ずつ渡す。どちらも0件なら LLM を呼ばない。バッチは1つずつ順に送る（同時に送ると、止める判定や連続失敗の数え方が実行順に左右されるため）。止まった後や中断の後は、残りのバッチを送らない
   - 回答の ID はバッチ内の短縮 ID で記事に戻す。未知の ID は破棄し、同じ ID は最初の回答だけを使う。回答のない記事は、Triage なら未決、Analyze なら pending。バッチの記事のどれにも合う ID がない回答は invalid_output として扱う。Analyze の title が空なら記事のタイトルで補う
   - 一時的な失敗（rate_limit / timeout / transport）のバッチは `RETRY_DELAY_MS`（10秒）待ってから1回再試行する（SDK と claude は自前で再試行済みなので、間を空けないと同じ制限に当たる）。再試行しても rate_limit なら、制限はすぐには解けない（CLIモードではサブスクリプションの利用上限）ので、auth と同じく以降を止める
@@ -288,16 +288,20 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 2xx が返ったメッセージに含まれる記事だけを通知済みにする
   - ラベルは英語固定、LLM が生成する文は language に従う
 - **commands/run.ts**
-  1. 設定を読む（失敗すれば終了コード2）
-  2. dry-run でなければ SLACK_WEBHOOK_URL を確認する（なければ2）。feeds が空で queries があり、TAVILY_API_KEY がなければ2（取得するソースがない）
+  1. 設定を読む（失敗すれば終了コード2。`--verbose` と `--quiet` の併用も2）
+  2. dry-run でなければ SLACK_WEBHOOK_URL を確認する（空白だけは未設定扱い。なければ2）。feeds が空で queries があり、TAVILY_API_KEY がなければ2（取得するソースがない）
   3. LLM を解決する（失敗すれば3）。手順2と3は記事の取得や LLM の課金より前に済ませる
-  4. 状態ファイルを読み、期限切れのエントリを削除する
+  4. 状態ファイルを読み、期限切れのエントリを削除する。dry-run では `readOnly` で読む（壊れたファイルを退避しない）。`--no-state` なら読まずに空の状態から始め、保存もしない
   5. 記事を収集する（全ソースが失敗すれば5）
-  6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が r の記事は除外せず、`pretriaged` として手順7に渡す。新規で maxItemAgeDays より古い記事は状態 i にする
+  6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が r の記事は除外せず、`pretriaged` として手順7に渡す。ただし r のうち初めて見た日（全キーの f の最小値、`firstSeen`）から maxItemAgeDays を超えたものは渡さず、状態 i にして打ち切る。新規で maxItemAgeDays より古い記事は状態 i にする（日付のない記事は新しいものとして扱う）
   7. Triage と Analyze を実行する（状態 r の記事は `pretriaged` として渡す）。結果が `aborted` なら Slack には送らず、irrelevant を i、pending と insights を r として記録して保存し、130 で終える
-  8. Slack に送る（filter の結果に error があっても送る）。dry-run のときは stdout に出し、状態は書かない
-  9. 状態を保存する（Slack への送信が失敗していれば4）。irrelevant は i、pending は r、届いた insights は n として記録する。filter の結果に error があれば、保存した後に投げる（3）。送信にも失敗していれば 3 を優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
-  - フラグ：`--dry-run`、`--state`、`--no-state`、`--json`、`--config-dir`、`--verbose`、`--quiet`
+  8. Slack に送る（filter の結果に error があっても送る）。dry-run のときは stdout に出し、状態は書かない（filter の error があれば出力後に3）
+  9. 状態を保存する。irrelevant は i、pending は r、届いた insights は n、届かなかった insights は r（翌日は Triage を払い直さずに Analyze から送り直す）として記録する。保存に失敗すれば1（送信済みの記事が翌日また届くため、ほかの失敗より優先する）。保存の後、Slack の送信が中断されていれば130、filter の結果に error があれば3、送信に失敗していれば4。3 を 4 より優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
+  - 収集中や LLM の解決中に中断されたら（signal の reason が投げられる）130 にする
+  - フラグ：`--dry-run`、`--state <path>`、`--no-state`、`--json`、`--config-dir <dir>`（既定 config）、`--verbose`、`--quiet`
+  - stdout：dry-run では人が読むテキスト（見出し、insight ごとに `[影響度] title`・URL・要約・Action・ソース名、最後に収集件数と失敗したソース）。`--json` では1つの JSON（date、dryRun、collected、attempted、failedSources、stats、insights、dry-run なら Slack に送るはずだった `messages`、送信したなら `delivered`、filter の error があれば kind と message）。ログは常に stderr
+  - テストのために `runCommand(opts, deps)` の deps で now・signal・stdout・resolveLlm・待ち時間を差し替えられる
+  - cli.ts は SIGINT / SIGTERM で AbortController を中断する（判定済みの分を保存してから130）。2回目の SIGINT ではすぐに130で終える。SIGTERM は何度来ても中断を求めるだけで、すぐには終えない（Actions のキャンセルは SIGINT の後に SIGTERM を送るので、保存を打ち切らないため。待てなければ SIGKILL が来る）。エラーの表示も `redact()` に通す
 - **commands/doctor.ts**：設定の読込元と妥当性、LLMモードとモデル、環境変数の有無（値は表示しない）、状態ファイルの件数を表示する。`--fetch` を付けると各ソースの最新タイトルも表示する
 - **commands/init.ts**（端末での対話が必要。Ctrl-C で終了コード130とし、何も書かない）
   1. プロジェクト名、説明、課題（複数）、除外ルール、言語を対話で聞く
@@ -363,7 +367,7 @@ README に書く注意点：
 | T13 | M2 LLM | adapter と pipeline/filter | T11, T12 | モード解決の全パターン、バッチ分割、短縮 ID の対応付け、一部失敗と全失敗、minImpact、並び順 | 完了 |
 | T14 | M3 通知・状態 | state/store（M0 の直後から着手可） | T2 | 最終観測日を基準にした期限切れ削除、touch、壊れたファイルの退避、アトミックな書き込み、キーのソート | 完了 |
 | T15 | M3 通知・状態 | notifiers/slack（M0 の直後から着手可） | T2 | エスケープ、100件を3メッセージに分割、ブロック数の上限、429 と 400 の扱い、一部成功時は届いた記事の ID だけを返す | 完了 |
-| T16 | M3 通知・状態 | commands/run と各フラグ | T9, T13, T14, T15 | 正常系、dry-run、Slack 失敗で4、全ソース失敗で5、LLM なしなら取得前に3 | 未着手 |
+| T16 | M3 通知・状態 | commands/run と各フラグ | T9, T13, T14, T15 | 正常系、dry-run、Slack 失敗で4、全ソース失敗で5、LLM なしなら取得前に3 | 完了 |
 | T17 | M3 通知・状態 | commands/doctor（T16 と並行可） | T3, T9, T13 | 出力に秘密情報が含まれないことをテストで確認 | 未着手 |
 | T18 | M4 init | init の対話と設定の書き出し（プロンプト関数を差し替え可能にする） | T3 | 端末でなければ2、キャンセルなら130で何も書かない。書いた設定を読み戻せる。権限600、.gitignore | 未着手 |
 | T19 | M4 init | init のソース特定と Trial Fetch | T18, T6, T7, T8, T13 | 存在を確認できないリポジトリは提示しない。owner/repo は LLM を通さない。LLM なしでも完了する。複数フィードは選ばせる。却下されたソースは除外する | 未着手 |

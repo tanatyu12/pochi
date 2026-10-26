@@ -20,8 +20,28 @@ describe("cli", () => {
     try {
       expect(await main(["node", "pochi", "--version"])).toBe(0);
       expect(await main(["node", "pochi", "--no-such-option"])).toBe(2);
+      expect(await main(["node", "pochi", "run", "--no-such-option"])).toBe(2);
+      expect(await main(["node", "pochi", "run", "--help"])).toBe(0);
+      expect(process.listenerCount("SIGINT")).toBe(0);
     } finally {
       stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it("exits at once on a second SIGINT, but not on a SIGTERM after a SIGINT", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const done = main(["node", "pochi", "run", "--config-dir", "/nonexistent/pochi-config"]);
+      process.emit("SIGINT");
+      process.emit("SIGTERM");
+      expect(exit).not.toHaveBeenCalled();
+      process.emit("SIGINT");
+      expect(exit).toHaveBeenCalledWith(130);
+      await done;
+    } finally {
+      exit.mockRestore();
       stderr.mockRestore();
     }
   });
