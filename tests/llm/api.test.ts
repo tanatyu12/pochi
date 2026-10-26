@@ -192,7 +192,7 @@ describe("createApiLlm", () => {
     [529, "overloaded_error", "transport"],
     [408, "timeout_error", "timeout"],
     [409, "conflict_error", "transport"],
-    [400, "invalid_request_error", "unavailable"],
+    [400, "invalid_request_error", "bad_request"],
     [404, "not_found_error", "unavailable"],
     [413, "request_too_large", "too_large"],
   ] as const)("turns HTTP %i into %s", async (status, type, kind) => {

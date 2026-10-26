@@ -60,13 +60,14 @@ export function buildCliArgs(req: GenerateRequest<unknown>, model: string): stri
 }
 
 /**
- * The environment claude runs with. Without ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN, so claude
- * uses its own login rather than billing the API account the user chose not to use. Bedrock,
- * Vertex and ANTHROPIC_BASE_URL settings stay: those are set up for claude on purpose.
+ * The environment claude runs with. Without ANTHROPIC_API_KEY, and without ANTHROPIC_AUTH_TOKEN
+ * unless ANTHROPIC_BASE_URL is set, so claude uses its own login rather than billing the API
+ * account the user chose not to use. With a gateway (ANTHROPIC_BASE_URL), the token is how claude
+ * signs in, so it stays, as do Bedrock and Vertex settings: those are set up for claude on purpose.
  */
 export function cliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const { ANTHROPIC_API_KEY: _key, ANTHROPIC_AUTH_TOKEN: _token, ...rest } = env;
-  return rest;
+  const { ANTHROPIC_API_KEY: _key, ANTHROPIC_AUTH_TOKEN: token, ...rest } = env;
+  return env.ANTHROPIC_BASE_URL?.trim() && token !== undefined ? { ...rest, ANTHROPIC_AUTH_TOKEN: token } : rest;
 }
 
 /** The model names are already resolved (config over DEFAULT_CLI_MODELS) by the adapter. */
@@ -317,6 +318,7 @@ const STATUS_MESSAGES: Record<StatusKind, string> = {
   transport: "Claude is unavailable",
   unavailable: "claude rejected the request",
   too_large: "the request is too large for Claude",
+  bad_request: "Claude rejected the request as invalid",
 };
 
 // claude's reply when it has no credentials at all. It sends no request, so there is no status.

@@ -70,7 +70,7 @@ export function validateReply<T>(value: unknown, schema: z.ZodType<T>, where: st
 
 export type StatusKind = Extract<
   LlmErrorKind,
-  "auth" | "rate_limit" | "timeout" | "transport" | "unavailable" | "too_large"
+  "auth" | "rate_limit" | "timeout" | "transport" | "unavailable" | "too_large" | "bad_request"
 >;
 
 /** The kind for an HTTP status from the Anthropic API, in both modes. */
@@ -82,7 +82,10 @@ export function statusKind(status: number | undefined): StatusKind {
   // 408 / 409 and 5xx are transient: the SDK and claude have already retried them.
   if (status === 408) return "timeout";
   if (status === 409 || (status !== undefined && status >= 500)) return "transport";
-  // 400 / 404 and the rest: usually a model name that is not known, which retrying will not fix.
+  // A 400 can come from one item's content, so the batch is split; a configuration error shows up
+  // as every part failing, which stops the run then.
+  if (status === 400) return "bad_request";
+  // 404 and the rest: usually a model name that is not known, which retrying will not fix.
   return "unavailable";
 }
 
@@ -109,6 +112,7 @@ export type LlmErrorKind =
   | "refusal"
   | "max_tokens"
   | "too_large"
+  | "bad_request"
   | "invalid_output";
 
 /** Messages never include the prompt or the model's output, since both carry fetched text. */

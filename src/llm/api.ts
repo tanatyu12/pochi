@@ -99,6 +99,7 @@ const STATUS_MESSAGES: Record<StatusKind, string> = {
   transport: "Anthropic API is unavailable",
   unavailable: "Anthropic API rejected the request",
   too_large: "Anthropic API rejected the request as too large",
+  bad_request: "Anthropic API rejected the request as invalid",
 };
 
 // The 400 for an input over the context window. Matched only, never quoted: the text is the body.

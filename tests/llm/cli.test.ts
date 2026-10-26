@@ -134,19 +134,29 @@ describe("createCliLlm", () => {
     expect(args[args.indexOf("--model") + 1]).toBe(model);
   });
 
-  it("runs claude without ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN from the environment", async () => {
+  it("keeps ANTHROPIC_AUTH_TOKEN for a gateway set in ANTHROPIC_BASE_URL, but never the API key", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-from-env");
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "token-from-env");
     vi.stubEnv("ANTHROPIC_BASE_URL", "https://proxy.example.com");
+    const { spawn, calls } = fakeSpawn(run.fixture("structured.json"));
+    await llm(spawn).generate(request);
+    expect(calls[0]?.options.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(calls[0]?.options.env).toMatchObject({
+      ANTHROPIC_AUTH_TOKEN: "token-from-env",
+      ANTHROPIC_BASE_URL: "https://proxy.example.com",
+    });
+  });
+
+  it("runs claude without ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN when there is no gateway", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-from-env");
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "token-from-env");
+    vi.stubEnv("ANTHROPIC_BASE_URL", " ");
     vi.stubEnv("POCHI_TEST_VAR", "kept");
     const { spawn, calls } = fakeSpawn(run.fixture("structured.json"));
     await llm(spawn).generate(request);
     expect(calls[0]?.options.env).not.toHaveProperty("ANTHROPIC_API_KEY");
     expect(calls[0]?.options.env).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
-    expect(calls[0]?.options.env).toMatchObject({
-      POCHI_TEST_VAR: "kept",
-      ANTHROPIC_BASE_URL: "https://proxy.example.com",
-    });
+    expect(calls[0]?.options.env).toMatchObject({ POCHI_TEST_VAR: "kept" });
   });
 
   it("uses the resolved model names and command it was given", async () => {
@@ -198,6 +208,7 @@ describe("createCliLlm", () => {
   });
 
   it.each([
+    [400, "bad_request"],
     [408, "timeout"],
     [409, "transport"],
   ] as const)("turns HTTP %i into %s", async (status, kind) => {
@@ -251,7 +262,7 @@ describe("createCliLlm", () => {
 
   it("keeps claude's own error text out of the message", async () => {
     const { spawn } = fakeSpawn(run.exit(envelope({ is_error: true, api_error_status: 400, result: SECRET }), { code: 1 }));
-    await expectLlmError(llm(spawn).generate(request), "unavailable");
+    await expectLlmError(llm(spawn).generate(request), "bad_request");
   });
 
   it("reports a failed run with unreadable output as a transport error, logging stderr only in debug", async () => {
