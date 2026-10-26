@@ -60,11 +60,12 @@ export function buildCliArgs(req: GenerateRequest<unknown>, model: string): stri
 }
 
 /**
- * The environment claude runs with. Without ANTHROPIC_API_KEY, so claude uses its own login rather
- * than billing the API account the user chose not to use.
+ * The environment claude runs with. Without ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN, so claude
+ * uses its own login rather than billing the API account the user chose not to use. Bedrock,
+ * Vertex and ANTHROPIC_BASE_URL settings stay: those are set up for claude on purpose.
  */
 export function cliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const { ANTHROPIC_API_KEY: _key, ...rest } = env;
+  const { ANTHROPIC_API_KEY: _key, ANTHROPIC_AUTH_TOKEN: _token, ...rest } = env;
   return rest;
 }
 
@@ -315,12 +316,19 @@ const STATUS_MESSAGES: Record<StatusKind, string> = {
   timeout: "Claude timed out",
   transport: "Claude is unavailable",
   unavailable: "claude rejected the request",
+  too_large: "the request is too large for Claude",
 };
 
 // claude's reply when it has no credentials at all. It sends no request, so there is no status.
 const NOT_LOGGED_IN = /not logged in|\/login\b/i;
+// claude's reply when the input is over the context window, with or without a status.
+const PROMPT_TOO_LONG = /prompt is too long/i;
 
 function errorFromEnvelope(envelope: Envelope, model: string): LlmError {
+  // result is only matched here, never quoted.
+  if (PROMPT_TOO_LONG.test(envelope.result ?? "")) {
+    return new LlmError("too_large", `${STATUS_MESSAGES.too_large} (${model})`);
+  }
   const status = envelope.api_error_status;
   if (status != null) {
     const kind = statusKind(status);
@@ -329,7 +337,6 @@ function errorFromEnvelope(envelope: Envelope, model: string): LlmError {
   if (envelope.subtype === "error_max_structured_output_retries") {
     return new LlmError("invalid_output", `Claude kept failing the output schema (${model})`);
   }
-  // result is only matched here, never quoted.
   if (NOT_LOGGED_IN.test(envelope.result ?? "")) {
     return new LlmError("auth", `claude is not logged in; run claude and then /login (${model})`);
   }
@@ -337,9 +344,10 @@ function errorFromEnvelope(envelope: Envelope, model: string): LlmError {
   if (envelope.terminal_reason === "api_error") {
     return new LlmError("transport", `claude could not reach the Anthropic API (${model})`);
   }
-  // subtype stays "success" on most errors, so terminal_reason says more.
+  // subtype stays "success" on most errors, so terminal_reason says more. Not known to be
+  // permanent, so it is retried rather than stopping the run.
   const reason = envelope.terminal_reason ?? envelope.subtype;
-  return new LlmError("unavailable", `claude reported an error: ${reason} (${model})`);
+  return new LlmError("transport", `claude reported an error: ${reason} (${model})`);
 }
 
 // CSI sequences (colours, cursor moves) and OSC sequences (titles, hyperlinks).

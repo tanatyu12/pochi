@@ -134,13 +134,19 @@ describe("createCliLlm", () => {
     expect(args[args.indexOf("--model") + 1]).toBe(model);
   });
 
-  it("runs claude without ANTHROPIC_API_KEY from the environment", async () => {
+  it("runs claude without ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN from the environment", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-from-env");
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "token-from-env");
+    vi.stubEnv("ANTHROPIC_BASE_URL", "https://proxy.example.com");
     vi.stubEnv("POCHI_TEST_VAR", "kept");
     const { spawn, calls } = fakeSpawn(run.fixture("structured.json"));
     await llm(spawn).generate(request);
     expect(calls[0]?.options.env).not.toHaveProperty("ANTHROPIC_API_KEY");
-    expect(calls[0]?.options.env).toMatchObject({ POCHI_TEST_VAR: "kept" });
+    expect(calls[0]?.options.env).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
+    expect(calls[0]?.options.env).toMatchObject({
+      POCHI_TEST_VAR: "kept",
+      ANTHROPIC_BASE_URL: "https://proxy.example.com",
+    });
   });
 
   it("uses the resolved model names and command it was given", async () => {
@@ -200,13 +206,21 @@ describe("createCliLlm", () => {
     expect(err.message).toContain(`HTTP ${status}`);
   });
 
-  it("reports an error without a status by its terminal_reason, not as a transport error", async () => {
+  it.each([400, null])("turns a prompt over the context window into too_large (status %s)", async (status) => {
+    const { spawn } = fakeSpawn(
+      run.exit(envelope({ is_error: true, api_error_status: status, result: "Prompt is too long" }), { code: 1 }),
+    );
+    const err = await expectLlmError(llm(spawn).generate(request), "too_large");
+    expect(err.message).toContain("haiku");
+  });
+
+  it("reports an unexplained error by its terminal_reason, as a transport error that is retried", async () => {
     const { spawn } = fakeSpawn(
       run.exit(envelope({ is_error: true, api_error_status: null, terminal_reason: "budget", result: SECRET }), {
         code: 1,
       }),
     );
-    const err = await expectLlmError(llm(spawn).generate(request), "unavailable");
+    const err = await expectLlmError(llm(spawn).generate(request), "transport");
     expect(err.message).toContain("budget");
     expect(err.message).not.toContain("success");
   });

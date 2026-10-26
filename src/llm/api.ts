@@ -98,7 +98,11 @@ const STATUS_MESSAGES: Record<StatusKind, string> = {
   timeout: "Anthropic API timed out",
   transport: "Anthropic API is unavailable",
   unavailable: "Anthropic API rejected the request",
+  too_large: "Anthropic API rejected the request as too large",
 };
+
+// The 400 for an input over the context window. Matched only, never quoted: the text is the body.
+const PROMPT_TOO_LONG = /prompt is too long/i;
 
 // Messages are built here rather than taken from the SDK. Its API error text carries the response
 // body, which can echo request fields, so API errors are not kept as the cause either (the CLI
@@ -126,6 +130,6 @@ function toLlmError(err: unknown, model: string, signal: AbortSignal | undefined
   }
   const status = [err.status && `HTTP ${err.status}`, err.type].filter(Boolean).join(" ");
   const where = [status, model, err.requestID && `request ${err.requestID}`].filter(Boolean).join(", ");
-  const kind = statusKind(err.status);
+  const kind = err.status === 400 && PROMPT_TOO_LONG.test(err.message) ? "too_large" : statusKind(err.status);
   return new LlmError(kind, `${STATUS_MESSAGES[kind]} (${where})`);
 }

@@ -194,6 +194,7 @@ describe("createApiLlm", () => {
     [409, "conflict_error", "transport"],
     [400, "invalid_request_error", "unavailable"],
     [404, "not_found_error", "unavailable"],
+    [413, "request_too_large", "too_large"],
   ] as const)("turns HTTP %i into %s", async (status, type, kind) => {
     mockFetch({ [URL]: apiError(status, type) });
     const err = await expectLlmError(llm().generate(request), kind as LlmErrorKind);
@@ -230,6 +231,17 @@ describe("createApiLlm", () => {
     await createApiLlm({ models: DEFAULT_API_MODELS, apiKey: "sk-ant-chosen" }).generate(request);
     // This SDK sends an API key as a bearer token.
     expect(mock.calls[0]?.headers.get("authorization")).toBe("Bearer sk-ant-chosen");
+  });
+
+  it("turns a 400 for a prompt over the context window into too_large, without quoting it", async () => {
+    mockFetch({
+      [URL]: reply.json(
+        { type: "error", error: { type: "invalid_request_error", message: `prompt is too long: 250000 tokens ${SECRET}` } },
+        { status: 400 },
+      ),
+    });
+    const err = await expectLlmError(llm().generate(request), "too_large");
+    expect(err.message).toContain("HTTP 400");
   });
 
   it("turns missing credentials into auth", async () => {
