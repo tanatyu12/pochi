@@ -1,13 +1,25 @@
+import { z } from "zod";
 import type { GithubFeed, Sources } from "../config/schema.js";
 import type { Item } from "../types.js";
 import { fetchText, HttpError } from "../util/http.js";
-import { parseFeedText, toItems, type RawEntry } from "./rss.js";
+import { log } from "../util/log.js";
+import { FeedParseError, fetchFeedEntries, fetchFeedItems, toItems, type RawEntry } from "./rss.js";
 
 type GithubFeedKind = GithubFeed["feed"];
 
-// A digit must come first, so a package name such as "eslint-config-next@14.0.0" is not a
-// prerelease, and no letter may follow, so "v2.0.0-devtools" is not one either.
-const PRERELEASE = /\d-(?:alpha|beta|rc|canary|next|preview|nightly|dev)(?![a-z])/i;
+const API = "https://api.github.com";
+// The Atom feeds hold only the newest 10 entries, so a run of canaries can hide every stable
+// release. The API returns up to 100, each flagged prerelease or not by its author.
+const RELEASES_PER_PAGE = 100;
+// A hundred release notes with rendered HTML can pass the 2MB default.
+const API_MAX_BYTES = 8 * 1024 * 1024;
+
+// The suffix must follow a version such as "1.2" or "v16.1.0", so a package name such as
+// "eslint-config-next@14.0.0" or "python3-dev@1.2.0" is not a prerelease, and no letter may
+// follow it, so "v2.0.0-devtools" is not one either. Also covers PEP 440 ("1.0.0rc1", "2.0b2")
+// and Maven ("2.0.0-M1", "1.0-SNAPSHOT").
+const PRERELEASE =
+  /(?<![a-z\d.])v?\d+(?:\.\d+)+(?:[-.]?(?:alpha|beta|rc|canary|next|preview|pre|nightly|dev|experimental|snapshot)|(?:a|b)(?=\d)|-m(?=\d))(?![a-z])/i;
 
 export function feedUrl(repo: string, feed: GithubFeedKind): string {
   return `https://github.com/${repo}/${feed}.atom`;
@@ -17,10 +29,33 @@ export function isPrerelease(tag: string): boolean {
   return PRERELEASE.test(tag);
 }
 
+const RepoSchema = z.object({ full_name: z.string() });
+
+const ReleasesSchema = z.array(
+  z.object({
+    html_url: z.string(),
+    tag_name: z.string(),
+    name: z.string().nullish(),
+    draft: z.boolean(),
+    prerelease: z.boolean(),
+    published_at: z.string().nullish(),
+    body_html: z.string().nullish(),
+  }),
+);
+
+type Release = z.infer<typeof ReleasesSchema>[number];
+
 export type RepoCheck =
-  | { status: "found"; feed: GithubFeedKind }
+  | {
+      status: "found";
+      feed: GithubFeedKind;
+      /** Every release is a prerelease, so nothing shows unless includePrereleases is set. */
+      onlyPrereleases?: true;
+      /** The repository was renamed or transferred; this is its current owner/repo. */
+      movedTo?: string;
+    }
   /** The repository exists but has neither releases nor tags. */
-  | { status: "empty" }
+  | { status: "empty"; movedTo?: string }
   | { status: "not_found" };
 
 /**
@@ -28,21 +63,31 @@ export type RepoCheck =
  * failures and unparsable responses throw.
  */
 export async function verifyRepo(repo: string, signal?: AbortSignal): Promise<RepoCheck> {
-  let releases: RawEntry[];
+  let current: string;
   try {
-    releases = await fetchEntries(feedUrl(repo, "releases"), signal);
+    const res = await fetchText(`${API}/repos/${repo}`, { signal, headers: apiHeaders("json") });
+    // The API follows a rename or transfer, and full_name is where the repository lives now.
+    current = parseApi(res.text, RepoSchema, res.url).full_name;
   } catch (err) {
-    if (err instanceof HttpError && err.status === 404) return { status: "not_found" };
+    if (isNotFound(err)) return { status: "not_found" };
     throw err;
   }
-  // Counted before dropping prereleases: the question is whether the repository exists.
-  if (releases.length > 0) return { status: "found", feed: "releases" };
-  const tags = await fetchEntries(feedUrl(repo, "tags"), signal);
-  return tags.length > 0 ? { status: "found", feed: "tags" } : { status: "empty" };
-}
+  const moved = current.toLowerCase() === repo.toLowerCase() ? {} : { movedTo: current };
 
-async function fetchEntries(url: string, signal?: AbortSignal): Promise<RawEntry[]> {
-  return parseFeedText((await fetchText(url, { signal })).text);
+  const releases = await fetchReleases(current, "json", signal);
+  if (releases.length > 0) {
+    const onlyPrereleases = releases.every((r) => r.prerelease) ? ({ onlyPrereleases: true } as const) : {};
+    return { status: "found", feed: "releases", ...onlyPrereleases, ...moved };
+  }
+  let tags: RawEntry[];
+  try {
+    ({ entries: tags } = await fetchFeedEntries(feedUrl(current, "tags"), signal));
+  } catch (err) {
+    // Deleted or made private since the first request.
+    if (isNotFound(err)) return { status: "not_found" };
+    throw err;
+  }
+  return tags.length > 0 ? { status: "found", feed: "tags", ...moved } : { status: "empty", ...moved };
 }
 
 export async function fetchGithubItems(
@@ -50,15 +95,83 @@ export async function fetchGithubItems(
   defaults: Sources["defaults"],
   signal?: AbortSignal,
 ): Promise<Item[]> {
-  const res = await fetchText(feedUrl(feed.repo, feed.feed), { signal });
-  const entries = parseFeedText(res.text);
+  const source = { ...feed, kind: "github" as const };
+  if (feed.feed === "tags") {
+    return fetchFeedItems(feedUrl(feed.repo, "tags"), source, defaults, signal, (entries) =>
+      dropPrereleases(feed, entries, (e) => isPrerelease(tagOf(e))),
+    );
+  }
+  const releases = await fetchReleases(feed.repo, "html", signal);
   // Before toItems cuts to itemsPerFeed, so a run of canaries cannot push out the stable release.
-  const kept = feed.includePrereleases ? entries : entries.filter((e) => !isPrerelease(tagOf(e)));
-  return toItems(kept, { ...feed, kind: "github" }, { baseUrl: res.url, ...defaults });
+  const kept = dropPrereleases(feed, releases, (r) => r.prerelease);
+  // html_url is absolute, so the base only matters for a malformed one.
+  return toItems(kept.map(toEntry), source, { baseUrl: "https://github.com/", ...defaults });
 }
 
-// The title is the release name ("Next.js 16"), which need not match the tag, so it comes last.
+async function fetchReleases(repo: string, body: "json" | "html", signal?: AbortSignal): Promise<Release[]> {
+  const res = await fetchText(releasesUrl(repo), { signal, headers: apiHeaders(body), maxBytes: API_MAX_BYTES });
+  return parseApi(res.text, ReleasesSchema, res.url).filter((r) => !r.draft);
+}
+
+function releasesUrl(repo: string): string {
+  return `${API}/repos/${repo}/releases?per_page=${RELEASES_PER_PAGE}`;
+}
+
+// "html" asks for body_html, which goes through the same HTML-to-text path as feed content.
+function apiHeaders(body: "json" | "html"): Record<string, string> {
+  const headers: Record<string, string> = {
+    accept: body === "html" ? "application/vnd.github.html+json" : "application/vnd.github+json",
+    "x-github-api-version": "2022-11-28",
+  };
+  // Optional: without it the API allows 60 requests an hour per IP, which shared CI runners can exhaust.
+  const token = process.env.GITHUB_TOKEN?.trim();
+  if (token) headers.authorization = `Bearer ${token}`;
+  return headers;
+}
+
+function parseApi<T>(text: string, schema: z.ZodType<T>, url: string): T {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch (err) {
+    throw new FeedParseError(`not JSON: ${url}`, { cause: err });
+  }
+  const parsed = schema.safeParse(json);
+  if (!parsed.success) throw new FeedParseError(`unexpected GitHub API response: ${url}`, { cause: parsed.error });
+  return parsed.data;
+}
+
+function isNotFound(err: unknown): boolean {
+  return err instanceof HttpError && err.status === 404;
+}
+
+function dropPrereleases<T>(feed: GithubFeed, all: T[], isPre: (t: T) => boolean): T[] {
+  if (feed.includePrereleases) return all;
+  const kept = all.filter((t) => !isPre(t));
+  if (kept.length === 0 && all.length > 0) {
+    log.warn(
+      `${feed.id}: all ${all.length} recent ${feed.feed} of ${feed.repo} are prereleases; ` +
+        "set includePrereleases: true to follow them",
+    );
+  }
+  return kept;
+}
+
+function toEntry(release: Release): RawEntry {
+  return {
+    link: release.html_url,
+    title: { value: release.name?.trim() || release.tag_name, format: "text" },
+    published: release.published_at ?? undefined,
+    html: release.body_html ?? undefined,
+  };
+}
+
+// The guid always names this entry's own tag; the title is the release name ("Next.js 16"),
+// which need not match the tag, so it comes last.
 function tagOf(entry: RawEntry): string {
+  // "tag:github.com,2008:Repository/70107786/v16.1.0"
+  const fromGuid = entry.guid?.match(/^tag:github\.com,\d+:Repository\/\d+\/(.+)$/)?.[1];
+  if (fromGuid) return fromGuid;
   const path = entry.link?.match(/\/releases\/tag\/([^?#]+)/)?.[1];
   if (path) {
     try {
@@ -67,7 +180,5 @@ function tagOf(entry: RawEntry): string {
       return path;
     }
   }
-  // "tag:github.com,2008:Repository/70107786/v16.1.0"
-  const fromGuid = entry.guid?.match(/^tag:github\.com,\d+:Repository\/\d+\/(.+)$/)?.[1];
-  return fromGuid ?? entry.title?.value ?? "";
+  return entry.title?.value ?? "";
 }
