@@ -2,7 +2,6 @@ import type { Context, Impact } from "../config/schema.js";
 import { analyzeRequest, shortId, triageRequest } from "../llm/prompts.js";
 import { type GenerateRequest, type LlmClient, LlmError, type LlmErrorKind, type LlmTier } from "../llm/schema.js";
 import type { Insight, Item } from "../types.js";
-import { pLimit } from "../util/concurrency.js";
 import { log } from "../util/log.js";
 import { parseDate, sleep } from "../util/time.js";
 
@@ -64,8 +63,7 @@ export interface FilterResult {
 
 /**
  * Triage in batches of maxItemsPerCall, then Analyze the relevant items, and the pretriaged ones
- * (state r), in batches of ANALYZE_BATCH_SIZE, up to llm.concurrency batches at once. A batch that
- * fails transiently is retried once after retryDelayMs; one that fails because of its content is
+ * (state r), in batches of ANALYZE_BATCH_SIZE, one batch at a time. A batch that fails transiently is retried once after retryDelayMs; one that fails because of its content is
  * split to find the item causing it. Throws only errors that are not LlmErrors.
  */
 export async function filterAndAnalyze(
@@ -105,7 +103,6 @@ export async function filterAndAnalyze(
     llm,
     signal,
     retryDelayMs,
-    concurrency: context.llm.concurrency,
     dropped: result.irrelevant,
     aborted: false,
     transientFailures: 0,
@@ -190,7 +187,6 @@ interface StageRun {
   llm: LlmClient;
   signal: AbortSignal | undefined;
   retryDelayMs: number;
-  concurrency: number;
   /** Where an item goes that alone made its batch fail. */
   dropped: Item[];
   /**
@@ -218,7 +214,7 @@ type Attempt = LlmError | "stopped" | undefined;
 const onContent = (a: Attempt): boolean => a instanceof LlmError && SPLIT_KINDS.has(a.kind);
 
 /**
- * Runs the batches, up to run.concurrency at once; items without an answer go to leftover. apply
+ * Runs the batches one after another; items without an answer go to leftover. apply
  * takes a reply and returns the items it had no answer for. A reply answering none of them counts
  * as invalid output.
  */
@@ -322,24 +318,20 @@ async function runStage<T>(
     return answered;
   };
 
-  const limit = pLimit(run.concurrency);
-  const failed = await Promise.all(
-    batches.map((batch, n) =>
-      limit(async () => {
-        const label = `${stage} batch ${n + 1}/${batches.length}`;
-        const first = await attempt(batch, label);
-        if (first === undefined) return false;
-        if (onContent(first)) {
-          // A batch of one is not split: nothing shows that its item, rather than the model, is the cause.
-          if (batch.length > 1) return !(await bisect(batch, label));
-          leftover.push(...batch);
-          log.warn(`${label} failed; its item waits for the next run`, first);
-        }
-        return true;
-      }),
-    ),
-  );
-  outcome.failed = failed.filter(Boolean).length;
+  for (const [n, batch] of batches.entries()) {
+    const label = `${stage} batch ${n + 1}/${batches.length}`;
+    const first = await attempt(batch, label);
+    if (first === undefined) continue;
+    if (onContent(first)) {
+      // A batch of one is not split: nothing shows that its item, rather than the model, is the cause.
+      if (batch.length > 1 && (await bisect(batch, label))) continue;
+      if (batch.length === 1) {
+        leftover.push(...batch);
+        log.warn(`${label} failed; its item waits for the next run`, first);
+      }
+    }
+    outcome.failed++;
+  }
   return outcome;
 }
 

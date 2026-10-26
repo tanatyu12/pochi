@@ -86,7 +86,6 @@ llm:
   analyzeModel: ~            # 既定: api なら claude-sonnet-5-5、cli なら sonnet
   maxItemsPerCall: 40
   maxItemsPerRun: 150        # 新しい記事と状態 r の記事を合わせた1回の上限
-  concurrency: 2             # 同時に送るバッチの数（1〜8）
 notify:
   slack: { postWhenEmpty: false, minImpact: Low }
 state: { ttlDays: 45, maxItemAgeDays: 14 }   # ttlDays > maxItemAgeDays であること
@@ -264,7 +263,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 - **filter.ts** `filterAndAnalyze(llm, context, items, { signal?, retryDelayMs?, pretriaged? })` は `{ insights, irrelevant, undecided, pending, stats, error?, aborted }` を返す。insights（`Insight`、types.ts）は通知する分、irrelevant は状態 i にする分、undecided は状態に記録せず翌日に Triage からやり直す分、pending は状態 r にする分（関連ありで Analyze が済んでいない）
   - pretriaged には状態 r の既知の記事を渡す。Triage を飛ばして Analyze に回す
   - maxItemsPerRun は pretriaged と新しい記事を合わせた上限。先に pretriaged を、残りの枠に新しい記事を、それぞれ日付の新しい順（日付なしは後ろ）に採る。あふれた pretriaged は pending（r のまま）、あふれた新しい記事は未決とする
-  - Triage は maxItemsPerCall（既定40）件ずつ、関連する記事と pretriaged を Analyze に15件ずつ渡す。どちらも0件なら LLM を呼ばない。各段のバッチは `llm.concurrency`（既定2、1〜8）件まで同時に送り（`pLimit`）、Triage がすべて終わってから Analyze を始める。止まった後や中断の後は、まだ始めていないバッチを送らない（送信中のものは終わるまで待つ）
+  - Triage は maxItemsPerCall（既定40）件ずつ、関連する記事と pretriaged を Analyze に15件ずつ渡す。どちらも0件なら LLM を呼ばない。バッチは1つずつ順に送る（同時に送ると、止める判定や連続失敗の数え方が実行順に左右されるため）。止まった後や中断の後は、残りのバッチを送らない
   - 回答の ID はバッチ内の短縮 ID で記事に戻す。未知の ID は破棄し、同じ ID は最初の回答だけを使う。回答のない記事は、Triage なら未決、Analyze なら pending。バッチの記事のどれにも合う ID がない回答は invalid_output として扱う。Analyze の title が空なら記事のタイトルで補う
   - 一時的な失敗（rate_limit / timeout / transport）のバッチは `RETRY_DELAY_MS`（10秒）待ってから1回再試行する（SDK と claude は自前で再試行済みなので、間を空けないと同じ制限に当たる）。再試行しても rate_limit なら、制限はすぐには解けない（CLIモードではサブスクリプションの利用上限）ので、auth と同じく以降を止める。timeout / transport は、再試行しても失敗したバッチが回答を挟まず2つ続いたら止める（`MAX_TRANSIENT_FAILURES`。原因不明の claude のエラーが続く場合もここで止まる）
   - バッチの中身が原因の失敗（max_tokens / refusal / invalid_output / too_large / bad_request）は同じまま再送せず、二分探索で原因を探す。半分ずつ順に1回送り、片方だけが中身の原因で失敗したらその側をさらに分ける。1件まで絞れて、もう片方が回答を得ていれば、その1件をもう一度だけ送る（たまたまの失敗で記事を永久に捨てないため）。また中身の原因で失敗したら、その記事が原因とみなして irrelevant（状態 i）にし、warn を出す（`stats.dropped`）。両方の半分が失敗したら特定の記事のせいではない（モデルの出力が長すぎるなど）とみなして分けるのをやめ、記事を未決（Analyze なら pending）にする。両方の半分が bad_request なら、リクエストの組み立てや設定の誤りとみなして以降を止める。最初から1件のバッチは分けず、i にもしない。原因が1件なら呼び出しは約 2 + 2·log₂n 回（確かめの1回を含む）、特定の記事でなければ3回で止まる。既知の制限：同じバッチに原因の記事が2件あると両方の半分が失敗するため絞り込めず、翌日も同じ結果になりうる

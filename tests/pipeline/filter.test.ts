@@ -18,8 +18,7 @@ function makeContext(over: { llm?: Record<string, unknown>; minImpact?: Impact }
     version: 1,
     project: { name: "my-app", description: "" },
     problems: ["anything"],
-    // One batch at a time, so tests can follow the order of the calls; concurrency has its own tests.
-    llm: { concurrency: 1, ...over.llm },
+    llm: over.llm ?? {},
     notify: { slack: { minImpact: over.minImpact ?? "Low" } },
   });
 }
@@ -589,46 +588,6 @@ describe("filterAndAnalyze pretriaged items", () => {
     const result = await filterAndAnalyze(llm.client, makeContext(), [], { pretriaged: items(2), retryDelayMs: 0 });
     expect(result.pending).toHaveLength(2);
     expect(result.error?.kind).toBe("transport");
-  });
-});
-
-describe("filterAndAnalyze concurrency", () => {
-  function slowLlm(handler: Handler = relevantAll) {
-    let active = 0;
-    let peak = 0;
-    const base = fakeLlm({ triage: handler });
-    const client: LlmClient = {
-      mode: "api",
-      async generate<T>(req: GenerateRequest<T>, opts?: { signal?: AbortSignal }): Promise<T> {
-        active++;
-        peak = Math.max(peak, active);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        try {
-          return await base.client.generate(req, opts);
-        } finally {
-          active--;
-        }
-      },
-    };
-    return { ...base, client, peak: () => peak };
-  }
-
-  it("sends up to llm.concurrency batches at once, with the same results", async () => {
-    const one = await filterAndAnalyze(slowLlm().client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(10));
-    const llm = slowLlm();
-    const three = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2, concurrency: 3 } }), items(10));
-    expect(llm.peak()).toBe(3);
-    expect(titles(three.insights.map((i) => i.item)).sort()).toEqual(titles(one.insights.map((i) => i.item)).sort());
-    expect(three.stats).toEqual(one.stats);
-  });
-
-  it("does not start batches after the run stops", async () => {
-    const llm = slowLlm(() => fail("auth"));
-    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2, concurrency: 2 } }), items(10));
-    // The two batches already sent finish; the other three are skipped.
-    expect(llm.of("triage")).toHaveLength(2);
-    expect(result.undecided).toHaveLength(10);
-    expect(result.error?.kind).toBe("auth");
   });
 });
 

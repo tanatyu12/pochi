@@ -23,8 +23,6 @@ export const ContextSchema = z
         analyzeModel: text.nullish(),
         maxItemsPerCall: positiveInt.default(40),
         maxItemsPerRun: positiveInt.default(150),
-        // Batches sent at once. Low by default: a claude subscription has its own usage limit.
-        concurrency: positiveInt.max(8).default(2),
       })
       .prefault({}),
     notify: z
