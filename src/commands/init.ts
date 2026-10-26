@@ -20,12 +20,12 @@ import {
   repoInferenceRequest,
 } from "../llm/prompts.js";
 import { type LlmClient, LlmError } from "../llm/schema.js";
-import { type DiscoveredFeed, discoverFeeds, isTransient } from "../sources/discover.js";
+import { type DiscoveredFeed, FeedCheckError, discoverFeeds, isTransient } from "../sources/discover.js";
 import { type RepoCheck, verifyRepo } from "../sources/github.js";
-import { type SourceOutcome, fetchEach, sourceConfigs, sourceInfo } from "../sources/index.js";
+import { type SourceConfig, type SourceOutcome, fetchEach, sourceConfigs, sourceInfo } from "../sources/index.js";
 import { FeedParseError } from "../sources/rss.js";
 import { tavilyApiKey } from "../sources/tavily.js";
-import { normalizeUrl, parseHttpUrl } from "../util/hash.js";
+import { normalizeUrl, parseHttpUrl, sha256Hex } from "../util/hash.js";
 import { HttpError } from "../util/http.js";
 import { configureLog } from "../util/log.js";
 import { type Prompter, PromptCancelled, createClackPrompter } from "../util/prompter.js";
@@ -38,6 +38,7 @@ const MAX_TYPED_QUERIES = 10;
 // Titles, notes and errors come from feeds, the model and the network; one line each is enough.
 const SHOWN_MAX_CHARS = 120;
 const HINT_MAX_CHARS = 60;
+const QUERY_ID_MAX_CHARS = 32;
 // An option value no repo or feed URL can take.
 const NONE = "none";
 
@@ -58,6 +59,8 @@ export interface InitDeps {
 type FeedInput = NonNullable<SourcesInput["feeds"]>[number];
 type QueryInput = NonNullable<SourcesInput["queries"]>[number];
 type FoundRepo = Extract<RepoCheck, { status: "found" }>;
+/** Settles either way, so nobody has to wait for it until Claude is needed. */
+type LlmLookup = Promise<{ client: LlmClient } | { error: unknown }>;
 
 export async function runInit(opts: { configDir?: string } = {}, deps: Partial<InitDeps> = {}): Promise<void> {
   const isInteractive = deps.isInteractive ?? (() => Boolean(process.stdin.isTTY && process.stdout.isTTY));
@@ -91,8 +94,21 @@ async function init(dir: string, deps: Partial<InitDeps>): Promise<void> {
   const contextInput = await askContext(p);
   // The prompts read the defaults (language, llm) the parsed context fills in.
   const context = ContextSchema.parse(contextInput);
-  const llm = await findLlm(p, context, deps.resolveLlm ?? resolveLlm, env, signal);
-  const sources = await askSources(newSession(p, context, llm, signal));
+  // Looked for while the sources are asked (the CLI probe can take seconds), and only waited
+  // for by a step that needs Claude. Stopped once the answers are in, so no probe outlives init.
+  const lookup = new AbortController();
+  const llm = lookUpLlm(
+    deps.resolveLlm ?? resolveLlm,
+    context,
+    env,
+    signal ? AbortSignal.any([signal, lookup.signal]) : lookup.signal,
+  );
+  let sources: SourcesInput;
+  try {
+    sources = await askSources(newSession(p, context, { llm, env, signal }));
+  } finally {
+    lookup.abort();
+  }
   // Nothing touches the disk until every answer is in, so a cancel above leaves no trace.
   const { contextPath, sourcesPath } = await writeConfig(dir, { context: contextInput, sources }, { overwrite: true });
 
@@ -179,30 +195,45 @@ async function askList(
   return items;
 }
 
-/** The LLM for suggestions, or undefined: init then takes repositories as owner/repo only. */
-async function findLlm(
-  p: Prompter,
-  context: Context,
+function lookUpLlm(
   resolve: typeof resolveLlm,
+  context: Context,
   env: NodeJS.ProcessEnv,
-  signal: AbortSignal | undefined,
-): Promise<LlmClient | undefined> {
-  try {
-    const { client } = await p.spin("Looking for Claude", () => resolve(context.llm, { env, signal }), signal);
-    return client;
-  } catch (err) {
-    throwIfCancelled(signal);
-    if (!(err instanceof LlmError)) throw err;
-    p.warn(`${err.message}. Continuing without Claude: enter repositories as owner/repo.`);
-    return undefined;
+  signal: AbortSignal,
+): LlmLookup {
+  return resolve(context.llm, { env, signal }).then(
+    ({ client }) => ({ client }),
+    (error: unknown) => ({ error }),
+  );
+}
+
+/**
+ * The LLM for suggestions, or undefined: init then takes repositories as owner/repo only. The
+ * first call waits for the lookup started in the background.
+ */
+async function getLlm(s: SourceSession): Promise<LlmClient | undefined> {
+  const lookup = s.llmLookup;
+  if (lookup === undefined) return s.llm;
+  s.llmLookup = undefined;
+  const result = await s.p.spin("Looking for Claude", () => lookup, s.signal);
+  throwIfCancelled(s.signal);
+  if ("client" in result) {
+    s.llm = result.client;
+  } else {
+    if (!(result.error instanceof LlmError)) throw result.error;
+    s.p.warn(`${result.error.message}. Continuing without Claude: enter repositories as owner/repo.`);
   }
+  return s.llm;
 }
 
 export interface SourceSession {
   p: Prompter;
   context: Context;
-  /** Cleared when Claude turns out to be unusable (auth, unavailable). */
+  /** Set by getLlm once the lookup settles; cleared when Claude turns out to be unusable (auth, unavailable). */
   llm: LlmClient | undefined;
+  /** Still to be waited for; getLlm takes it. */
+  llmLookup?: LlmLookup;
+  env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   /** Watched: added and accepted in a trial fetch. */
   feeds: FeedInput[];
@@ -223,10 +254,21 @@ export interface SourceSession {
 export function newSession(
   p: Prompter,
   context: Context,
-  llm: LlmClient | undefined,
-  signal?: AbortSignal,
+  opts: { llm?: LlmClient | LlmLookup; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
 ): SourceSession {
-  return { p, context, llm, signal, feeds: [], queries: [], ids: new Set(), keys: new Set(), checked: new WeakMap() };
+  const { llm, signal } = opts;
+  return {
+    p,
+    context,
+    ...(llm instanceof Promise ? { llm: undefined, llmLookup: llm } : { llm }),
+    env: opts.env ?? process.env,
+    signal,
+    feeds: [],
+    queries: [],
+    ids: new Set(),
+    keys: new Set(),
+    checked: new WeakMap(),
+  };
 }
 
 /**
@@ -258,11 +300,12 @@ async function askFeeds(s: SourceSession): Promise<FeedInput[]> {
         {
           value: "repo",
           label: "Technology or GitHub repository",
-          hint: s.llm ? "Next.js or vercel/next.js" : "owner/repo",
+          // Claude may still be looked for; the step itself says if it is not there.
+          hint: s.llm || s.llmLookup ? "Next.js or vercel/next.js" : "owner/repo",
         },
         { value: "site", label: "Blog or feed URL", hint: "https://…" },
         // sources.yml needs a source; queries, if any, are asked next.
-        ...(count > 0 || tavilyApiKey() ? [{ value: "done" as const, label: "Done" }] : []),
+        ...(count > 0 || tavilyApiKey(s.env) ? [{ value: "done" as const, label: "Done" }] : []),
       ],
     });
     if (kind === "done") return added;
@@ -279,24 +322,30 @@ async function askFeeds(s: SourceSession): Promise<FeedInput[]> {
 }
 
 async function askRepo(s: SourceSession): Promise<FeedInput | undefined> {
+  const llm = await getLlm(s);
   const answer = (
     await s.p.text({
-      message: s.llm
-        ? "Technology name or GitHub repository (empty to go back)"
-        : "GitHub repository (empty to go back)",
-      placeholder: s.llm ? "Next.js" : "vercel/next.js",
+      message: llm ? "Technology name or GitHub repository (empty to go back)" : "GitHub repository (empty to go back)",
+      placeholder: llm ? "Next.js" : "vercel/next.js",
       validate: (v) => {
         const t = v.trim();
         if (t === "" || REPO_PATTERN.test(t)) return undefined;
         // Without Claude there is nothing to look a name up with; a slash means a repo was meant.
-        return s.llm && !t.includes("/") ? undefined : "Enter it as owner/repo";
+        return llm && !t.includes("/") ? undefined : "Enter it as owner/repo";
       },
     })
   ).trim();
   if (answer === "") return undefined;
   // Typed as owner/repo: used as is, never through the model.
-  if (REPO_PATTERN.test(answer)) return checkTypedRepo(s, answer);
-  return lookUpRepo(s, s.llm!, answer);
+  if (REPO_PATTERN.test(answer)) {
+    // Checked before GitHub is asked, which allows few unauthenticated calls an hour.
+    if (s.keys.has(repoKey(answer))) {
+      s.p.warn("Already added; skipped.");
+      return undefined;
+    }
+    return checkTypedRepo(s, answer);
+  }
+  return lookUpRepo(s, llm!, answer);
 }
 
 async function checkTypedRepo(s: SourceSession, repo: string): Promise<FeedInput | undefined> {
@@ -345,10 +394,15 @@ async function lookUpRepo(s: SourceSession, llm: LlmClient, name: string): Promi
   }
 
   const seen = new Set<string>();
-  const valid = candidates
+  const named = candidates
     .map((c) => ({ repo: c.repo.trim(), note: c.note }))
-    .filter((c) => REPO_PATTERN.test(c.repo) && once(seen, c.repo.toLowerCase()))
-    .slice(0, MAX_REPO_CANDIDATES);
+    .filter((c) => REPO_PATTERN.test(c.repo) && once(seen, c.repo.toLowerCase()));
+  // Ones already added are not checked again.
+  const valid = named.filter((c) => !s.keys.has(repoKey(c.repo))).slice(0, MAX_REPO_CANDIDATES);
+  if (named.length > 0 && valid.length === 0) {
+    p.warn("Already added; skipped.");
+    return undefined;
+  }
   const checks =
     valid.length === 0
       ? []
@@ -368,11 +422,16 @@ async function lookUpRepo(s: SourceSession, llm: LlmClient, name: string): Promi
     if (once(current, repo.toLowerCase())) found.push({ repo, note: valid[i]!.note, check: result.value });
   });
   const unchecked = checks.filter((r) => r.status === "rejected").length;
-  if (unchecked > 0) p.warn(`Could not check ${plural(unchecked, "candidate")} on GitHub; left out.`);
   if (found.length === 0) {
-    p.warn(`No GitHub repository found for ${name}; enter it as owner/repo.`);
+    // A rate limit or a network failure says nothing about whether the repository exists.
+    p.warn(
+      unchecked > 0
+        ? `Could not check ${plural(unchecked, "candidate")} for ${name} on GitHub; try again later or enter it as owner/repo.`
+        : `No GitHub repository found for ${name}; enter it as owner/repo.`,
+    );
     return undefined;
   }
+  if (unchecked > 0) p.warn(`Could not check ${plural(unchecked, "candidate")} on GitHub; left out.`);
 
   const choice = await p.select({
     message: `Which repository is ${name}?`,
@@ -411,12 +470,27 @@ async function askSite(s: SourceSession): Promise<FeedInput | undefined> {
   ).trim();
   if (raw === "") return undefined;
   const url = parseHttpUrl(raw)!.href;
+  // Typed as the feed itself; one found on a page is checked when it is added.
+  if (s.keys.has(feedKey(url))) {
+    p.warn("Already added; skipped.");
+    return undefined;
+  }
 
   let feeds: DiscoveredFeed[];
   try {
     feeds = await p.spin(`Looking for feeds on ${url}`, () => discoverFeeds(url, signal), signal);
   } catch (err) {
     throwIfCancelled(signal);
+    // The page opened; a feed it led to did not.
+    if (err instanceof FeedCheckError) {
+      p.warn(`Could not check a feed on ${url}: ${errorLine(err)}`);
+      // An advertised feed may be up again by the next run; a guessed path may be no feed at all.
+      const shown = displayLine(err.feedUrl, SHOWN_MAX_CHARS);
+      if (!err.advertised || !(await p.confirm({ message: `Add ${shown} anyway?`, initialValue: false }))) {
+        return undefined;
+      }
+      return siteFeed(s, url, err.feedUrl);
+    }
     if (!(err instanceof HttpError)) throw err;
     p.warn(`Could not open ${url}: ${errorLine(err)}`);
     // It may be up again by the next run; the user typed it, so let them decide.
@@ -458,8 +532,9 @@ function siteFeed(s: SourceSession, pageUrl: string, feedUrl: string, title?: st
 
 async function askQueries(s: SourceSession): Promise<QueryInput[]> {
   const { p, signal } = s;
-  // fetchTavilyItems reads the same key, so a query asked for here is one a run can fetch.
-  if (!tavilyApiKey()) {
+  // A run reads the same key (from process.env, which env is outside tests), so a query asked
+  // for here is one a run can fetch.
+  if (!tavilyApiKey(s.env)) {
     if (!s.tavilyNoted) p.note("TAVILY_API_KEY is not set, so web search queries are skipped.");
     s.tavilyNoted = true;
     return [];
@@ -467,8 +542,8 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
   if (!s.tavilyNoted) p.note("Web search queries use Tavily: each costs one credit a run, and one now to try it.");
   s.tavilyNoted = true;
 
-  if (s.llm && s.suggestions === undefined) {
-    const llm = s.llm;
+  const llm = s.suggestions === undefined ? await getLlm(s) : undefined;
+  if (llm) {
     try {
       const reply = await p.spin(
         "Asking Claude for search queries",
@@ -504,11 +579,12 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
     min: 0,
     max: MAX_TYPED_QUERIES,
   });
-  candidates.push(...typed.map(cleanQuery));
+  // Control characters alone clean to nothing.
+  candidates.push(...typed.map(cleanQuery).filter((q) => q !== ""));
 
   const added: QueryInput[] = [];
   for (const query of candidates) {
-    const id = sourceIdFrom(query, s.ids);
+    const id = queryIdFrom(query, s.ids);
     if (!claim(s, queryKey(query), id)) {
       p.warn(`Already added: ${displayLine(query, SHOWN_MAX_CHARS)}; skipped.`);
       continue;
@@ -528,9 +604,14 @@ async function trialFetch(
   const sources = SourcesSchema.parse({ version: 1, feeds, queries });
   // Queries only get here with a Tavily key.
   const configs = sourceConfigs(sources, true);
-  // Feeds come first in configs, in the order given; GitHub already showed the checked ones.
-  const known = (i: number) => i < feeds.length && s.checked.has(feeds[i]!);
-  const toFetch = configs.filter((_, i) => !known(i));
+  // GitHub already showed the latest item of the checked feeds. Found by id, which is unique
+  // in a session: parsing made new objects.
+  const byId = new Map(feeds.map((f) => [f.id, f]));
+  const checkedFeed = (source: SourceConfig) => {
+    const feed = source.kind === "tavily" ? undefined : byId.get(source.feed.id);
+    return feed && s.checked.has(feed) ? feed : undefined;
+  };
+  const toFetch = configs.filter((source) => !checkedFeed(source));
   const fetched =
     toFetch.length === 0
       ? []
@@ -540,9 +621,12 @@ async function trialFetch(
           signal,
         );
   if (signal?.aborted || fetched.some((o) => "aborted" in o)) throw new PromptCancelled();
-  const outcomes = configs.map((source, i): SourceOutcome => {
-    if (!known(i)) return fetched.shift()!;
-    const latest = s.checked.get(feeds[i]!);
+  // Each outcome carries the config it was fetched for.
+  const byConfig = new Map(fetched.map((o) => [o.source, o]));
+  const outcomes = configs.map((source): SourceOutcome => {
+    const feed = checkedFeed(source);
+    if (!feed) return byConfig.get(source)!;
+    const latest = s.checked.get(feed);
     return { source, items: latest ? [latest] : [] };
   });
 
@@ -582,7 +666,15 @@ async function trialFetch(
 // GitHub treats owner/repo case-insensitively; feed URLs compare as the pipeline dedupes them.
 function keyOf(source: FeedInput | QueryInput): string {
   if ("query" in source) return queryKey(source.query);
-  return source.type === "github" ? `github:${source.repo.toLowerCase()}` : `rss:${normalizeUrl(source.url)}`;
+  return source.type === "github" ? repoKey(source.repo) : feedKey(source.url);
+}
+
+function repoKey(repo: string): string {
+  return `github:${repo.toLowerCase()}`;
+}
+
+function feedKey(url: string): string {
+  return `rss:${normalizeUrl(url)}`;
 }
 
 function queryKey(query: string): string {
@@ -629,12 +721,34 @@ function errorLine(err: unknown): string {
 
 /** Turns a repo or host name into a source id that is not in taken. */
 export function sourceIdFrom(raw: string, taken: ReadonlySet<string>): string {
-  const base =
-    raw
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, "-")
-      .replace(/^[^a-z0-9]+/, "")
-      .replace(/-+$/, "") || "source";
+  return uniqueId(slug(raw) || "source", taken);
+}
+
+/**
+ * A source id for a query that is not in taken: an ASCII query's words, cut short, or else a
+ * hash of the query, which (unlike a counter) does not change when queries are reordered.
+ */
+export function queryIdFrom(query: string, taken: ReadonlySet<string>): string {
+  const words = /^[\x20-\x7e]*$/.test(query) ? cutAtWord(slug(query), QUERY_ID_MAX_CHARS) : "";
+  return uniqueId(words || `query-${sha256Hex(query.toLowerCase()).slice(0, 8)}`, taken);
+}
+
+function slug(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^[^a-z0-9]+/, "")
+    .replace(/-+$/, "");
+}
+
+function cutAtWord(id: string, max: number): string {
+  if (id.length <= max) return id;
+  const cut = id.slice(0, max + 1);
+  const at = cut.lastIndexOf("-");
+  return (at > 0 ? cut.slice(0, at) : cut.slice(0, max)).replace(/[-_]+$/, "");
+}
+
+function uniqueId(base: string, taken: ReadonlySet<string>): string {
   let id = base;
   for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
   return id;

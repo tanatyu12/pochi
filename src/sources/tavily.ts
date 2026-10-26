@@ -26,8 +26,8 @@ const SearchSchema = z.object({
 type SearchResult = z.infer<typeof SearchSchema>["results"][number];
 
 /** Without a key, queries are skipped rather than failed. */
-export function tavilyApiKey(): string | undefined {
-  return process.env.TAVILY_API_KEY?.trim() || undefined;
+export function tavilyApiKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return env.TAVILY_API_KEY?.trim() || undefined;
 }
 
 export async function fetchTavilyItems(
