@@ -24,6 +24,7 @@ const BLOCK_TAG =
 const CELL_TAG = /<\/?t[dh]\b[^>]*>/gi;
 // Only things shaped like tags, so "a < b" in prose survives.
 const TAG = /<\/?[a-z][a-z0-9-]*(?:\s[^<>]*)?\/?>|<[!?][^<>]*>/gi;
+const LEADING_TAG = /^\s*<(?:[a-z][a-z0-9-]*|!--)/i;
 
 const MARKDOWN_HEADING = /^#{1,6}\s+\S/;
 // WordPress appends this footer to every feed entry.
@@ -33,9 +34,11 @@ const READ_MORE_MAX_CHARS = 40;
 const MIN_FRAGMENT_CHARS = 20;
 
 export function htmlToText(html: string, maxChars: number): string {
-  let text = toText(html.replace(CONTROL_CHARS, ""));
-  // GitHub's Atom feeds escape the HTML twice. Unwrap one more level at most.
-  if (hasTag(text)) text = toText(text);
+  const raw = html.replace(CONTROL_CHARS, "");
+  let text = toText(raw);
+  // GitHub's Atom feeds escape the HTML twice: no real tags, but the decoded text starts as
+  // HTML. Unwrap one more level at most. Escaped tags next to real ones are literal text.
+  if (!hasTag(raw) && LEADING_TAG.test(text)) text = toText(text);
   return fitLines(toLines(text), maxChars);
 }
 

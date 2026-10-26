@@ -107,6 +107,24 @@ describe("htmlToText", () => {
     expect(htmlToText("&lt;p&gt;&amp;lt;b&amp;gt;x&lt;/p&gt;", 1000)).toBe("<b>x");
   });
 
+  it.each([
+    ["&lt;p&gt;Supports &amp;lt;form&amp;gt; actions&lt;/p&gt;&lt;p&gt;more&lt;/p&gt;", "Supports <form> actions\nmore"],
+    ["&lt;!-- c --&gt;&lt;p&gt;x&lt;/p&gt;", "x"],
+    ["  &lt;p&gt;lead ws&lt;/p&gt;", "lead ws"],
+  ])("unwraps double-escaped %j", (html, expected) => {
+    expect(htmlToText(html, 1000)).toBe(expected);
+  });
+
+  it.each([
+    ["<p>Supports &lt;form&gt; actions</p><p>more text</p>", "Supports <form> actions\nmore text"],
+    ["<p>Avoid &lt;script&gt; in &lt;head&gt;</p><p>tail</p>", "Avoid <script> in <head>\ntail"],
+    ["<p>Use <code>&lt;Image&gt;</code> and AT&amp;amp;T</p>", "Use <Image> and AT&amp;T"],
+    ["Use &lt;form&gt; to submit, then more text", "Use <form> to submit, then more text"],
+    ["Wrap it in &lt;b&gt;bold&lt;/b&gt; please", "Wrap it in <b>bold</b> please"],
+  ])("keeps escaped tags as text in %j", (html, expected) => {
+    expect(htmlToText(html, 1000)).toBe(expected);
+  });
+
   it("does not let decoded entities forge heading markers", () => {
     const html = `<p>${"intro ".repeat(20)}</p><p>&#1;fake</p><h2>Real</h2><p>body</p>`;
     const text = htmlToText(html, 60);
