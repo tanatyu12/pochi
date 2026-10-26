@@ -194,7 +194,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 本文は content:encoded → description（RSS / RDF）、content → summary（Atom。空白だけ、または使えない type の content は飛ばす）、content_html → content_text → summary（JSON Feed）の順に採る。日付は pubDate / published / date_published を優先し、なければ dc:date / updated / date_modified。Atom のリンクは rel="alternate"（rel なしを含む）のうち、メディアタイプ（; 以降の引数は無視）が text/html のものを優先する。alternate がなければリンクなしとする（self / enclosure などは記事のページではない）。RDF は rdf:about を guid にする。RSS で link がなければ、絶対 URL の permalink guid を使う
   - タイトル：RSS / RDF は装飾タグ（b、em、strong、span、a、br など）だけを除いてからエンティティをデコードする。デコード後は CDATA のタグとエスケープされたタグ名を区別できないため、`<canvas>` のようなタグ名は残す。Atom は type に従い、html なら HTML として1段だけテキストにする（本文向けの二重エスケープ解除はしない）。JSON Feed と Atom の text はそのまま使う
   - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、guid または正規化 URL が同じ記事は最も新しいものだけを残してから、最新 N 件を取る。plain text の本文も HTML の本文と同じ見出し優先の切り詰めを行う。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
-  - `fetchFeedEntries` は取得と解析をまとめ、リダイレクト後の URL も返す。`fetchFeedItems` はそれに `toItems` を続け、件数を絞る前に entry を選ぶ filter を受け取れる。`fetchRssItems` は `fetchFeedItems` を呼ぶだけの薄い関数
+  - `fetchFeedEntries` は取得と解析をまとめ、リダイレクト後の URL も返す。全文を含むフィード（WordPress に多い）は 2MB を超えるので、上限は `FEED_MAX_BYTES`（10MB）とする。`fetchFeedItems` はそれに `toItems` を続け、件数を絞る前に entry を選ぶ filter を受け取れる。`fetchRssItems` は `fetchFeedItems` を呼ぶだけの薄い関数
 - **github.ts**
   - releases は REST API `https://api.github.com/repos/<repo>/releases?per_page=100` から取る。releases.atom は最新10件しか持たず、canary が続くと stable が窓から押し出されるため。`accept: application/vnd.github.html+json` で `body_html` を受け取り、rss.ts の `toItems`（kind は github）で変換する。draft は捨て、プレリリースは作者が付けた `prerelease` フラグで判定する。応答の上限は 8MB
   - 環境変数 `GITHUB_TOKEN` があれば `authorization: Bearer` で送る。なくても動く（無認証は IP あたり 60 回/時）。ログでは他の秘密情報と同様に伏せる
@@ -204,17 +204,17 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - `verifyRepo` はまず `GET /repos/<repo>` を呼ぶ（404 なら not_found）。改名・移管された repo は API が追従するので、`full_name` が入力と（大文字小文字を除いて）違えば `movedTo` に新しい名前を入れ、以降はその名前で調べる。releases（draft を除く）が1件以上なら found（releases）で、全部プレリリースなら `onlyPrereleases: true` を付ける。0件なら tags.atom を試し、1件以上なら found（tags）、0件なら empty、404 なら not_found を返す。404 以外の HTTP エラー、通信エラー、解釈できない応答は投げ、「存在しない」と「確認できない」を区別する
   - `isPrerelease` は `1.2` や `v16.1.0` のようなバージョンの直後に続く接尾辞で判定する（大文字小文字は問わない）：区切り（`-` / `.` / なし）＋ alpha / beta / rc / canary / next / preview / pre / nightly / dev / experimental / snapshot、PEP 440 の `a1` / `b2`、Maven の `-M1`。直後に英字が続く場合（`-devtools`）や、バージョンでない部分の数字（`python3-dev@1.2.0`、`eslint-config-next@14.0.0`）には一致させない。`1.0.0-1` のような数字だけの接尾辞はパッケージの改訂番号と区別できないため stable とみなす
   - タグ名は guid（`tag:github.com,2008:Repository/<id>/<tag>`）の末尾 → link の `/releases/tag/` 以降 → title の順に採る。guid は常にその entry 自身のタグを指す。title はリリース名でタグと異なることがあるため最後にする
-- **discover.ts**（RSS自動探索）`discoverFeeds(url)` は `{ url, title? }[]` を返す。url は取得して解析できたフィードのリダイレクト後の URL、title は `<link>` の title 属性。空配列は「フィードがない」で、入力ページ自体を取得できなければ HttpError を投げる（「ページを開けない」と区別する）
+- **discover.ts**（RSS自動探索）`discoverFeeds(url)` は `{ url, title? }[]` を返す。url は取得して解析できたフィードのリダイレクト後の URL、title は `<link>` の title 属性。空配列は「フィードがないことを確かめた」場合だけで、入力ページ自体を取得できなければ HttpError を投げる（「ページを開けない」と区別する）。入力ページの取得上限も `FEED_MAX_BYTES`（URL 自体がフィードのことがあるため）
   1. 入力された URL がそれ自体フィードなら、それを返す
-  2. head 内の `<link>` を正規表現で拾う（`findFeedLinks`）。コメントを除いてから、`</head>` または `<body` の手前までを見る。属性の順序や引用符の種類（なしを含む）、大文字小文字は問わず、属性値はエンティティをデコードする。rel のトークンに alternate を含み、type（; 以降は無視）が application/rss+xml / atom+xml / feed+json のものを対象とし、`<base href>` またはリダイレクト後の URL を基準に解決する。http(s) でないものと重複は除き、文書の順に並べる
-  3. 候補は全件、実際に取得して解析できるか確かめる（同時に4件まで）。失敗した候補は外し、リダイレクト先が同じフィードは1つにまとめる
-  4. 解析できたフィードが1件もなければ（`<link>` がない場合と、全部失敗した場合の両方）、リダイレクト後のページのオリジン直下で /feed, /feed/, /rss, /rss.xml, /atom.xml, /feed.xml, /index.xml を1件ずつ順に試し、最初に解析できたものだけを返す（/feed と /feed/ は同じフィードであることが多い）
+  2. head 内の `<link>` を正規表現で拾う（`findFeedLinks`）。コメントと `<script>` / `<style>` の中身を除いてから、`</head>` または `<body` の手前までを見る。引用符で囲まれた属性値の中の `>` ではタグを切らない。属性の順序や引用符の種類（なしを含む）、大文字小文字は問わず、属性値はエンティティをデコードする。rel のトークンに alternate を含み、type（; 以降は無視）が application/rss+xml / atom+xml / feed+json / rdf+xml / x-rss+xml / x-atom+xml、text/xml のものを対象とし（候補はすべて取得して確かめるので、広めに拾っても誤りにはならない）、`<base href>` またはリダイレクト後の URL を基準に解決する。http(s) でないものと重複は除き、文書の順に並べる
+  3. 候補は全件、実際に取得して解析できるか確かめる（同時に4件まで）。解析できない候補と 4xx（429 を除く）は外し、リダイレクト先が同じフィードは1つにまとめる。タイムアウト・通信エラー・5xx・429・サイズ超過は「確かめられなかった」として扱う：ほかに解析できたフィードがあれば warn を出してそれを返し、なければ代替パスを試さずにその HttpError を投げる（コメント用やサイト全体の別フィードを返さないため）
+  4. 解析できたフィードが1件もなければ（`<link>` がない場合と、全部失敗した場合の両方）、リダイレクト後のページのパス（クエリを除き、末尾を / にしたもの）の下で feed, feed/, rss, rss.xml, atom.xml, feed.xml, index.xml を1件ずつ順に試し、最初に解析できたものだけを返す（feed と feed/ は同じフィードであることが多い）。パスの下だけを試し、オリジン直下には戻らない：共有ホスト（dev.to/someuser など）ではルートのフィードはサイト全体のものだから。代替パスで「確かめられなかった」ものがあり、どれも解析できなければその HttpError を投げる
 - **tavily.ts**
   - POST https://api.tavily.com/search に Bearer 認証で送る。条件は time_range: "week" と search_depth: "basic"
   - TAVILY_API_KEY がなければ検索自体を行わない（`tavilyApiKey()` で有無を確かめられる）。401 は「Tavily rejected TAVILY_API_KEY」の HttpError とし、429 は1回だけ再試行する。5xx は課金済みの可能性があるので再試行しない
   - 本文は抽出済みの抜粋 `content` を使い、`include_raw_content` は使わない（ページ全体は雑音が多く大きい）
-  - 結果は Tavily の関連度順のまま、正規化 URL の重複と http(s) でない URL を除く。件数は maxResults で決まり、itemsPerFeed は適用しない。sourceName は検索語、日付は published_date（news のみ）
-  - JSON でない応答や形の違う応答は `FeedParseError` を投げる
+  - 結果は Tavily の関連度順のまま、URL のない結果、正規化 URL の重複、http(s) でない URL を除く（1件の欠けで応答全体を失わないよう、url はスキーマ上 null を許す）。件数は maxResults で決まり、itemsPerFeed は適用しない。sourceName は検索語、日付は published_date（news のみ）
+  - JSON でない応答や形の違う応答は `FeedParseError` を投げる（github.ts と共通の `sources/api.ts` の `parseApi`）
 - **index.ts** `collectAll`
   - 同時実行は4件まで。ソースごとに try/catch し、失敗を記録して次に進む
   - id と正規化 URL で重複を除く

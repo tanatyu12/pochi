@@ -7,6 +7,8 @@ import { parseDate } from "../util/time.js";
 import { htmlToLine, htmlToText, inlineHtmlToLine, plainTextToText, truncate } from "./html.js";
 
 const TITLE_MAX_CHARS = 300;
+// Full-content feeds (common on WordPress) easily pass the 2MB default.
+export const FEED_MAX_BYTES = 10 * 1024 * 1024;
 
 /**
  * One feed entry in a format-neutral shape. feedsmith has already decoded the XML, so
@@ -211,7 +213,7 @@ export async function fetchFeedEntries(
   url: string,
   signal?: AbortSignal,
 ): Promise<{ entries: RawEntry[]; url: string }> {
-  const res = await fetchText(url, { signal });
+  const res = await fetchText(url, { signal, maxBytes: FEED_MAX_BYTES });
   return { entries: parseFeedText(res.text), url: res.url };
 }
 
