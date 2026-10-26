@@ -53,6 +53,34 @@ export function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
 
 const jsonSchemas = new WeakMap<z.ZodType, Record<string, unknown>>();
 
+/** Where a reply failed the schema, without the values (they carry fetched text). */
+export function issuePaths(error: z.ZodError): string {
+  return [...new Set(error.issues.map((i) => i.path.join(".") || "(root)"))].slice(0, 5).join(", ");
+}
+
+/** The parsed reply, or invalid_output naming only the failing paths. where goes in the message. */
+export function validateReply<T>(value: unknown, schema: z.ZodType<T>, where: string): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    const paths = issuePaths(parsed.error);
+    throw new LlmError("invalid_output", `Claude's reply did not match the schema at ${paths} (${where})`);
+  }
+  return parsed.data;
+}
+
+export type StatusKind = Extract<LlmErrorKind, "auth" | "rate_limit" | "timeout" | "transport" | "unavailable">;
+
+/** The kind for an HTTP status from the Anthropic API, in both modes. */
+export function statusKind(status: number | undefined): StatusKind {
+  if (status === 401 || status === 403) return "auth";
+  if (status === 429) return "rate_limit";
+  // 408 / 409 and 5xx are transient: the SDK and claude have already retried them.
+  if (status === 408) return "timeout";
+  if (status === 409 || (status !== undefined && status >= 500)) return "transport";
+  // 400 / 404 and the rest: usually a model name that is not known, which retrying will not fix.
+  return "unavailable";
+}
+
 export type LlmTier = "triage" | "analyze";
 
 export interface GenerateRequest<T> {

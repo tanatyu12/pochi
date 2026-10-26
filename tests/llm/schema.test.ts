@@ -6,8 +6,10 @@ import {
   LlmError,
   QuerySuggestionOutputSchema,
   RepoInferenceOutputSchema,
+  statusKind,
   toJsonSchema,
   TriageOutputSchema,
+  validateReply,
 } from "../../src/llm/schema.js";
 
 const schemas = {
@@ -82,5 +84,42 @@ describe("LlmError", () => {
     expect(err.kind).toBe("refusal");
     expect(err.exitCode).toBe(ExitCode.LLM);
     expect(exitCodeOf(err)).toBe(3);
+  });
+});
+
+describe("validateReply", () => {
+  it("returns the parsed value", () => {
+    expect(validateReply({ queries: ["a"] }, QuerySuggestionOutputSchema, "haiku")).toEqual({ queries: ["a"] });
+  });
+
+  it("names the failing paths and where, but not the values", () => {
+    const err = (() => {
+      try {
+        validateReply({ queries: [1, "PLANTED"], extra: 2 }, z.object({ queries: z.array(z.string()) }).strict(), "m1");
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(LlmError);
+    expect((err as LlmError).kind).toBe("invalid_output");
+    expect((err as LlmError).message).toMatch(/at queries\.0, \(root\) \(m1\)$/);
+    expect((err as LlmError).message).not.toContain("PLANTED");
+  });
+});
+
+describe("statusKind", () => {
+  it.each([
+    [401, "auth"],
+    [403, "auth"],
+    [408, "timeout"],
+    [409, "transport"],
+    [429, "rate_limit"],
+    [500, "transport"],
+    [529, "transport"],
+    [400, "unavailable"],
+    [404, "unavailable"],
+    [undefined, "unavailable"],
+  ] as const)("maps %s to %s", (status, kind) => {
+    expect(statusKind(status)).toBe(kind);
   });
 });
