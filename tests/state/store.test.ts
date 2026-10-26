@@ -1,0 +1,240 @@
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureLog, resetLog } from "../../src/util/log.js";
+import {
+  DEFAULT_STATE_PATH,
+  type State,
+  type StateEntry,
+  StateError,
+  emptyState,
+  isKnown,
+  loadState,
+  pruneState,
+  record,
+  resolveStatePath,
+  saveState,
+  touch,
+} from "../../src/state/store.js";
+
+// Lets a test make the write of the staged file fail, to check that nothing is replaced.
+const failWrite = vi.hoisted(() => ({ on: false }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...fs,
+    writeFile: (async (path, ...rest) => {
+      if (failWrite.on) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+      return fs.writeFile(path, ...rest);
+    }) as typeof fs.writeFile,
+  };
+});
+
+const A = "a".repeat(32);
+const B = "b".repeat(32);
+const C = "c".repeat(32);
+const NOW = new Date("2026-10-25T22:17:03.456Z");
+
+function stateOf(entries: Record<string, StateEntry>): State {
+  return { entries: new Map(Object.entries(entries)) };
+}
+
+let dir: string;
+let path: string;
+let logs: string[];
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "pochi-state-"));
+  path = join(dir, "notified.json");
+  logs = [];
+  configureLog({ write: (s) => logs.push(s) });
+});
+
+afterEach(async () => {
+  failWrite.on = false;
+  resetLog();
+  await rm(dir, { recursive: true, force: true });
+});
+
+describe("resolveStatePath", () => {
+  it("prefers the flag, then POCHI_STATE_PATH, then the default", () => {
+    const env = { POCHI_STATE_PATH: "env.json" };
+    expect(resolveStatePath({ flag: "flag.json", env })).toBe("flag.json");
+    expect(resolveStatePath({ env })).toBe("env.json");
+    expect(resolveStatePath({ env: {} })).toBe(DEFAULT_STATE_PATH);
+  });
+
+  it("ignores a blank POCHI_STATE_PATH", () => {
+    expect(resolveStatePath({ env: { POCHI_STATE_PATH: "  " } })).toBe(DEFAULT_STATE_PATH);
+  });
+});
+
+describe("loadState", () => {
+  it("starts empty when the file does not exist", async () => {
+    const state = await loadState(path);
+    expect(state.entries.size).toBe(0);
+    expect(logs).toEqual([]);
+  });
+
+  it.each([
+    ["not JSON", "{ nope"],
+    ["an unknown version", JSON.stringify({ version: 2, entries: {} })],
+    ["entries that are not an object", JSON.stringify({ version: 1, entries: [] })],
+    ["JSON that is not an object", "null"],
+  ])("moves aside %s and starts empty", async (_, content) => {
+    await writeFile(path, content);
+    const state = await loadState(path, { now: NOW });
+    expect(state.entries.size).toBe(0);
+    const backup = join(dir, "notified.json.corrupt-20261025T221703Z");
+    expect(await readFile(backup, "utf8")).toBe(content);
+    expect(await readdir(dir)).toEqual(["notified.json.corrupt-20261025T221703Z"]);
+    expect(logs.join("")).toContain("moved it to");
+  });
+
+  it("drops only the invalid entries", async () => {
+    const good = { s: "n", f: "2026-10-20", l: "2026-10-25" };
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 1,
+        updatedAt: "2026-10-25T00:00:00Z",
+        entries: {
+          [A]: good,
+          [B]: { s: "x", f: "2026-10-20", l: "2026-10-25" },
+          [C]: { s: "i", f: "2026/10/20", l: "2026-10-25" },
+          "not-a-key": good,
+        },
+      }),
+    );
+    const state = await loadState(path);
+    expect([...state.entries]).toEqual([[A, good]]);
+    expect(logs.join("")).toContain("dropped 3 invalid entries");
+  });
+
+  it("throws when the file exists but cannot be read", async () => {
+    await mkdir(path);
+    await expect(loadState(path)).rejects.toBeInstanceOf(StateError);
+  });
+});
+
+describe("pruneState", () => {
+  it("expires entries by the day they were last seen", () => {
+    const state = stateOf({
+      [A]: { s: "n", f: "2026-01-01", l: "2026-09-10" }, // seen 45 days ago: kept
+      [B]: { s: "i", f: "2026-09-09", l: "2026-09-09" }, // 46 days ago: removed
+      [C]: { s: "n", f: "2025-01-01", l: "2026-10-25" }, // first seen long ago but still in a feed
+    });
+    expect(pruneState(state, 45, "2026-10-25")).toBe(1);
+    expect([...state.entries.keys()]).toEqual([A, C]);
+  });
+});
+
+describe("isKnown", () => {
+  it("knows an item by any of its keys", () => {
+    const state = stateOf({ [B]: { s: "n", f: "2026-10-20", l: "2026-10-20" } });
+    expect(isKnown(state, [A, B])).toBe(true);
+    expect(isKnown(state, [B])).toBe(true);
+    expect(isKnown(state, [A, C])).toBe(false);
+  });
+});
+
+describe("touch", () => {
+  it("updates the last-seen day and fills in missing keys from the known entry", () => {
+    const state = stateOf({ [A]: { s: "n", f: "2026-10-01", l: "2026-10-20" } });
+    touch(state, [A, B], "2026-10-25");
+    expect(Object.fromEntries(state.entries)).toEqual({
+      [A]: { s: "n", f: "2026-10-01", l: "2026-10-25" },
+      [B]: { s: "n", f: "2026-10-01", l: "2026-10-25" },
+    });
+  });
+
+  it("keeps the earliest first-seen day and prefers notified across keys", () => {
+    const state = stateOf({
+      [A]: { s: "i", f: "2026-10-10", l: "2026-10-20" },
+      [B]: { s: "n", f: "2026-10-05", l: "2026-10-21" },
+    });
+    touch(state, [A, B], "2026-10-25");
+    expect(state.entries.get(A)).toEqual({ s: "n", f: "2026-10-05", l: "2026-10-25" });
+    expect(state.entries.get(B)).toEqual({ s: "n", f: "2026-10-05", l: "2026-10-25" });
+  });
+
+  it("does nothing for an unknown item", () => {
+    const state = emptyState();
+    touch(state, [A, B], "2026-10-25");
+    expect(state.entries.size).toBe(0);
+  });
+});
+
+describe("record", () => {
+  it("records a new item under every key", () => {
+    const state = emptyState();
+    record(state, [A, B], "i", "2026-10-25");
+    expect(Object.fromEntries(state.entries)).toEqual({
+      [A]: { s: "i", f: "2026-10-25", l: "2026-10-25" },
+      [B]: { s: "i", f: "2026-10-25", l: "2026-10-25" },
+    });
+  });
+
+  it("keeps the first-seen day and upgrades irrelevant to notified", () => {
+    const state = stateOf({ [A]: { s: "i", f: "2026-10-01", l: "2026-10-20" } });
+    record(state, [A], "n", "2026-10-25");
+    expect(state.entries.get(A)).toEqual({ s: "n", f: "2026-10-01", l: "2026-10-25" });
+  });
+
+  it("never downgrades notified to irrelevant", () => {
+    const state = stateOf({ [A]: { s: "n", f: "2026-10-01", l: "2026-10-20" } });
+    record(state, [A, B], "i", "2026-10-25");
+    expect(state.entries.get(A)?.s).toBe("n");
+    expect(state.entries.get(B)?.s).toBe("n");
+  });
+});
+
+describe("saveState", () => {
+  it("writes sorted keys, one entry per line, and reads back the same state", async () => {
+    const state = stateOf({
+      [C]: { s: "n", f: "2026-10-20", l: "2026-10-25" },
+      [A]: { s: "i", f: "2026-10-21", l: "2026-10-24" },
+    });
+    await saveState(state, path, { now: NOW });
+    expect(await readFile(path, "utf8")).toBe(
+      [
+        "{",
+        '  "version": 1,',
+        '  "updatedAt": "2026-10-25T22:17:03Z",',
+        '  "entries": {',
+        `    "${A}": {"s":"i","f":"2026-10-21","l":"2026-10-24"},`,
+        `    "${C}": {"s":"n","f":"2026-10-20","l":"2026-10-25"}`,
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const loaded = await loadState(path);
+    expect([...loaded.entries]).toEqual([...state.entries].sort(([a], [b]) => a.localeCompare(b)));
+  });
+
+  it("writes an empty state that loads back", async () => {
+    await saveState(emptyState(), path, { now: NOW });
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      version: 1,
+      updatedAt: "2026-10-25T22:17:03Z",
+      entries: {},
+    });
+    expect((await loadState(path)).entries.size).toBe(0);
+  });
+
+  it("creates the parent directory", async () => {
+    const nested = join(dir, "state", "notified.json");
+    await saveState(emptyState(), nested);
+    expect((await loadState(nested)).entries.size).toBe(0);
+  });
+
+  it("leaves the old file and no temporary file behind when the write fails", async () => {
+    await writeFile(path, "old");
+    failWrite.on = true;
+    await expect(saveState(emptyState(), path)).rejects.toBeInstanceOf(StateError);
+    expect(await readFile(path, "utf8")).toBe("old");
+    expect(await readdir(dir)).toEqual(["notified.json"]);
+  });
+});
