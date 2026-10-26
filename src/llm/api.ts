@@ -1,5 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { type GenerateRequest, type LlmClient, LlmError, type LlmTier, toJsonSchema } from "./schema.js";
+import {
+  type GenerateRequest,
+  issuePaths,
+  type LlmClient,
+  LlmError,
+  type LlmTier,
+  toJsonSchema,
+} from "./schema.js";
 
 export const DEFAULT_API_MODELS: Record<LlmTier, string> = {
   triage: "claude-haiku-5-5",
@@ -72,8 +79,8 @@ function parseReply<T>(message: Anthropic.Message, req: GenerateRequest<T>, mode
   }
   const parsed = req.schema.safeParse(value);
   if (!parsed.success) {
-    const paths = [...new Set(parsed.error.issues.map((i) => i.path.join(".") || "(root)"))].slice(0, 5);
-    throw new LlmError("invalid_output", `Claude's reply did not match the schema at ${paths.join(", ")} (${where})`);
+    const paths = issuePaths(parsed.error);
+    throw new LlmError("invalid_output", `Claude's reply did not match the schema at ${paths} (${where})`);
   }
   return parsed.data;
 }

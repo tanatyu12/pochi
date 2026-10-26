@@ -44,6 +44,11 @@ export function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
   return rest;
 }
 
+/** Where a reply failed the schema, without the values (they carry fetched text). */
+export function issuePaths(error: z.ZodError): string {
+  return [...new Set(error.issues.map((i) => i.path.join(".") || "(root)"))].slice(0, 5).join(", ");
+}
+
 export type LlmTier = "triage" | "analyze";
 
 export interface GenerateRequest<T> {
