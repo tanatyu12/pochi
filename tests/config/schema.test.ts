@@ -21,7 +21,7 @@ describe("ContextSchema", () => {
       ...minimalContext,
       exclude: [],
       language: "English",
-      llm: { provider: "auto", maxItemsPerCall: 40, maxItemsPerRun: 150 },
+      llm: { provider: "auto", maxItemsPerCall: 40, maxItemsPerRun: 150, concurrency: 2 },
       notify: { slack: { postWhenEmpty: false, minImpact: "Low" } },
       state: { ttlDays: 45, maxItemAgeDays: 14 },
     });
@@ -60,13 +60,14 @@ describe("ContextSchema", () => {
         version: 2,
         project: { name: 1, description: "" },
         problems: ["p"],
-        llm: { provider: "gpt", maxItemsPerCall: 0 },
+        llm: { provider: "gpt", maxItemsPerCall: 0, concurrency: 9 },
       }),
     ).toEqual([
       "context.yml: version: invalid option",
       "context.yml: project.name: expected string",
       "context.yml: llm.provider: invalid option",
       "context.yml: llm.maxItemsPerCall: must be > 0",
+      "context.yml: llm.concurrency: must be <= 8",
     ]);
   });
 });
