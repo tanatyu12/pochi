@@ -627,6 +627,17 @@ describe("filterAndAnalyze pretriaged items", () => {
     expect(result.insights).toHaveLength(4);
   });
 
+  it("keeps half of maxItemsPerRun for new items when pretriaged ones would fill it", async () => {
+    const llm = fakeLlm();
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerRun: 4 } }), items(4), {
+      pretriaged: items(4, 10),
+    });
+    expect(llm.of("triage").flatMap((c) => c.titles)).toHaveLength(2);
+    expect(result.undecided).toHaveLength(2);
+    expect(result.pending).toHaveLength(2);
+    expect(result.insights).toHaveLength(4);
+  });
+
   it("keeps the oldest pretriaged items pending when they alone exceed maxItemsPerRun", async () => {
     const llm = fakeLlm();
     const pretriaged = [item(10, { publishedAt: "2026-10-01T00:00:00Z" }), item(11, { publishedAt: "2026-10-20T00:00:00Z" })];
