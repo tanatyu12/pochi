@@ -78,7 +78,7 @@ export const SourcesSchema = z
     defaults: z
       .strictObject({
         itemsPerFeed: positiveInt.default(3),
-        maxContentChars: positiveInt.default(500),
+        maxContentChars: positiveInt.default(2000),
       })
       .prefault({}),
     feeds: z.array(z.discriminatedUnion("type", [GithubFeedSchema, RssFeedSchema])).default([]),
