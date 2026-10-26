@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collapseWhitespace, truncate, truncateUnits } from "../../src/util/text.js";
+import { collapseWhitespace, plural, stripControlChars, truncate, truncateUnits } from "../../src/util/text.js";
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -43,5 +43,26 @@ describe("truncateUnits", () => {
   ])("cuts %j to %d", (units, max, expected) => {
     expect(truncateUnits(units, max)).toBe(expected);
     expect(truncateUnits(units, max).length).toBeLessThanOrEqual(Math.max(max, 0));
+  });
+});
+
+describe("stripControlChars", () => {
+  it.each([
+    ["a\u001b[2Jb", "a[2Jb"],
+    ["\u001b]8;;https://evil.example/\u0007link", "]8;;https://evil.example/link"],
+    ["a\u009b31mb\u007f", "a31mb"],
+    ["tab\tand\nnewline", "tab\tand\nnewline"],
+  ])("strips %j", (text, expected) => {
+    expect(stripControlChars(text)).toBe(expected);
+  });
+});
+
+describe("plural", () => {
+  it.each([
+    [0, "feed", undefined, "0 feeds"],
+    [1, "feed", undefined, "1 feed"],
+    [2, "query", "queries", "2 queries"],
+  ] as const)("%d %s", (n, one, many, expected) => {
+    expect(plural(n, one, many)).toBe(expected);
   });
 });

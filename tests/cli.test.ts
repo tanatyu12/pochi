@@ -3,6 +3,10 @@ import { createProgram, main } from "../src/cli.js";
 import { VERSION } from "../src/version.js";
 
 describe("cli", () => {
+  it("has a doctor command", () => {
+    expect(createProgram().commands.map((c) => c.name())).toContain("doctor");
+  });
+
   it("prints the version with --version", async () => {
     let out = "";
     const program = createProgram()
@@ -24,6 +28,7 @@ describe("cli", () => {
       expect(await main(["node", "pochi", "init", "--config-dir", "/nonexistent/pochi"])).toBe(2);
       expect(await main(["node", "pochi", "run", "--no-such-option"])).toBe(2);
       expect(await main(["node", "pochi", "run", "--help"])).toBe(0);
+      expect(await main(["node", "pochi", "doctor", "--no-such-option"])).toBe(2);
       expect(process.listenerCount("SIGINT")).toBe(0);
     } finally {
       stdout.mockRestore();

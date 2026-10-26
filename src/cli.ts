@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
+import { doctorCommand } from "./commands/doctor.js";
 import { runInit } from "./commands/init.js";
 import { runCommand } from "./commands/run.js";
 import { DEFAULT_CONFIG_DIR } from "./config/load.js";
@@ -31,6 +32,8 @@ export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
     .option("--verbose", "log debug messages")
     .option("--quiet", "log only warnings and errors")
     .action((o) => runCommand(o, { signal: opts.signal }));
+  // addCommand does not copy the parent's settings, so this one needs its own exitOverride.
+  program.addCommand(doctorCommand({ signal: opts.signal }).exitOverride());
   return program;
 }
 

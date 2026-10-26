@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseHttpUrl } from "../util/hash.js";
+import { plural } from "../util/text.js";
 
 const text = z.string().trim().min(1);
 const sourceId = z.string().regex(/^[a-z0-9][a-z0-9_-]*$/, { error: "must be lowercase letters, digits, - or _" });
@@ -148,7 +149,7 @@ function describeBound(origin: string, word: string, bound: number | bigint, inc
   const n = Number(bound);
   switch (origin) {
     case "array":
-      return `must have ${word} ${n} item${n === 1 ? "" : "s"}`;
+      return `must have ${word} ${plural(n, "item")}`;
     case "string":
       return n === 1 && word === "at least" ? "must not be empty" : `must be ${word} ${n} characters`;
     default:
