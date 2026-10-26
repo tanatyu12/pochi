@@ -1,0 +1,149 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`toJsonSchema > matches the snapshot for AnalysisOutput > AnalysisOutput 1`] = `
+{
+  "additionalProperties": false,
+  "properties": {
+    "insights": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+          },
+          "id": {
+            "type": "string",
+          },
+          "impact": {
+            "enum": [
+              "High",
+              "Medium",
+              "Low",
+            ],
+            "type": "string",
+          },
+          "summary": {
+            "type": "string",
+          },
+          "title": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "id",
+          "title",
+          "summary",
+          "impact",
+          "action",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+  },
+  "required": [
+    "insights",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`toJsonSchema > matches the snapshot for QuerySuggestionOutput > QuerySuggestionOutput 1`] = `
+{
+  "additionalProperties": false,
+  "properties": {
+    "queries": {
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+  },
+  "required": [
+    "queries",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`toJsonSchema > matches the snapshot for RepoInferenceOutput > RepoInferenceOutput 1`] = `
+{
+  "additionalProperties": false,
+  "properties": {
+    "results": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "note": {
+                  "type": "string",
+                },
+                "repo": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "repo",
+                "note",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "id": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "id",
+          "candidates",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+  },
+  "required": [
+    "results",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`toJsonSchema > matches the snapshot for TriageOutput > TriageOutput 1`] = `
+{
+  "additionalProperties": false,
+  "properties": {
+    "decisions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+          },
+          "reason": {
+            "type": "string",
+          },
+          "relevant": {
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "id",
+          "relevant",
+          "reason",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+  },
+  "required": [
+    "decisions",
+  ],
+  "type": "object",
+}
+`;

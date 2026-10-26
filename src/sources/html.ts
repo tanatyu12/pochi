@@ -1,4 +1,5 @@
 import { decodeHTML } from "entities";
+import { collapseWhitespace, truncate } from "../util/text.js";
 
 // Mark heading lines and lines from <pre> between passes. Input control characters are
 // stripped first, so they can only come from us.
@@ -69,15 +70,7 @@ export function plainTextToText(text: string, maxChars: number): string {
 }
 
 function oneLine(text: string): string {
-  return text.replace(MARKER_CHARS, "").replace(/\s+/g, " ").trim();
-}
-
-// Cuts by code point so emoji and CJK are never split mid-character.
-export function truncate(text: string, maxChars: number): string {
-  if (maxChars <= 0) return "";
-  const chars = Array.from(text);
-  if (chars.length <= maxChars) return text;
-  return `${chars.slice(0, maxChars - 1).join("").trimEnd()}…`;
+  return collapseWhitespace(text.replace(MARKER_CHARS, ""));
 }
 
 function toText(html: string): string {

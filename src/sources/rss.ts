@@ -3,8 +3,9 @@ import type { RssFeed, Sources } from "../config/schema.js";
 import type { Item, SourceKind } from "../types.js";
 import { itemId, normalizeUrl, parseHttpUrl, urlKey } from "../util/hash.js";
 import { fetchText } from "../util/http.js";
+import { collapseWhitespace, truncate } from "../util/text.js";
 import { parseDate } from "../util/time.js";
-import { htmlToLine, htmlToText, inlineHtmlToLine, plainTextToText, truncate } from "./html.js";
+import { htmlToLine, htmlToText, inlineHtmlToLine, plainTextToText } from "./html.js";
 
 const TITLE_MAX_CHARS = 300;
 // Full-content feeds (common on WordPress) easily pass the 2MB default.
@@ -205,7 +206,7 @@ function toTitle(title: RawEntry["title"]): string {
       ? htmlToLine(title.value)
       : title.format === "inline"
         ? inlineHtmlToLine(title.value)
-        : title.value.replace(/\s+/g, " ").trim();
+        : collapseWhitespace(title.value);
   return truncate(text, TITLE_MAX_CHARS);
 }
 
