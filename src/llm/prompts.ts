@@ -1,5 +1,5 @@
 import type { Context } from "../config/schema.js";
-import { truncate } from "../sources/html.js";
+import { truncate } from "../util/text.js";
 import type { Item } from "../types.js";
 import {
   AnalysisOutputSchema,
