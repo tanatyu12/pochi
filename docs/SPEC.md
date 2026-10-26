@@ -204,11 +204,11 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - `verifyRepo` はまず `GET /repos/<repo>` を呼ぶ（404 なら not_found）。改名・移管された repo は API が追従するので、`full_name` が入力と（大文字小文字を除いて）違えば `movedTo` に新しい名前を入れ、以降はその名前で調べる。releases（draft を除く）が1件以上なら found（releases）で、全部プレリリースなら `onlyPrereleases: true` を付ける。0件なら tags.atom を試し、1件以上なら found（tags）、0件なら empty、404 なら not_found を返す。404 以外の HTTP エラー、通信エラー、解釈できない応答は投げ、「存在しない」と「確認できない」を区別する
   - `isPrerelease` は `1.2` や `v16.1.0` のようなバージョンの直後に続く接尾辞で判定する（大文字小文字は問わない）：区切り（`-` / `.` / なし）＋ alpha / beta / rc / canary / next / preview / pre / nightly / dev / experimental / snapshot、PEP 440 の `a1` / `b2`、Maven の `-M1`。直後に英字が続く場合（`-devtools`）や、バージョンでない部分の数字（`python3-dev@1.2.0`、`eslint-config-next@14.0.0`）には一致させない。`1.0.0-1` のような数字だけの接尾辞はパッケージの改訂番号と区別できないため stable とみなす
   - タグ名は guid（`tag:github.com,2008:Repository/<id>/<tag>`）の末尾 → link の `/releases/tag/` 以降 → title の順に採る。guid は常にその entry 自身のタグを指す。title はリリース名でタグと異なることがあるため最後にする
-- **discover.ts**（RSS自動探索）
+- **discover.ts**（RSS自動探索）`discoverFeeds(url)` は `{ url, title? }[]` を返す。url は取得して解析できたフィードのリダイレクト後の URL、title は `<link>` の title 属性。空配列は「フィードがない」で、入力ページ自体を取得できなければ HttpError を投げる（「ページを開けない」と区別する）
   1. 入力された URL がそれ自体フィードなら、それを返す
-  2. head 内の `<link>` を正規表現で拾う。属性の順序や引用符の種類、大文字小文字は問わない。rel に alternate を含み、type が rss / atom / feed+json のものを対象とし、`<base>` またはリダイレクト後の URL を基準に解決する
-  3. 見つからなければ /feed, /feed/, /rss, /rss.xml, /atom.xml, /feed.xml, /index.xml を順に試す
-  4. 候補は全件、実際に取得して解析できるか確かめる
+  2. head 内の `<link>` を正規表現で拾う（`findFeedLinks`）。コメントを除いてから、`</head>` または `<body` の手前までを見る。属性の順序や引用符の種類（なしを含む）、大文字小文字は問わず、属性値はエンティティをデコードする。rel のトークンに alternate を含み、type（; 以降は無視）が application/rss+xml / atom+xml / feed+json のものを対象とし、`<base href>` またはリダイレクト後の URL を基準に解決する。http(s) でないものと重複は除き、文書の順に並べる
+  3. 候補は全件、実際に取得して解析できるか確かめる（同時に4件まで）。失敗した候補は外し、リダイレクト先が同じフィードは1つにまとめる
+  4. 解析できたフィードが1件もなければ（`<link>` がない場合と、全部失敗した場合の両方）、リダイレクト後のページのオリジン直下で /feed, /feed/, /rss, /rss.xml, /atom.xml, /feed.xml, /index.xml を1件ずつ順に試し、最初に解析できたものだけを返す（/feed と /feed/ は同じフィードであることが多い）
 - **tavily.ts**
   - POST https://api.tavily.com/search に Bearer 認証で送る。条件は time_range: "week" と search_depth: "basic"
   - TAVILY_API_KEY がなければ検索自体を行わない。401 は失敗とし、429 は1回だけ再試行する
@@ -318,7 +318,7 @@ README に書く注意点：
 | T4 | M1 情報収集 | html.ts | T1 | 二重エスケープ、絵文字や日本語での切り詰めを含むテスト | 完了 |
 | T5 | M1 情報収集 | rss.ts（feedsmith）。最初に feedsmith の API をフィクスチャで確かめる | T2, T4 | RSS2、Atom、RDF、JSON Feed、BOM、壊れた XML のフィクスチャ | 完了 |
 | T6 | M1 情報収集 | github.ts | T5 | verifyRepo の4パターン、プレリリース判定を表形式でテスト | 完了 |
-| T7 | M1 情報収集 | discover.ts（T6・T8 と並行可） | T5 | 属性の順序、単引用符、大文字、base 要素、相対パス、代替パスを試す順序、URL 自体がフィードの場合 | 未着手 |
+| T7 | M1 情報収集 | discover.ts（T6・T8 と並行可） | T5 | 属性の順序、単引用符、大文字、base 要素、相対パス、代替パスを試す順序、URL 自体がフィードの場合 | 完了 |
 | T8 | M1 情報収集 | tavily.ts（T6・T7 と並行可） | T2, T4 | リクエストの本文とヘッダーを検証。401 と 429 の扱い | 未着手 |
 | T9 | M1 情報収集 | 収集の統合（sources/index） | T3, T5, T6, T8 | 3件中1件が失敗しても続行する、重複排除、キーがなければ Tavily を使わない、同時実行は4件まで | 未着手 |
 | T10 | M2 LLM | llm/schema と prompts | T3 | JSON Schema のスナップショット。記事に紛れ込ませた閉じタグで囲みを抜けられない | 未着手 |
