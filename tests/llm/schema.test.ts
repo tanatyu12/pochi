@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { ExitCode, exitCodeOf, PochiError } from "../../src/errors.js";
 import {
   AnalysisOutputSchema,
@@ -29,6 +30,8 @@ describe("toJsonSchema", () => {
     expect(toJsonSchema(schema)).toMatchSnapshot(name);
   });
 
+  // Structured outputs need every key required. A .default() makes its key optional on the
+  // input side, so this fails if one is added to an output schema.
   it.each(Object.entries(schemas))("closes every object and requires every key in %s", (_, schema) => {
     const json = toJsonSchema(schema);
     expect(json).not.toHaveProperty("$schema");
@@ -38,6 +41,16 @@ describe("toJsonSchema", () => {
       expect(obj.additionalProperties).toBe(false);
       expect(obj.required).toEqual(Object.keys(obj.properties as object));
     }
+  });
+
+  it("describes what the model sends, not what parsing returns", () => {
+    const schema = z.object({ a: z.string(), b: z.string().default("x"), c: z.string().transform(Number) });
+    expect(toJsonSchema(schema)).toEqual({
+      type: "object",
+      properties: { a: { type: "string" }, b: { type: "string", default: "x" }, c: { type: "string" } },
+      required: ["a", "c"],
+      additionalProperties: false,
+    });
   });
 });
 

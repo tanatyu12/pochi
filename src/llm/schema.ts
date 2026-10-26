@@ -30,11 +30,17 @@ export type QuerySuggestionOutput = z.output<typeof QuerySuggestionOutputSchema>
 
 /**
  * JSON Schema for the claude CLI's --json-schema and for the API when zodOutputFormat is not
- * usable. Output mode closes every object (additionalProperties: false), as structured outputs
- * require; $schema is dropped since neither consumer needs it.
+ * usable. It describes the input side, since what the model emits is what we parse. Input mode
+ * leaves objects open, so every object is closed here (additionalProperties: false), as
+ * structured outputs require; $schema is dropped since neither consumer needs it.
  */
 export function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
-  const { $schema: _, ...rest } = z.toJSONSchema(schema, { io: "output" });
+  const { $schema: _, ...rest } = z.toJSONSchema(schema, {
+    io: "input",
+    override: ({ jsonSchema }) => {
+      if (jsonSchema.type === "object") jsonSchema.additionalProperties = false;
+    },
+  });
   return rest;
 }
 
