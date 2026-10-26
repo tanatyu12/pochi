@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { QueryConfig, Sources } from "../config/schema.js";
 import type { Item } from "../types.js";
-import { itemId, normalizeUrl, parseHttpUrl } from "../util/hash.js";
+import { itemId, normalizeUrl, parseHttpUrl, urlKey } from "../util/hash.js";
 import { HttpError, postJson } from "../util/http.js";
 import { parseDate } from "../util/time.js";
 import { parseApi } from "./api.js";
@@ -81,6 +81,7 @@ function toTavilyItems(results: SearchResult[], query: QueryConfig, defaults: So
         kind: "tavily" as const,
         title: title || truncate(url, TITLE_MAX_CHARS),
         url,
+        urlKey: urlKey(normalized),
         publishedAt: parseDate(r.published_date ?? undefined)?.toISOString(),
         content: plainTextToText(r.content ?? "", defaults.maxContentChars),
       },

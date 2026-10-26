@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FEED_MAX_BYTES, FeedParseError, fetchRssItems, parseFeedText, toItems, type RawEntry } from "../../src/sources/rss.js";
-import { itemId } from "../../src/util/hash.js";
+import { itemId, urlKey } from "../../src/util/hash.js";
 import { HttpError } from "../../src/util/http.js";
 import { mockFetch, reply } from "../helpers/mockFetch.js";
 
@@ -213,6 +213,12 @@ describe("toItems", () => {
       [itemId("blog", "a"), "2026-10-03T00:00:00.000Z"],
       [itemId("blog", "b"), "2026-09-01T00:00:00.000Z"],
     ]);
+  });
+
+  it("keys the item by its normalized URL as well", () => {
+    const [item] = toItems([entry({ guid: "g", link: "/post/?utm_source=rss#top" })], source, opts);
+    expect(item?.url).toBe("https://blog.example.com/post/?utm_source=rss#top");
+    expect(item?.urlKey).toBe(urlKey("https://blog.example.com/post"));
   });
 
   it("fills source fields and defaults kind to rss", () => {

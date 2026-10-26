@@ -1,7 +1,7 @@
 import { parseFeed, DetectError } from "feedsmith";
 import type { RssFeed, Sources } from "../config/schema.js";
 import type { Item, SourceKind } from "../types.js";
-import { itemId, normalizeUrl, parseHttpUrl } from "../util/hash.js";
+import { itemId, normalizeUrl, parseHttpUrl, urlKey } from "../util/hash.js";
 import { fetchText } from "../util/http.js";
 import { parseDate } from "../util/time.js";
 import { htmlToLine, htmlToText, inlineHtmlToLine, plainTextToText, truncate } from "./html.js";
@@ -183,13 +183,14 @@ export function toItems(entries: RawEntry[], source: ItemSource, opts: ToItemsOp
     seen.add(key).add(normalized);
     return true;
   });
-  return unique.slice(0, Math.max(0, opts.itemsPerFeed)).map(({ entry, url, key, date }) => ({
+  return unique.slice(0, Math.max(0, opts.itemsPerFeed)).map(({ entry, url, normalized, key, date }) => ({
     id: itemId(source.id, key),
     sourceId: source.id,
     sourceName: source.name,
     kind: source.kind ?? "rss",
     title: toTitle(entry.title) || truncate(url, TITLE_MAX_CHARS),
     url,
+    urlKey: urlKey(normalized),
     publishedAt: date?.toISOString(),
     content: entry.html
       ? htmlToText(entry.html, opts.maxContentChars)
