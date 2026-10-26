@@ -1,0 +1,21 @@
+{
+  "version": "https://jsonfeed.org/version/1.1",
+  "title": "JSON Example",
+  "home_page_url": "https://json.example.com/",
+  "items": [
+    {
+      "id": "j1",
+      "url": "https://json.example.com/1",
+      "title": "HTML item",
+      "content_html": "<p>Hello <em>JSON</em></p>",
+      "date_published": "2026-10-20T00:00:00Z"
+    },
+    {
+      "id": "j2",
+      "external_url": "https://elsewhere.example.com/2",
+      "title": "Text item",
+      "content_text": "Use &amp; literally, and a < b",
+      "date_modified": "2026-10-22T00:00:00Z"
+    }
+  ]
+}
