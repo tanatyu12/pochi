@@ -33,16 +33,25 @@ export type QuerySuggestionOutput = z.output<typeof QuerySuggestionOutputSchema>
  * usable. It describes the input side, since what the model emits is what we parse. Input mode
  * leaves objects open, so every object is closed here (additionalProperties: false), as
  * structured outputs require; $schema is dropped since neither consumer needs it.
+ *
+ * Cached per schema, since every batch sends the same one: callers must not modify the result.
  */
 export function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
-  const { $schema: _, ...rest } = z.toJSONSchema(schema, {
-    io: "input",
-    override: ({ jsonSchema }) => {
-      if (jsonSchema.type === "object") jsonSchema.additionalProperties = false;
-    },
-  });
-  return rest;
+  let cached = jsonSchemas.get(schema);
+  if (!cached) {
+    const { $schema: _, ...rest } = z.toJSONSchema(schema, {
+      io: "input",
+      override: ({ jsonSchema }) => {
+        if (jsonSchema.type === "object") jsonSchema.additionalProperties = false;
+      },
+    });
+    cached = rest;
+    jsonSchemas.set(schema, cached);
+  }
+  return cached;
 }
+
+const jsonSchemas = new WeakMap<z.ZodType, Record<string, unknown>>();
 
 export type LlmTier = "triage" | "analyze";
 
