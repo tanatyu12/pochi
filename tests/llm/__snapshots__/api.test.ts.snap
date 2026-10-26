@@ -1,0 +1,53 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`createApiLlm > sends the request body in this exact shape 1`] = `
+{
+  "max_tokens": 16000,
+  "messages": [
+    {
+      "content": "items PLANTED-7f3a",
+      "role": "user",
+    },
+  ],
+  "model": "claude-haiku-5-5",
+  "output_config": {
+    "effort": "low",
+    "format": {
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "decisions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                },
+                "reason": {
+                  "type": "string",
+                },
+                "relevant": {
+                  "type": "boolean",
+                },
+              },
+              "required": [
+                "id",
+                "relevant",
+                "reason",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "decisions",
+        ],
+        "type": "object",
+      },
+      "type": "json_schema",
+    },
+  },
+  "system": "system prompt",
+}
+`;
