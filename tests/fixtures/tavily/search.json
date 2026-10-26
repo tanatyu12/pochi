@@ -1,0 +1,45 @@
+{
+  "query": "Qwen model release",
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "title": "Qwen 4 released\n  with 1M context",
+      "url": "https://example.com/news/qwen-4?utm_source=tavily",
+      "content": "Alibaba released Qwen 4 today.",
+      "score": 0.91,
+      "raw_content": null,
+      "published_date": "Mon, 20 Oct 2026 08:00:00 GMT"
+    },
+    {
+      "title": "Qwen 4 benchmarks",
+      "url": "https://blog.example.org/qwen-4-benchmarks/",
+      "content": "Qwen 4 では長い文脈を扱えるようになった🚀。ベンチマークの結果を詳しく見ていく。推論速度、メモリ使用量、日本語の性能について順に説明する。",
+      "score": 0.85,
+      "raw_content": null
+    },
+    {
+      "title": "Qwen 4 released (mirror)",
+      "url": "https://EXAMPLE.com/news/qwen-4#top",
+      "content": "Duplicate of the first result.",
+      "score": 0.7,
+      "raw_content": null
+    },
+    {
+      "title": "Not a page",
+      "url": "javascript:alert(1)",
+      "content": "Dropped.",
+      "score": 0.6,
+      "raw_content": null
+    },
+    {
+      "title": "",
+      "url": "https://forum.example.net/t/qwen-4",
+      "content": "Discussion thread.",
+      "score": 0.5,
+      "raw_content": null
+    }
+  ],
+  "response_time": 1.23,
+  "request_id": "00000000-0000-0000-0000-000000000000"
+}
