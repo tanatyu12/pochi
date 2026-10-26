@@ -18,16 +18,29 @@ import {
   touch,
 } from "../../src/state/store.js";
 
-// Lets a test make the write of the staged file fail, to check that nothing is replaced.
-const failWrite = vi.hoisted(() => ({ on: false }));
+// Lets a test make the write of the staged file fail, to check that nothing is replaced, and the
+// cleanup after it fail too, to check that the write error is the one reported.
+const { fail, ENOSPC } = vi.hoisted(() => ({
+  fail: { write: false, rm: false },
+  ENOSPC: Object.assign(new Error("no space left on device"), { code: "ENOSPC" }),
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...fs,
-    writeFile: (async (path, ...rest) => {
-      if (failWrite.on) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
-      return fs.writeFile(path, ...rest);
-    }) as typeof fs.writeFile,
+    open: (async (...args) => {
+      const fh = await fs.open(...args);
+      if (fail.write) {
+        fh.writeFile = async () => {
+          throw ENOSPC;
+        };
+      }
+      return fh;
+    }) as typeof fs.open,
+    rm: (async (...args) => {
+      if (fail.rm) throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      return fs.rm(...args);
+    }) as typeof fs.rm,
   };
 });
 
@@ -52,7 +65,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  failWrite.on = false;
+  fail.write = false;
+  fail.rm = false;
   resetLog();
   await rm(dir, { recursive: true, force: true });
 });
@@ -67,6 +81,11 @@ describe("resolveStatePath", () => {
 
   it("ignores a blank POCHI_STATE_PATH", () => {
     expect(resolveStatePath({ env: { POCHI_STATE_PATH: "  " } })).toBe(DEFAULT_STATE_PATH);
+  });
+
+  it.each(["", "  "])("treats a blank flag (%j) as unset", (flag) => {
+    expect(resolveStatePath({ flag, env: { POCHI_STATE_PATH: "env.json" } })).toBe("env.json");
+    expect(resolveStatePath({ flag, env: {} })).toBe(DEFAULT_STATE_PATH);
   });
 });
 
@@ -86,10 +105,30 @@ describe("loadState", () => {
     await writeFile(path, content);
     const state = await loadState(path, { now: NOW });
     expect(state.entries.size).toBe(0);
-    const backup = join(dir, "notified.json.corrupt-20261025T221703Z");
-    expect(await readFile(backup, "utf8")).toBe(content);
-    expect(await readdir(dir)).toEqual(["notified.json.corrupt-20261025T221703Z"]);
+    const files = await readdir(dir);
+    expect(files).toEqual([expect.stringMatching(/^notified\.json\.corrupt-20261025T221703Z-[0-9a-f]{6}$/)]);
+    expect(await readFile(join(dir, files[0]!), "utf8")).toBe(content);
     expect(logs.join("")).toContain("moved it to");
+  });
+
+  it("keeps both backups when the file is corrupt twice within a second", async () => {
+    await writeFile(path, "first");
+    await loadState(path, { now: NOW });
+    await writeFile(path, "second");
+    await loadState(path, { now: NOW });
+    const files = await readdir(dir);
+    expect(files).toHaveLength(2);
+    const contents = await Promise.all(files.map((f) => readFile(join(dir, f), "utf8")));
+    expect(contents.sort()).toEqual(["first", "second"]);
+  });
+
+  it("leaves a corrupt file in place when read-only", async () => {
+    await writeFile(path, "{ nope");
+    const state = await loadState(path, { now: NOW, readOnly: true });
+    expect(state.entries.size).toBe(0);
+    expect(await readdir(dir)).toEqual(["notified.json"]);
+    expect(await readFile(path, "utf8")).toBe("{ nope");
+    expect(logs.join("")).toContain("left in place");
   });
 
   it("drops only the invalid entries", async () => {
@@ -103,13 +142,17 @@ describe("loadState", () => {
           [A]: good,
           [B]: { s: "x", f: "2026-10-20", l: "2026-10-25" },
           [C]: { s: "i", f: "2026/10/20", l: "2026-10-25" },
+          ["d".repeat(32)]: { s: "n", f: "2026-10-20", l: "2026-13-01" },
+          ["e".repeat(32)]: { s: "n", f: "2026-02-30", l: "2026-10-25" },
           "not-a-key": good,
         },
       }),
     );
     const state = await loadState(path);
     expect([...state.entries]).toEqual([[A, good]]);
-    expect(logs.join("")).toContain("dropped 3 invalid entries");
+    expect(logs.join("")).toContain("dropped 5 invalid entries");
+    // An impossible day that got through would make this throw.
+    expect(pruneState(state, 45, "2026-10-26")).toBe(0);
   });
 
   it("throws when the file exists but cannot be read", async () => {
@@ -232,9 +275,17 @@ describe("saveState", () => {
 
   it("leaves the old file and no temporary file behind when the write fails", async () => {
     await writeFile(path, "old");
-    failWrite.on = true;
+    fail.write = true;
     await expect(saveState(emptyState(), path)).rejects.toBeInstanceOf(StateError);
     expect(await readFile(path, "utf8")).toBe("old");
     expect(await readdir(dir)).toEqual(["notified.json"]);
+  });
+
+  it("reports the write error even when the cleanup fails too", async () => {
+    fail.write = true;
+    fail.rm = true;
+    const err = await saveState(emptyState(), path).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StateError);
+    expect((err as StateError).cause).toBe(ENOSPC);
   });
 });
