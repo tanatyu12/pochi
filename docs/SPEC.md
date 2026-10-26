@@ -232,19 +232,20 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 ### LLM（llm/, pipeline/）
 
 - **adapter.ts** `resolveLlm(context.llm, { env?, platform?, spawn?, command?, signal? })` は `{ client, models, cliVersion? }` を返す。共通インターフェースは `LlmClient.generate<T>({system, prompt, schema, tier})`
-  - provider が auto のとき：ANTHROPIC_API_KEY（空白だけは未設定扱い）があれば APIモード、なければ `claude --version` が成功するとき CLIモード。どちらも使えなければ unavailable（Windows は CLIモード非対応で、claude を起動しない）
+  - provider が auto のとき：ANTHROPIC_API_KEY（前後の空白を除いて判定し、空白だけは未設定扱い。APIモードではこの除いた値を SDK に `apiKey` として渡すので、判定と送るキーが食い違わない）があれば APIモード、なければ `claude --version` が成功するとき CLIモード。どちらも使えなければ unavailable（Windows は CLIモード非対応で、claude を起動しない）
   - provider が api でキーがなければ auth。provider が cli ならキーがあっても CLIモードとし、Windows や `claude --version` の失敗は unavailable
   - モデル名は triageModel / analyzeModel、なければモードの既定（`DEFAULT_API_MODELS` / `DEFAULT_CLI_MODELS`）
-  - `claude --version` は shell: false、10秒でタイムアウト（SIGKILL）。終了コード0で何か出力したときだけ成功とし、その1行目（200字まで）を `cliVersion` として doctor に渡す
+  - CLIモードの claude（`claude --version` を含む）には ANTHROPIC_API_KEY を除いた環境変数（`cliEnv`）を渡す。キーがあると claude はログインではなくキーで動き、API の従量課金になるため
+  - `claude --version` は cli.ts の `runClaude` で実行する（専用の一時ディレクトリを cwd とし、shell: false。10秒でタイムアウトし、SIGINT、5秒後に SIGKILL。中断は signal の reason、なければ AbortError）。終了コード0で何か出力したときだけ成功とし、その1行目（200字まで）を `cliVersion` として doctor に渡す
 - **api.ts**
-  - `createApiLlm({ models, client? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
+  - `createApiLlm({ models, apiKey?, client? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
   - `messages.create` に `output_config.format`（`toJsonSchema` の JSON Schema。CLI と同じもの。schema ごとにキャッシュする）を渡し、`stop_reason` を確かめてから text ブロックを連結して JSON.parse し、zod で検証する。`zodOutputFormat` は zod v4 で動くが、`messages.parse` は stop_reason を見る前に全 text ブロックを解析して汎用の例外を投げるため、refusal や途中で切れた応答を区別できず使わない
   - max_tokens は 16000（思考トークンを含む）、タイムアウトは再試行を含めた呼び出し全体で300秒、SDK の再試行（2回）は既定のまま。thinking は送らず既定の adaptive に任せ、effort は triage が low、analyze が medium。effort を受け付けない既知のモデル（3.x、Haiku 4.5、Sonnet 4 / 4.5、Opus 4 / 4.1）には effort を送らない
   - temperature、tool_choice、prefill は使わない
   - 応答の変換：refusal → refusal（stop_details.category をメッセージに入れる）、max_tokens / model_context_window_exceeded → max_tokens、text なし・JSON でない・スキーマ不一致 → invalid_output（失敗したパスだけを示し、値は出さない）
   - 例外の変換：APIConnectionTimeoutError と全体のタイムアウト → timeout、APIConnectionError → transport、401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx（529 を含む）→ transport、400 / 404 などその他 → unavailable。認証情報が見つからない → auth、SDK が送信前に拒否した要求 → unavailable。メッセージは SDK の文面を使わず、HTTP ステータス、エラー種別、モデル名、request-id で組み立てる。API エラーの本文はリクエストの内容を含みうるので、SDK の例外を cause にも残さない（接続エラーは残す）。呼び出し側による中断（APIUserAbortError）は LlmError にせず signal の reason を投げる
 - **cli.ts**
-  - `createCliLlm({ models, spawn?, command?, timeoutMs?, maxBytes? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_CLI_MODELS`（haiku / sonnet）。spawn は差し替えられ、テストは `tests/helpers/fakeSpawn.ts` を使う
+  - `createCliLlm({ models, spawn?, command?, env?, timeoutMs?, maxBytes? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_CLI_MODELS`（haiku / sonnet）。spawn は差し替えられ、テストは `tests/helpers/fakeSpawn.ts` を使う
   - 引数（`buildCliArgs`）：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --strict-mcp-config --safe-mode --model <m> --system-prompt <s>`。`--strict-mcp-config` は利用者の MCP サーバーを起動させないため。`--safe-mode` は CLAUDE.md・hooks・plugins・skills を無効にするため（認証とモデル選択は通常どおり動く。claude 2.1.310 で確認）
   - プロンプトは stdin で渡し、shell: false。cwd は呼び出しごとに `mkdtemp` で作る専用の一時ディレクトリ（`pochi-claude-*`、0700）とし、終わったら消す。共有の /tmp に他人が置いた .claude や CLAUDE.md を読ませないため。`node:child_process` だけを使うので Bun でも動く
   - stdout は 10MB を上限とし（超えたら停止して invalid_output）、300秒でタイムアウトさせる（SIGINT、5秒後に SIGKILL）。中断されたら同じ手順で止め、signal の reason を投げる（reason がなければ AbortError）。stderr は末尾 8KB を debug ログにだけ出す。claude が起動したプロセスが stdio を持ち続けても待ち続けないよう、停止中は exit の時点で確定させる。正常終了なら exit から1秒待っても close が来なければ、それまでの出力で確定させる。spawn が同期で投げた例外（引数の NUL など）は unavailable とし、メッセージにはコードだけを入れる
@@ -258,14 +259,14 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - Triage では「迷ったら無関係」とし、本文は `truncate` で300字まで渡す。Analyze には、収集時に maxContentChars（既定2000）で切った本文をそのまま渡す。URL はエスケープせず、`parseHttpUrl` で正規化した href を渡す。記事や技術名が0件のときはリクエストを作らず、例外を投げる
   - リポジトリ候補は最大3件（`MAX_REPO_CANDIDATES`）、検索クエリの提案は最大5件（`MAX_QUERY_SUGGESTIONS`）とする。スキーマでは件数を制限しないので、呼び出し側（T19）がこの定数で切り詰める
   - Analyze の影響度の基準：High は今週対応が必要（破壊的変更、セキュリティ、非推奨化）、Medium は計画に入れる、Low は参考情報
-- **filter.ts** `filterAndAnalyze(llm, context, items, { signal? })` は `{ insights, irrelevant, undecided, stats }` を返す。insights（`Insight`、types.ts）は通知する分、irrelevant は状態 i にする分、undecided は状態に記録せず翌日に再判定する分
+- **filter.ts** `filterAndAnalyze(llm, context, items, { signal?, retryDelayMs? })` は `{ insights, irrelevant, undecided, stats, error? }` を返す。insights（`Insight`、types.ts）は通知する分、irrelevant は状態 i にする分、undecided は状態に記録せず翌日に再判定する分
   - maxItemsPerRun を超えたら日付の新しい順（日付なしは後ろ）に上限まで採り、残りは未決とする
   - Triage は maxItemsPerCall（既定40）件ずつ順に実行し、関連する記事を Analyze に15件ずつ渡す。0件なら LLM を呼ばない
   - 回答の ID はバッチ内の短縮 ID で記事に戻す。未知の ID は破棄し、同じ ID は最初の回答だけを使う。回答のない記事は未決。Analyze の title が空なら記事のタイトルで補う
-  - 失敗したバッチ（LlmError）は1回再試行し、それでも失敗した記事は未決とする。auth と unavailable は再試行せず、以降のバッチ（Analyze を含む）も呼ばずに未決とする。中断は再試行せず signal の reason を投げ、LlmError 以外の例外はそのまま投げる
+  - 一時的な失敗（rate_limit / timeout / transport）のバッチは `RETRY_DELAY_MS`（10秒）待ってから1回再試行する（SDK と claude は自前で再試行済みなので、間を空けないと同じ制限に当たる）。バッチの中身が原因の失敗（max_tokens / refusal / invalid_output）は同じまま再送せず、半分ずつに分けて送り直す（再帰。1件で失敗したらその記事だけ未決）。それでも失敗した記事は未決とする。stats の失敗数は、分けた分も含めて1件も判定できなかった元のバッチだけを数える。auth と unavailable は再試行せず、以降のバッチ（Analyze を含む）も呼ばずに未決とする。中断は再試行せず signal の reason を投げ、LlmError 以外の例外はそのまま投げる
   - minImpact 未満の記事は状態 i として記録し、通知しない
   - 並び順は影響度（High → Low）、同じ影響度なら日付の新しい順（日付なしは後ろ）
-  - Triage か Analyze のどちらかで、その段の全バッチが失敗したときだけ LlmError（終了コード3、kind は最後の失敗のもの）を投げる。関連する記事が0件で Analyze のバッチがない場合は失敗としない
+  - Triage か Analyze のどちらかで、その段の全バッチが失敗したときは投げずに `error`（LlmError、終了コード3、kind は最後の失敗のもの）を入れて返す。Triage が全部失敗したら Analyze は呼ばない。呼び出し側は先に irrelevant を状態 i に記録し（課金済みの判定を捨てない）、それから error を投げる。関連する記事が0件で Analyze のバッチがない場合は失敗としない
 
 ### 通知とコマンド
 
