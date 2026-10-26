@@ -13,6 +13,8 @@ describe("redact", () => {
     ["url=https://hooks.slack.com/triggers/E0/1/xyz end", "url=https://hooks.slack.com/*** end"],
     ["key tvly-dev-AbC123_x", "key tvly-***"],
     ["Bearer sk-ant-api03-AbC_d-ef", "Bearer sk-ant-***"],
+    ["Bearer ghp_AbC123xyz", "Bearer ghp_***"],
+    ["token github_pat_11AbC_dEf", "token github_pat_***"],
   ])("masks %s", (input, expected) => {
     expect(redact(input)).toBe(expected);
   });

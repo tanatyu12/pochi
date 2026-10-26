@@ -2,10 +2,11 @@ const PATTERNS: readonly [RegExp, string][] = [
   [/https:\/\/hooks\.slack\.com\/[^\s"'<>]+/g, "https://hooks.slack.com/***"],
   [/tvly-[\w-]+/g, "tvly-***"],
   [/sk-ant-[\w-]+/g, "sk-ant-***"],
+  [/\b(gh[pousr]_|github_pat_)\w+/g, "$1***"],
 ];
 
 // Fallback for secrets whose format the patterns above do not know.
-const SECRET_ENV = ["SLACK_WEBHOOK_URL", "TAVILY_API_KEY", "ANTHROPIC_API_KEY"] as const;
+const SECRET_ENV = ["SLACK_WEBHOOK_URL", "TAVILY_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"] as const;
 const MIN_SECRET_LENGTH = 8;
 
 export function redact(s: string): string {

@@ -194,10 +194,16 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 本文は content:encoded → description（RSS / RDF）、content → summary（Atom。空白だけ、または使えない type の content は飛ばす）、content_html → content_text → summary（JSON Feed）の順に採る。日付は pubDate / published / date_published を優先し、なければ dc:date / updated / date_modified。Atom のリンクは rel="alternate"（rel なしを含む）のうち、メディアタイプ（; 以降の引数は無視）が text/html のものを優先する。alternate がなければリンクなしとする（self / enclosure などは記事のページではない）。RDF は rdf:about を guid にする。RSS で link がなければ、絶対 URL の permalink guid を使う
   - タイトル：RSS / RDF は装飾タグ（b、em、strong、span、a、br など）だけを除いてからエンティティをデコードする。デコード後は CDATA のタグとエスケープされたタグ名を区別できないため、`<canvas>` のようなタグ名は残す。Atom は type に従い、html なら HTML として1段だけテキストにする（本文向けの二重エスケープ解除はしない）。JSON Feed と Atom の text はそのまま使う
   - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、guid または正規化 URL が同じ記事は最も新しいものだけを残してから、最新 N 件を取る。plain text の本文も HTML の本文と同じ見出し優先の切り詰めを行う。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
-  - `fetchRssItems` は取得・解析・変換をまとめた薄い関数
+  - `fetchFeedEntries` は取得と解析をまとめ、リダイレクト後の URL も返す。`fetchFeedItems` はそれに `toItems` を続け、件数を絞る前に entry を選ぶ filter を受け取れる。`fetchRssItems` は `fetchFeedItems` を呼ぶだけの薄い関数
 - **github.ts**
-  - `verifyRepo` はまず releases.atom を取得する（404 なら「存在しない」）。0件なら tags.atom を試す
-  - `isPrerelease` はタグ名の -alpha / -beta / -rc / -canary / -next / -preview / -nightly / -dev で判定する。プレリリースを除いてから件数を絞る
+  - releases は REST API `https://api.github.com/repos/<repo>/releases?per_page=100` から取る。releases.atom は最新10件しか持たず、canary が続くと stable が窓から押し出されるため。`accept: application/vnd.github.html+json` で `body_html` を受け取り、rss.ts の `toItems`（kind は github）で変換する。draft は捨て、プレリリースは作者が付けた `prerelease` フラグで判定する。応答の上限は 8MB
+  - 環境変数 `GITHUB_TOKEN` があれば `authorization: Bearer` で送る。なくても動く（無認証は IP あたり 60 回/時）。ログでは他の秘密情報と同様に伏せる
+  - tags は従来どおり `https://github.com/<repo>/tags.atom` を rss.ts の `fetchFeedItems` で取得し、タグ名で `isPrerelease` を判定する
+  - プレリリースを除いてから件数を絞る（includePrereleases が true なら除かない）。除いた結果が0件なら warn を出す
+  - HTTP エラーはそのまま投げ、JSON でない応答や形の違う応答は `FeedParseError` を投げる
+  - `verifyRepo` はまず `GET /repos/<repo>` を呼ぶ（404 なら not_found）。改名・移管された repo は API が追従するので、`full_name` が入力と（大文字小文字を除いて）違えば `movedTo` に新しい名前を入れ、以降はその名前で調べる。releases（draft を除く）が1件以上なら found（releases）で、全部プレリリースなら `onlyPrereleases: true` を付ける。0件なら tags.atom を試し、1件以上なら found（tags）、0件なら empty、404 なら not_found を返す。404 以外の HTTP エラー、通信エラー、解釈できない応答は投げ、「存在しない」と「確認できない」を区別する
+  - `isPrerelease` は `1.2` や `v16.1.0` のようなバージョンの直後に続く接尾辞で判定する（大文字小文字は問わない）：区切り（`-` / `.` / なし）＋ alpha / beta / rc / canary / next / preview / pre / nightly / dev / experimental / snapshot、PEP 440 の `a1` / `b2`、Maven の `-M1`。直後に英字が続く場合（`-devtools`）や、バージョンでない部分の数字（`python3-dev@1.2.0`、`eslint-config-next@14.0.0`）には一致させない。`1.0.0-1` のような数字だけの接尾辞はパッケージの改訂番号と区別できないため stable とみなす
+  - タグ名は guid（`tag:github.com,2008:Repository/<id>/<tag>`）の末尾 → link の `/releases/tag/` 以降 → title の順に採る。guid は常にその entry 自身のタグを指す。title はリリース名でタグと異なることがあるため最後にする
 - **discover.ts**（RSS自動探索）
   1. 入力された URL がそれ自体フィードなら、それを返す
   2. head 内の `<link>` を正規表現で拾う。属性の順序や引用符の種類、大文字小文字は問わない。rel に alternate を含み、type が rss / atom / feed+json のものを対象とし、`<base>` またはリダイレクト後の URL を基準に解決する
@@ -287,7 +293,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 - 起動条件は cron `17 21 * * *`（UTC。正時を避ける）と `workflow_dispatch`（入力で `dry_run` を指定できる）
 - `permissions: contents: write`、`concurrency` で多重実行を防ぎ、`timeout-minutes: 20`
 - 実行手順は checkout → setup-node（Node 24）→ `npm ci` → `npm run build` → `node dist/pochi.mjs run`
-- Secrets を env として渡す：POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、ANTHROPIC_API_KEY、TAVILY_API_KEY、SLACK_WEBHOOK_URL。設定の中身は絶対にログに出さない
+- Secrets を env として渡す：POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、ANTHROPIC_API_KEY、TAVILY_API_KEY、SLACK_WEBHOOK_URL。加えて `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` を渡す（Actions が自動で発行するので登録は不要。GitHub API の無認証の回数制限は共有ランナーで使い切られうる）。設定の中身は絶対にログに出さない
 - dry_run 以外の実行では `git add -f state/notified.json` する。差分がなければ終了し、あれば `[skip ci]` 付きでコミットして `pull --rebase` し、push する
 
 `ci.yml` は push と PR のたびに、Node 22 と 24 の両方で typecheck、test、build、バンドルの動作確認を行う。dependabot も置く。
@@ -311,7 +317,7 @@ README に書く注意点：
 | T3 | M0 土台 | 設定のスキーマ・読み込み・書き出しと example ファイル | T1 | example が検証を通る。環境変数がファイルより優先される。エラーに値が出ない | 完了 |
 | T4 | M1 情報収集 | html.ts | T1 | 二重エスケープ、絵文字や日本語での切り詰めを含むテスト | 完了 |
 | T5 | M1 情報収集 | rss.ts（feedsmith）。最初に feedsmith の API をフィクスチャで確かめる | T2, T4 | RSS2、Atom、RDF、JSON Feed、BOM、壊れた XML のフィクスチャ | 完了 |
-| T6 | M1 情報収集 | github.ts | T5 | verifyRepo の4パターン、プレリリース判定を表形式でテスト | 未着手 |
+| T6 | M1 情報収集 | github.ts | T5 | verifyRepo の4パターン、プレリリース判定を表形式でテスト | 完了 |
 | T7 | M1 情報収集 | discover.ts（T6・T8 と並行可） | T5 | 属性の順序、単引用符、大文字、base 要素、相対パス、代替パスを試す順序、URL 自体がフィードの場合 | 未着手 |
 | T8 | M1 情報収集 | tavily.ts（T6・T7 と並行可） | T2, T4 | リクエストの本文とヘッダーを検証。401 と 429 の扱い | 未着手 |
 | T9 | M1 情報収集 | 収集の統合（sources/index） | T3, T5, T6, T8 | 3件中1件が失敗しても続行する、重複排除、キーがなければ Tavily を使わない、同時実行は4件まで | 未着手 |

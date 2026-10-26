@@ -206,11 +206,27 @@ function toTitle(title: RawEntry["title"]): string {
   return truncate(text, TITLE_MAX_CHARS);
 }
 
-export async function fetchRssItems(
-  feed: RssFeed,
+/** `url` is the feed URL after redirects. */
+export async function fetchFeedEntries(
+  url: string,
+  signal?: AbortSignal,
+): Promise<{ entries: RawEntry[]; url: string }> {
+  const res = await fetchText(url, { signal });
+  return { entries: parseFeedText(res.text), url: res.url };
+}
+
+/** `filter` runs before toItems, so entries it drops do not count towards itemsPerFeed. */
+export async function fetchFeedItems(
+  url: string,
+  source: ItemSource,
   defaults: Sources["defaults"],
   signal?: AbortSignal,
+  filter: (entries: RawEntry[]) => RawEntry[] = (entries) => entries,
 ): Promise<Item[]> {
-  const res = await fetchText(feed.url, { signal });
-  return toItems(parseFeedText(res.text), feed, { baseUrl: res.url, ...defaults });
+  const feed = await fetchFeedEntries(url, signal);
+  return toItems(filter(feed.entries), source, { baseUrl: feed.url, ...defaults });
+}
+
+export function fetchRssItems(feed: RssFeed, defaults: Sources["defaults"], signal?: AbortSignal): Promise<Item[]> {
+  return fetchFeedItems(feed.url, feed, defaults, signal);
 }
