@@ -190,9 +190,10 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   5. 収まらなければ見出しを優先して切り詰める。見出し → 各節の1行目 → 2行目…の順に採用し、入りきらない段は残りの字数を均等に分ける。元の順序で連結し、最後の行が切り詰められていなければ末尾に改行と「…」を付ける。見出しがなければ先頭からコードポイント単位で切り詰める
   - 本文の抽出（Readability 方式）はしない。入力はページ全体ではなくフィードの本文で、Tavily は抽出済みのテキストを返す
 - **rss.ts**
-  - `parseFeedText` は feedsmith で RSS / Atom / RDF / JSON Feed を共通の RawEntry に変換する。feedsmith は XML のエンティティを1段デコードした値を返すので、本文は HTML（`html`）か文字どおりのテキスト（JSON Feed の content_text、Atom の type="text"）かを区別して持つ。解析できなければ入力を含まない FeedParseError を投げる（「not a feed」または「malformed feed」）
-  - 本文は content:encoded → description（RSS / RDF）、content → summary（Atom）、content_html → content_text → summary（JSON Feed）の順に採る。日付は pubDate / published / date_published を優先し、なければ dc:date / updated / date_modified。Atom のリンクは rel="alternate"（rel なしを含む）の HTML を優先する。RSS で link がなければ、絶対 URL の permalink guid を使う
-  - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、最新 N 件を取る。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
+  - `parseFeedText` は feedsmith で RSS / Atom / RDF / JSON Feed を共通の RawEntry に変換する。feedsmith は XML のエンティティを1段デコードした値を返すので、本文は HTML（`html`）か文字どおりのテキスト（JSON Feed の content_text、Atom の type="text" と text/* の MIME）かを区別して持つ。Atom の type が html / xhtml / text/html / application/xhtml+xml なら HTML、それ以外の MIME（base64 など）は使えないものとして扱う。解析できなければ入力を含まない FeedParseError を投げる（「not a feed」または「malformed feed」）
+  - 本文は content:encoded → description（RSS / RDF）、content → summary（Atom。空白だけ、または使えない type の content は飛ばす）、content_html → content_text → summary（JSON Feed）の順に採る。日付は pubDate / published / date_published を優先し、なければ dc:date / updated / date_modified。Atom のリンクは rel="alternate"（rel なしを含む）のうち、メディアタイプ（; 以降の引数は無視）が text/html のものを優先する。alternate がなければリンクなしとする（self / enclosure などは記事のページではない）。RDF は rdf:about を guid にする。RSS で link がなければ、絶対 URL の permalink guid を使う
+  - タイトル：RSS / RDF は装飾タグ（b、em、strong、span、a、br など）だけを除いてからエンティティをデコードする。デコード後は CDATA のタグとエスケープされたタグ名を区別できないため、`<canvas>` のようなタグ名は残す。Atom は type に従い、html なら HTML として1段だけテキストにする（本文向けの二重エスケープ解除はしない）。JSON Feed と Atom の text はそのまま使う
+  - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、guid または正規化 URL が同じ記事は最も新しいものだけを残してから、最新 N 件を取る。plain text の本文も HTML の本文と同じ見出し優先の切り詰めを行う。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
   - `fetchRssItems` は取得・解析・変換をまとめた薄い関数
 - **github.ts**
   - `verifyRepo` はまず releases.atom を取得する（404 なら「存在しない」）。0件なら tags.atom を試す
