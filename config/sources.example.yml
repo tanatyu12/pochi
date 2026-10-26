@@ -4,7 +4,7 @@ version: 1
 
 defaults:
   itemsPerFeed: 3
-  maxContentChars: 500
+  maxContentChars: 2000
 
 # ids must be unique across feeds and queries. At least one feed or query is required.
 feeds:

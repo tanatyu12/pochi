@@ -76,7 +76,7 @@ describe("SourcesSchema", () => {
     const gh = { id: "next", type: "github", name: "Next", repo: "vercel/next.js" };
     expect(SourcesSchema.parse({ version: 1, feeds: [gh], queries: [{ id: "q", query: "x" }] })).toEqual({
       version: 1,
-      defaults: { itemsPerFeed: 3, maxContentChars: 500 },
+      defaults: { itemsPerFeed: 3, maxContentChars: 2000 },
       feeds: [{ ...gh, feed: "releases", includePrereleases: false }],
       queries: [{ id: "q", query: "x", topic: "general", maxResults: 5 }],
     });
