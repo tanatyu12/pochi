@@ -10,8 +10,8 @@ const clack = vi.hoisted(() => {
     select: vi.fn(),
     confirm: vi.fn(),
     multiselect: vi.fn(),
-    spinner: vi.fn(),
-    log: { warn: vi.fn() },
+    unicode: true,
+    log: { warn: vi.fn(), step: vi.fn(), error: vi.fn() },
   };
 });
 vi.mock("@clack/prompts", () => clack);
@@ -60,35 +60,33 @@ describe("createClackPrompter", () => {
   });
 
   it("spins while the task runs and passes its result or error on", async () => {
-    const s = { start: vi.fn(), stop: vi.fn(), error: vi.fn() };
-    clack.spinner.mockReturnValue(s);
-    const signal = new AbortController().signal;
     const p = createClackPrompter();
-    expect(await p.spin("Fetching", async () => 42, signal)).toBe(42);
-    expect(clack.spinner).toHaveBeenCalledWith({ signal });
-    expect(s.start).toHaveBeenCalledWith("Fetching");
-    expect(s.stop).toHaveBeenCalledWith("Fetching");
+    expect(await p.spin("Fetching", async () => 42)).toBe(42);
+    expect(clack.log.step).toHaveBeenCalledWith("Fetching");
 
     const boom = new Error("boom");
     await expect(p.spin("Fetching", async () => Promise.reject(boom))).rejects.toBe(boom);
-    expect(s.error).toHaveBeenCalledWith("Fetching");
+    expect(clack.log.error).toHaveBeenCalledWith("Fetching");
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(p.spin("Fetching", async () => Promise.reject(boom), controller.signal)).rejects.toBe(boom);
+    expect(clack.log.error).toHaveBeenLastCalledWith("Fetching: cancelled");
   });
 
-  it("turns Ctrl-C while spinning into SIGINT instead of letting clack exit with 0", async () => {
-    // What @clack/core's block() does once the spinner starts.
-    const clackExit = vi.fn();
-    const s = { start: vi.fn(() => process.stdin.on("keypress", clackExit)), stop: vi.fn(), error: vi.fn() };
-    clack.spinner.mockReturnValue(s);
+  it("turns Ctrl-C while spinning into SIGINT in the process, not an OS signal", async () => {
+    // Stands in for main's handler, which would abort the run.
+    const emit = vi.spyOn(process, "emit").mockImplementation((() => true) as never);
     const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
     const before = process.stdin.listenerCount("keypress");
 
     let release!: () => void;
     const spinning = createClackPrompter().spin("Fetching", () => new Promise<void>((r) => (release = r)));
     process.stdin.emit("keypress", "x", { name: "x" });
-    expect(kill).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalledWith("SIGINT");
     process.stdin.emit("keypress", "\x03", { name: "c", ctrl: true });
-    expect(clackExit).not.toHaveBeenCalled();
-    expect(kill).toHaveBeenCalledExactlyOnceWith(process.pid, "SIGINT");
+    expect(emit).toHaveBeenCalledExactlyOnceWith("SIGINT");
+    expect(kill).not.toHaveBeenCalled();
 
     release();
     await spinning;
@@ -97,8 +95,8 @@ describe("createClackPrompter", () => {
 
   it("holds log lines written while spinning until the spinner has stopped", async () => {
     const order: string[] = [];
-    const s = { start: vi.fn(), stop: vi.fn(() => order.push("stop")), error: vi.fn(() => order.push("error")) };
-    clack.spinner.mockReturnValue(s);
+    clack.log.step.mockImplementation(() => order.push("stop"));
+    clack.log.error.mockImplementation(() => order.push("error"));
     clack.log.warn.mockImplementation((m: string) => order.push(`warn: ${m}`));
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const p = createClackPrompter();

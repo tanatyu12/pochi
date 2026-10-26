@@ -256,7 +256,13 @@ describe("discoverFeeds", () => {
       "https://blog.example/feed.xml": busy,
       "https://blog.example/gone.xml": notFound,
     });
-    await expect(discoverFeeds(PAGE)).rejects.toMatchObject({ name: "HttpError", status: 429 });
+    // The real URL of the advertised feed, so the caller can add it rather than the page.
+    await expect(discoverFeeds(PAGE)).rejects.toMatchObject({
+      name: "FeedCheckError",
+      feedUrl: "https://blog.example/feed.xml",
+      advertised: true,
+      cause: { name: "HttpError", status: 429 },
+    });
     expect(mock.calls.map((c) => c.url)).not.toContain(FALLBACKS[0]);
   });
 
@@ -277,7 +283,12 @@ describe("discoverFeeds", () => {
     for (const url of FALLBACKS) routes[url] = notFound;
     routes[FALLBACKS[3]!] = busy;
     mockFetch(routes);
-    await expect(discoverFeeds(PAGE)).rejects.toMatchObject({ status: 429 });
+    await expect(discoverFeeds(PAGE)).rejects.toMatchObject({
+      name: "FeedCheckError",
+      feedUrl: FALLBACKS[3],
+      advertised: false,
+      cause: { status: 429 },
+    });
   });
 
   it("reads a feed larger than the 2MB request default", async () => {

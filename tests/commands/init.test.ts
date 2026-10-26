@@ -7,6 +7,7 @@ import {
   askSources,
   gitCheckIgnored,
   newSession,
+  queryIdFrom,
   runInit,
   shellQuote,
   sourceIdFrom,
@@ -194,6 +195,20 @@ describe("runInit", () => {
     expect(llm.calls).toEqual([]);
   });
 
+  it("waits for Claude only when a step needs it, and stops the lookup when done", async () => {
+    let lookup: AbortSignal | undefined;
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, "site", SIMON, "done", true], {
+      // Never settles, like a CLI probe that hangs.
+      resolveLlm: (_, opts) => {
+        lookup = opts?.signal;
+        return new Promise(() => {});
+      },
+    });
+    await runInit({ configDir: dir }, d);
+    expect(prompter.shown.some((s) => s.includes("Looking for Claude"))).toBe(false);
+    expect(lookup?.aborted).toBe(true);
+  });
+
   it("fails with 2 before asking anything when not on a terminal", async () => {
     const { prompter, deps: d } = deps([], { isInteractive: () => false });
     const err = await rejection(runInit({ configDir: dir }, d));
@@ -348,7 +363,7 @@ describe("runInit", () => {
 /** Runs askSources on scripted answers, with the LLM client given (none by default). */
 function sources(answers: Answer[], llm?: LlmClient) {
   const prompter = scriptedPrompter(answers);
-  return { prompter, result: askSources(newSession(prompter, CONTEXT, llm)) };
+  return { prompter, result: askSources(newSession(prompter, CONTEXT, { llm })) };
 }
 
 describe("askSources: repositories", () => {
@@ -487,6 +502,29 @@ describe("askSources: repositories", () => {
     expect((await result).feeds!.map((f) => f.id)).toEqual(["next-js", "next-js-2"]);
     expect(prompter.shown).toContain("warn: Already added; skipped.");
   });
+
+  it("skips a repository already added before asking GitHub or checking candidates", async () => {
+    const fetch = mockFetch(BASE_ROUTES);
+    const llm = fakeLlm({ repos: () => [{ repo: "vercel/next.js", note: "" }] });
+    const { prompter, result } = sources(
+      ["repo", "vercel/next.js", "repo", "Vercel/Next.js", "repo", "Next.js", "done", true],
+      llm.client,
+    );
+    expect((await result).feeds!.map((f) => f.id)).toEqual(["next-js"]);
+    expect(prompter.shown.filter((s) => s === "warn: Already added; skipped.")).toHaveLength(2);
+    expect(fetch.calls.filter((c) => c.url.toLowerCase() === `${API}/vercel/next.js`)).toHaveLength(1);
+  });
+
+  it("does not claim a repository is missing when GitHub could not be asked", async () => {
+    mockFetch({ ...BASE_ROUTES, [`${API}/acme/limited`]: reply.status(403) });
+    const llm = fakeLlm({ repos: (name) => (name === "Limited" ? [{ repo: "acme/limited", note: "" }] : []) });
+    const { prompter, result } = sources(["repo", "Limited", "repo", "vercel/next.js", "done", true], llm.client);
+    await result;
+    expect(prompter.shown).toContain(
+      "warn: Could not check 1 candidate for Limited on GitHub; try again later or enter it as owner/repo.",
+    );
+    expect(prompter.shown.some((s) => s.includes("No GitHub repository found"))).toBe(false);
+  });
 });
 
 describe("askSources: sites", () => {
@@ -580,6 +618,35 @@ describe("askSources: sites", () => {
     expect(prompter.asked.some((m) => m.startsWith(`Add ${PAGE}`))).toBe(false);
   });
 
+  it("offers to add an advertised feed that failed, not the page that advertised it", async () => {
+    const limited = reply.status(429, { "retry-after": "3600" });
+    mockFetch({
+      [PAGE]: reply.text(page('<link rel="alternate" type="application/rss+xml" href="/feed.xml">')),
+      [`${PAGE}feed.xml`]: [limited, limited, reply.text(atom("Back"))],
+    });
+    const { prompter, result } = sources(["site", PAGE, true, "done", true]);
+    expect((await result).feeds).toEqual([
+      { id: "blog-example-com", type: "rss", name: "blog.example.com", url: `${PAGE}feed.xml` },
+    ]);
+    expect(prompter.shown.some((s) => s.startsWith(`warn: Could not check a feed on ${PAGE}: `))).toBe(true);
+    expect(prompter.asked).toContain(`Add ${PAGE}feed.xml anyway?`);
+  });
+
+  it("does not offer a guessed feed path that failed", async () => {
+    const fallbacks = ["feed", "feed/", "rss", "rss.xml", "atom.xml", "feed.xml", "index.xml"];
+    const limited = reply.status(429, { "retry-after": "3600" });
+    mockFetch({
+      ...BASE_ROUTES,
+      [PAGE]: reply.text(page("")),
+      ...Object.fromEntries(fallbacks.map((path) => [`${PAGE}${path}`, reply.status(404)])),
+      [`${PAGE}rss`]: [limited, limited],
+    });
+    const { prompter, result } = sources(["site", PAGE, "site", SIMON, "done", true]);
+    expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : f.repo))).toEqual([SIMON]);
+    expect(prompter.shown.some((s) => s.startsWith(`warn: Could not check a feed on ${PAGE}: `))).toBe(true);
+    expect(prompter.asked.some((m) => m.endsWith("anyway?"))).toBe(false);
+  });
+
   it("rejects URLs that are not absolute http(s)", async () => {
     for (const url of ["simonwillison.net", "ftp://example.com/feed", "/feed.xml"]) {
       expect(await rejection(sources(["site", url]).result)).toMatchObject({ message: expect.stringMatching(/http\(s\) URL/) });
@@ -588,12 +655,14 @@ describe("askSources: sites", () => {
 
   it("treats feed URLs that normalize the same as one feed", async () => {
     const other = "https://example.com/feed/?utm_source=x#top";
-    mockFetch({ "https://example.com/feed": reply.text(atom("A")), [other]: reply.text(atom("A")) });
+    const fetch = mockFetch({ "https://example.com/feed": reply.text(atom("A")), [other]: reply.text(atom("A")) });
     const { prompter, result } = sources(["site", "https://example.com/feed", "site", other, "done", true]);
     expect((await result).feeds).toEqual([
       { id: "example-com", type: "rss", name: "example.com/feed", url: "https://example.com/feed" },
     ]);
     expect(prompter.shown).toContain("warn: Already added; skipped.");
+    // Known before it is fetched.
+    expect(fetch.callsTo(other)).toEqual([]);
   });
 });
 
@@ -635,6 +704,22 @@ describe("askSources: search queries", () => {
     const llm = fakeLlm({ queries: () => [long] });
     const { result } = sources(["done", [long], "", true], llm.client);
     expect((await result).queries!.map((q) => q.query)).toEqual([long]);
+  });
+
+  it("ignores a typed query of control characters only and names others by a hash", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
+    mockFetch({ [TAVILY]: reply.text(await readFile(join(import.meta.dirname, "../fixtures/tavily/search.json"), "utf8")) });
+    const { result } = sources(["done", "\u001b\u0007", "Next.js リリース", "", true]);
+    expect((await result).queries).toEqual([
+      { id: queryIdFrom("Next.js リリース", new Set()), query: "Next.js リリース", topic: "news" },
+    ]);
+  });
+
+  it("reads the Tavily key from the env it is given", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
+    const prompter = scriptedPrompter(["done"]);
+    const result = askSources(newSession(prompter, CONTEXT, { env: {} }));
+    expect(await rejection(result)).toMatchObject({ message: expect.stringMatching(/not an option/) });
   });
 
   it("takes typed queries only when the model cannot suggest any", async () => {
@@ -727,6 +812,24 @@ describe("sourceIdFrom", () => {
 
   it("appends a number until the id is free", () => {
     expect(sourceIdFrom("blog", new Set(["blog", "blog-2"]))).toBe("blog-3");
+  });
+});
+
+describe("queryIdFrom", () => {
+  it.each([
+    ["Qwen model release", "qwen-model-release"],
+    ["Breaking changes in the Next.js app router and server actions", "breaking-changes-in-the-next-js"],
+    ["a".repeat(40), "a".repeat(32)],
+  ])("%s -> %s", (query, id) => {
+    expect(queryIdFrom(query, new Set())).toBe(id);
+  });
+
+  it("names a query with other characters by a hash that does not depend on order", () => {
+    const id = queryIdFrom("Next.js リリース", new Set());
+    expect(id).toMatch(/^query-[0-9a-f]{8}$/);
+    expect(queryIdFrom("LLM 新モデル", new Set([id]))).not.toBe(id);
+    expect(queryIdFrom("next.js リリース", new Set())).toBe(id);
+    expect(queryIdFrom("!!!", new Set())).toMatch(/^query-[0-9a-f]{8}$/);
   });
 });
 
