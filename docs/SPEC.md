@@ -265,12 +265,12 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 ### 通知とコマンド
 
 - **notifiers/slack.ts**
-  - 入力は `Briefing`（project、date、`Finding[]`、収集件数、取得したソース数、失敗したソース名）。`Finding`（types.ts）は Item と LLM が書いた title / summary / impact / action で、pipeline/filter が返す
-  - `buildSlackMessages` は送るメッセージ（payload と含まれる記事の ID）を組み立てる純関数で、dry-run でも同じものを出力できる。`sendSlack` は送信し、`{ deliveredIds, sent, failures }` を返す。中断以外では例外を投げず、終了コード4の判定は commands/run が行う
-  - メッセージの構成：header ブロック（`Pochi · <project> · <date>`、150字まで、複数なら ` (1/3)`）、記事ごとの section（2900字まで）、最後に収集件数と失敗したソースを示す context ブロック（全メッセージに付ける。3000字まで）。1メッセージは最大47ブロックで、Slack の上限50に収まる
-  - 記事の表示：絵文字（High :red_circle: / Medium :large_orange_circle: / Low :large_blue_circle:）、[影響度]、<url|title>、要約、*Action:*（空なら省略）、ソース名。`& < >` をエスケープし（& を先に置換）、リンクのラベルの `|` は `｜`、URL の `|` は `%7C` にする。字数はエスケープ後に測ってエンティティの途中で切らず、要約から切り詰める（Action には少なくとも残りの半分を残す）
+  - 入力は `Briefing`（project、date、`Insight[]`、収集件数、取得したソース数、失敗したソース名）。`Insight`（types.ts）は Item と LLM が書いた title / summary / impact / action で、pipeline/filter が返す
+  - `buildSlackMessages` は送るメッセージ（payload と含まれる記事の ID）を組み立てる純関数で、dry-run でも同じものを出力できる。`sendSlack` は送信し、`{ deliveredIds, failures, aborted }` を返す（failures は元のメッセージ番号と届かなかった記事の ID）。中断されても例外を投げず、それまでに届いた分を `aborted: true` で返す。通知済みにする記事と終了コード（4、中断なら130）の判定は commands/run が行う
+  - メッセージの構成：header ブロック（`Pochi · <project> · <date>`、150字まで、複数なら ` (1/3)`）、記事ごとの section（2900字まで。1メッセージの section の合計は12,000字まで）、最後に収集件数と失敗したソースを示す context ブロック（全メッセージに付ける。3000字まで）。1メッセージは最大47ブロックで、Slack の上限50に収まる
+  - 記事の表示：絵文字（High :red_circle: / Medium :large_orange_circle: / Low :large_blue_circle:）、[影響度]、<url|title>、要約（空なら省略）、*Action:*（空なら省略）、ソース名。title とソース名の空白・改行は1つの空白にまとめる。URL はエスケープ後1000字までで、超えたらクエリとフラグメントを落とし、それでも超えればリンクにせずタイトルを太字で出す。`& < >` を1回の置換でエスケープし（二重にエスケープしない）、リンクのラベルの `|` は `｜`、URL の `|` は `%7C` にする。字数はエスケープ後に測ってエンティティの途中で切らず、要約から切り詰める（Action には少なくとも残りの半分を残す）
   - トップレベルの text も必ず付ける（`Pochi: 12 updates for my-app (3 High)`）。記事が0件なら何も送らず、postWhenEmpty が true のときだけ「No relevant updates today.」を1通送る
-  - 送信：1メッセージにつき記事45件まで。間隔は1.1秒で、429 は Retry-After（30秒まで）に従って最大3回、5xx と通信エラーは1回再試行する。400 はそのメッセージだけの問題として次のメッセージに進み、それ以外の失敗（403 / 404 / 410、再試行し尽くした 429 と 5xx、通信エラー）では残りを送らない
+  - 送信：1メッセージにつき記事45件まで（section の合計が12,000字を超える手前でも区切る）。間隔は1.1秒で、429 は Retry-After（30秒まで）に従って最大3回、5xx と通信エラーは1回再試行する。400 はそのメッセージだけの問題として扱う。記事を半分ずつに分けて送り直して原因の記事を絞り込み、1件になったらリンク・要約・Action を除いた最小表示で送る（追加の投稿は1回の送信で20通まで。それでも届かなければ失敗として次のメッセージに進む）。それ以外の失敗（403 / 404 / 410、再試行し尽くした 429 と 5xx、通信エラー）では残りを送らない
   - 2xx が返ったメッセージに含まれる記事だけを通知済みにする
   - ラベルは英語固定、LLM が生成する文は language に従う
 - **commands/run.ts**
