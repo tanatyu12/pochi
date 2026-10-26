@@ -1,5 +1,6 @@
 import * as clack from "@clack/prompts";
 import { ExitCode, PochiError } from "../errors.js";
+import { configureLog } from "./log.js";
 
 export interface TextPrompt {
   message: string;
@@ -58,6 +59,26 @@ function unwrap<T>(value: T): Exclude<T, symbol> {
   return value as Exclude<T, symbol>;
 }
 
+/**
+ * Runs start (a clack spinner's) and takes Ctrl-C back from it. The spinner puts stdin in raw
+ * mode and its keypress handler (@clack/core block) exits with 0 on Ctrl-C, so no SIGINT would
+ * reach the abort path and a cancelled fetch would look like a success. Its handler is swapped
+ * for one that raises SIGINT, as Ctrl-C does outside raw mode. Esc does nothing while it spins.
+ */
+function startOwningCtrlC(start: () => void): () => void {
+  const input = process.stdin;
+  const before = new Set(input.listeners("keypress"));
+  start();
+  for (const listener of input.listeners("keypress")) {
+    if (!before.has(listener)) input.off("keypress", listener as (...args: unknown[]) => void);
+  }
+  const onKeypress = (str: string | undefined, key: { name?: string; ctrl?: boolean } | undefined) => {
+    if (str === "\x03" || (key?.ctrl && key.name === "c")) process.kill(process.pid, "SIGINT");
+  };
+  input.on("keypress", onKeypress);
+  return () => void input.off("keypress", onKeypress);
+}
+
 export function createClackPrompter(): Prompter {
   return {
     async text({ validate, ...rest }) {
@@ -79,9 +100,12 @@ export function createClackPrompter(): Prompter {
     note: (message, title) => clack.note(message, title),
     warn: (message) => clack.log.warn(message),
     async spin(message, run, signal) {
+      // Log lines written over the spinner would be redrawn into a mess; they are shown after it.
+      const held: string[] = [];
+      const restoreLog = configureLog({ write: (line) => void held.push(line) });
       // On an abort the spinner stops itself with a cancel message; stop is then a no-op.
       const s = clack.spinner({ signal });
-      s.start(message);
+      const releaseCtrlC = startOwningCtrlC(() => s.start(message));
       try {
         const result = await run();
         s.stop(message);
@@ -89,6 +113,10 @@ export function createClackPrompter(): Prompter {
       } catch (err) {
         s.error(message);
         throw err;
+      } finally {
+        releaseCtrlC();
+        restoreLog();
+        for (const line of held) clack.log.warn(line.trimEnd().replace(/^pochi: \w+: /, ""));
       }
     },
   };

@@ -54,6 +54,8 @@ export type RepoCheck =
       onlyPrereleases?: true;
       /** The repository was renamed or transferred; this is its current owner/repo. */
       movedTo?: string;
+      /** The newest item a run would show, from the responses already fetched (content left empty). */
+      latest?: Item;
     }
   /** The repository exists but has neither releases nor tags. */
   | { status: "empty"; movedTo?: string }
@@ -77,18 +79,41 @@ export async function verifyRepo(repo: string, signal?: AbortSignal): Promise<Re
 
   const releases = await fetchReleases(current, "json", signal);
   if (releases.length > 0) {
-    const onlyPrereleases = releases.every((r) => r.prerelease) ? ({ onlyPrereleases: true } as const) : {};
-    return { status: "found", feed: "releases", ...onlyPrereleases, ...moved };
+    const onlyPre = releases.every((r) => r.prerelease);
+    const shown = onlyPre ? releases : releases.filter((r) => !r.prerelease);
+    return found("releases", current, shown.map(toEntry), "https://github.com/", onlyPre, moved);
   }
-  let tags: RawEntry[];
+  let tags: { entries: RawEntry[]; url: string };
   try {
-    ({ entries: tags } = await fetchFeedEntries(feedUrl(current, "tags"), signal));
+    tags = await fetchFeedEntries(feedUrl(current, "tags"), signal);
   } catch (err) {
     // Deleted or made private since the first request.
     if (isNotFound(err)) return { status: "not_found" };
     throw err;
   }
-  return tags.length > 0 ? { status: "found", feed: "tags", ...moved } : { status: "empty", ...moved };
+  if (tags.entries.length === 0) return { status: "empty", ...moved };
+  const onlyPre = tags.entries.every((e) => isPrerelease(tagOf(e)));
+  const shown = onlyPre ? tags.entries : tags.entries.filter((e) => !isPrerelease(tagOf(e)));
+  return found("tags", current, shown, tags.url, onlyPre, moved);
+}
+
+// The prerelease rule is the one fetchGithubItems applies once includePrereleases follows onlyPrereleases.
+function found(
+  feed: GithubFeedKind,
+  repo: string,
+  entries: RawEntry[],
+  baseUrl: string,
+  onlyPrereleases: boolean,
+  moved: { movedTo?: string },
+): RepoCheck {
+  const [latest] = toItems(entries, { id: repo, name: repo, kind: "github" }, { baseUrl, itemsPerFeed: 1, maxContentChars: 0 });
+  return {
+    status: "found",
+    feed,
+    ...(onlyPrereleases && { onlyPrereleases: true as const }),
+    ...moved,
+    ...(latest && { latest }),
+  };
 }
 
 export async function fetchGithubItems(

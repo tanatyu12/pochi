@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type InitDeps,
   askSources,
@@ -22,7 +22,6 @@ import {
   QuerySuggestionOutputSchema,
   RepoInferenceOutputSchema,
 } from "../../src/llm/schema.js";
-import { configureLog } from "../../src/util/log.js";
 import { PromptCancelled } from "../../src/util/prompter.js";
 import { type Route, mockFetch, reply } from "../helpers/mockFetch.js";
 import { type Answer, CANCEL, scriptedPrompter } from "../helpers/scriptedPrompter.js";
@@ -162,7 +161,7 @@ describe("runInit", () => {
     });
     expect(loaded.sources.feeds).toEqual([
       { id: "next-js", type: "github", name: "vercel/next.js", repo: "vercel/next.js", feed: "releases", includePrereleases: false },
-      { id: "simonwillison-net", type: "rss", name: "simonwillison.net", url: SIMON },
+      { id: "simonwillison-net", type: "rss", name: "simonwillison.net/atom/everything", url: SIMON },
     ]);
     for (const file of ["context.yml", "sources.yml"]) {
       expect((await stat(join(dir, file))).mode & 0o777).toBe(0o600);
@@ -507,7 +506,8 @@ describe("askSources: sites", () => {
     });
     const { prompter, result } = sources(["site", PAGE, `${PAGE}posts.atom`, "done", true]);
     expect((await result).feeds).toEqual([
-      { id: "blog-example-com", type: "rss", name: "blog.example.com", url: `${PAGE}posts.atom` },
+      // The page's title for the feed, without control characters, tells it from the comments feed.
+      { id: "blog-example-com", type: "rss", name: "blog.example.com: Posts [2J", url: `${PAGE}posts.atom` },
     ]);
     const message = `${PAGE} has 2 feeds; which one?`;
     expect(prompter.options[message]).toEqual([`${PAGE}posts.atom`, `${PAGE}comments.rss`, "none"]);
@@ -543,6 +543,43 @@ describe("askSources: sites", () => {
     expect(prompter.shown.some((s) => s.startsWith("warn: Could not open https://down.example.com/: "))).toBe(true);
   });
 
+  it("names a feed served from another host after the page it was found on", async () => {
+    const burner = "https://feeds.feedburner.com/example";
+    mockFetch({
+      [PAGE]: reply.text(page(`<link rel="alternate" type="application/rss+xml" title="Feed" href="${burner}">`)),
+      [burner]: reply.text(atom("A post")),
+    });
+    const { prompter, result } = sources(["site", PAGE, "done", true]);
+    expect((await result).feeds).toEqual([{ id: "blog-example-com", type: "rss", name: "blog.example.com", url: burner }]);
+    expect(prompter.asked).toContain("Watch blog.example.com every morning?");
+  });
+
+  it("offers to add a page that may be up again later, and not one that is gone", async () => {
+    // A rate limit asking to wait an hour fails at once instead of being retried.
+    const limited = reply.status(429, { "retry-after": "3600" });
+    mockFetch({ ...BASE_ROUTES, "https://busy.example.com/feed": [limited, limited], [PAGE]: reply.status(404) });
+    const { prompter, result } = sources([
+      "site",
+      "https://busy.example.com/feed",
+      false,
+      "site",
+      "https://busy.example.com/feed",
+      true,
+      "site",
+      PAGE,
+      "site",
+      SIMON,
+      "done",
+      false,
+      true,
+    ]);
+    expect((await result).feeds).toEqual([{ id: "simonwillison-net", type: "rss", name: "simonwillison.net/atom/everything", url: SIMON }]);
+    expect(prompter.asked.filter((m) => m === "Add https://busy.example.com/feed as a feed anyway?")).toHaveLength(2);
+    // Tried like any other source, and rejected here.
+    expect(prompter.asked).toContain("Watch busy.example.com/feed every morning?");
+    expect(prompter.asked.some((m) => m.startsWith(`Add ${PAGE}`))).toBe(false);
+  });
+
   it("rejects URLs that are not absolute http(s)", async () => {
     for (const url of ["simonwillison.net", "ftp://example.com/feed", "/feed.xml"]) {
       expect(await rejection(sources(["site", url]).result)).toMatchObject({ message: expect.stringMatching(/http\(s\) URL/) });
@@ -553,7 +590,9 @@ describe("askSources: sites", () => {
     const other = "https://example.com/feed/?utm_source=x#top";
     mockFetch({ "https://example.com/feed": reply.text(atom("A")), [other]: reply.text(atom("A")) });
     const { prompter, result } = sources(["site", "https://example.com/feed", "site", other, "done", true]);
-    expect((await result).feeds).toEqual([{ id: "example-com", type: "rss", name: "example.com", url: "https://example.com/feed" }]);
+    expect((await result).feeds).toEqual([
+      { id: "example-com", type: "rss", name: "example.com/feed", url: "https://example.com/feed" },
+    ]);
     expect(prompter.shown).toContain("warn: Already added; skipped.");
   });
 });
@@ -571,7 +610,10 @@ describe("askSources: search queries", () => {
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
     mockFetch({ [TAVILY]: reply.text(await readFile(join(import.meta.dirname, "../fixtures/tavily/search.json"), "utf8")) });
     const llm = fakeLlm({ queries: () => ["Qwen release", " qwen  release ", "", "A", "B", "C", "D", "E"] });
-    const { prompter, result } = sources(["done", ["Qwen release", "B"], "Next.js news", "", true, false, true], llm.client);
+    const { prompter, result } = sources(
+      ["done", ["Qwen release", "B"], " qwen \t RELEASE ", "Next.js   news", "", true, false, true],
+      llm.client,
+    );
     expect(await result).toEqual({
       version: 1,
       feeds: [],
@@ -582,6 +624,17 @@ describe("askSources: search queries", () => {
     });
     expect(prompter.options["Search queries to run every morning (space to select)"]).toEqual(["Qwen release", "A", "B", "C", "D"]);
     expect(prompter.asked).toContain("Watch B every morning?");
+    // Typed queries are compared and stored as the suggestions are.
+    expect(prompter.shown).toContain("warn: Already added: qwen RELEASE; skipped.");
+  });
+
+  it("stores a long suggestion whole, shortening only its label", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
+    mockFetch({ [TAVILY]: reply.text(await readFile(join(import.meta.dirname, "../fixtures/tavily/search.json"), "utf8")) });
+    const long = `${"word ".repeat(30)}end`;
+    const llm = fakeLlm({ queries: () => [long] });
+    const { result } = sources(["done", [long], "", true], llm.client);
+    expect((await result).queries!.map((q) => q.query)).toEqual([long]);
   });
 
   it("takes typed queries only when the model cannot suggest any", async () => {
@@ -631,18 +684,33 @@ describe("askSources: trial fetch", () => {
     mockFetch({ ...BASE_ROUTES, [SIMON]: [reply.text(atom("ok")), reply.status(410)] });
     const { prompter, result } = sources(["repo", "vercel/next.js", "site", SIMON, "done", true, false]);
     expect((await result).feeds!.map((f) => f.id)).toEqual(["next-js"]);
-    expect(prompter.shown.some((s) => s.startsWith("warn: simonwillison.net (rss) failed: "))).toBe(true);
+    expect(prompter.shown.some((s) => s.startsWith("warn: simonwillison.net/atom/everything (rss) failed: "))).toBe(true);
   });
 
   it("notes a source with no items yet", async () => {
-    // The fetcher warns that every tag is a prerelease.
-    const restoreLog = configureLog({ write: () => {} });
-    onTestFinished(restoreLog);
+    const empty = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>t</title></feed>';
+    mockFetch({ "https://quiet.example.com/feed": reply.text(empty) });
+    const { prompter, result } = sources(["site", "https://quiet.example.com/feed", "done", true]);
+    await result;
+    expect(prompter.shown).toContain("note: quiet.example.com/feed (rss): No items yet.");
+  });
+
+  it("shows what GitHub returned while checking a repository instead of asking again", async () => {
+    const fetch = mockFetch(repoRoutes("vercel/next.js"));
+    const { prompter, result } = sources(["repo", "vercel/next.js", "done", true]);
+    await result;
+    expect(fetch.callsTo(`${API}/vercel/next.js/releases?per_page=100`)).toHaveLength(1);
+    expect(prompter.shown.some((s) => s.startsWith("spin: Fetching"))).toBe(false);
+    expect(prompter.shown).toContain("note: vercel/next.js (github): v16.0.0\n2026-10-24\nhttps://github.com/x/y/releases/tag/v16.0.0");
+  });
+
+  it("follows a repository whose tags are all prereleases", async () => {
     const rc = atom("v2.0.0-rc.1", "https://github.com/acme/quiet/releases/tag/v2.0.0-rc.1");
     mockFetch({ ...repoRoutes("acme/quiet", { releases: [] }), "https://github.com/acme/quiet/tags.atom": reply.text(rc) });
     const { prompter, result } = sources(["repo", "acme/quiet", "done", true]);
-    await result;
-    expect(prompter.shown).toContain("note: acme/quiet (github): No items yet.");
+    expect((await result).feeds![0]).toMatchObject({ feed: "tags", includePrereleases: true });
+    expect(prompter.shown).toContain("note: acme/quiet has only prereleases so far; following them.");
+    expect(prompter.shown.some((s) => s.startsWith("note: acme/quiet (github): v2.0.0-rc.1"))).toBe(true);
   });
 });
 

@@ -20,15 +20,17 @@ import {
   repoInferenceRequest,
 } from "../llm/prompts.js";
 import { type LlmClient, LlmError } from "../llm/schema.js";
-import { type DiscoveredFeed, discoverFeeds } from "../sources/discover.js";
+import { type DiscoveredFeed, discoverFeeds, isTransient } from "../sources/discover.js";
 import { type RepoCheck, verifyRepo } from "../sources/github.js";
-import { fetchEach, sourceConfigs, sourceInfo } from "../sources/index.js";
+import { type SourceOutcome, fetchEach, sourceConfigs, sourceInfo } from "../sources/index.js";
+import { FeedParseError } from "../sources/rss.js";
 import { tavilyApiKey } from "../sources/tavily.js";
 import { normalizeUrl, parseHttpUrl } from "../util/hash.js";
 import { HttpError } from "../util/http.js";
 import { configureLog } from "../util/log.js";
 import { type Prompter, PromptCancelled, createClackPrompter } from "../util/prompter.js";
-import { displayLine, plural } from "../util/text.js";
+import type { Item } from "../types.js";
+import { collapseWhitespace, displayLine, plural, stripControlChars } from "../util/text.js";
 
 const MAX_PROBLEMS = 20;
 const MAX_EXCLUDE = 30;
@@ -208,6 +210,11 @@ export interface SourceSession {
   /** Ids and dedupe keys of everything added, accepted or still to be tried. */
   ids: Set<string>;
   keys: Set<string>;
+  /**
+   * Feeds GitHub was asked about while adding them, with the latest item it returned, so the
+   * trial fetch does not ask again. Keyed by object: a rejected source's id may be reused.
+   */
+  checked: WeakMap<FeedInput, Item | undefined>;
   /** Asked once; later rounds offer what is left of them. */
   suggestions?: string[];
   tavilyNoted?: boolean;
@@ -219,7 +226,7 @@ export function newSession(
   llm: LlmClient | undefined,
   signal?: AbortSignal,
 ): SourceSession {
-  return { p, context, llm, signal, feeds: [], queries: [], ids: new Set(), keys: new Set() };
+  return { p, context, llm, signal, feeds: [], queries: [], ids: new Set(), keys: new Set(), checked: new WeakMap() };
 }
 
 /**
@@ -299,6 +306,7 @@ async function checkTypedRepo(s: SourceSession, repo: string): Promise<FeedInput
     check = await p.spin(`Checking ${repo} on GitHub`, () => verifyRepo(repo, signal), signal);
   } catch (err) {
     throwIfCancelled(signal);
+    if (!(err instanceof HttpError || err instanceof FeedParseError)) throw err;
     // It may exist: the user typed it, so let them decide.
     p.warn(`Could not check ${repo} on GitHub: ${errorLine(err)}`);
     if (!(await p.confirm({ message: `Add ${repo} anyway?`, initialValue: false }))) return undefined;
@@ -380,7 +388,7 @@ async function lookUpRepo(s: SourceSession, llm: LlmClient, name: string): Promi
 function repoFeed(s: SourceSession, repo: string, check?: FoundRepo): FeedInput {
   // Otherwise nothing would arrive until the first stable release.
   if (check?.onlyPrereleases) s.p.note(`${repo} has only prereleases so far; following them.`);
-  return {
+  const feed: FeedInput = {
     id: sourceIdFrom(repo.split("/")[1]!, s.ids),
     type: "github",
     name: repo,
@@ -388,6 +396,8 @@ function repoFeed(s: SourceSession, repo: string, check?: FoundRepo): FeedInput 
     ...(check?.feed === "tags" && { feed: "tags" as const }),
     ...(check?.onlyPrereleases && { includePrereleases: true }),
   };
+  if (check) s.checked.set(feed, check.latest);
+  return feed;
 }
 
 async function askSite(s: SourceSession): Promise<FeedInput | undefined> {
@@ -409,30 +419,41 @@ async function askSite(s: SourceSession): Promise<FeedInput | undefined> {
     throwIfCancelled(signal);
     if (!(err instanceof HttpError)) throw err;
     p.warn(`Could not open ${url}: ${errorLine(err)}`);
-    return undefined;
+    // It may be up again by the next run; the user typed it, so let them decide.
+    if (!isTransient(err) || !(await p.confirm({ message: `Add ${url} as a feed anyway?`, initialValue: false }))) {
+      return undefined;
+    }
+    return siteFeed(s, url, url);
   }
   if (feeds.length === 0) {
     p.warn(`No feed found on ${url}.`);
     return undefined;
   }
-  let chosen = feeds[0]!.url;
-  if (feeds.length > 1) {
-    chosen = await p.select({
-      message: `${url} has ${feeds.length} feeds; which one?`,
-      options: [
-        // The titles come from the page.
-        ...feeds.map((f) => ({
-          value: f.url,
-          label: (f.title && displayLine(f.title, SHOWN_MAX_CHARS)) || f.url,
-          ...(f.title && { hint: f.url }),
-        })),
-        { value: NONE, label: "None of these" },
-      ],
-    });
-    if (chosen === NONE) return undefined;
-  }
-  const host = new URL(chosen).hostname.replace(/^www\./, "");
-  return { id: sourceIdFrom(host, s.ids), type: "rss", name: host, url: chosen };
+  if (feeds.length === 1) return siteFeed(s, url, feeds[0]!.url);
+  const choice = await p.select({
+    message: `${url} has ${feeds.length} feeds; which one?`,
+    options: [
+      // The titles come from the page.
+      ...feeds.map((f) => ({
+        value: f.url,
+        label: (f.title && displayLine(f.title, SHOWN_MAX_CHARS)) || f.url,
+        ...(f.title && { hint: f.url }),
+      })),
+      { value: NONE, label: "None of these" },
+    ],
+  });
+  const chosen = feeds.find((f) => f.url === choice);
+  return chosen && siteFeed(s, url, chosen.url, chosen.title);
+}
+
+// Named after the URL the user gave, not the feed's host (feeds.feedburner.com), with its path
+// so feeds on one host differ, and with the title the page gave the feed chosen among several.
+function siteFeed(s: SourceSession, pageUrl: string, feedUrl: string, title?: string): FeedInput {
+  const page = new URL(pageUrl);
+  const host = page.hostname.replace(/^www\./, "");
+  const base = `${host}${page.pathname.replace(/\/+$/, "")}`;
+  const shown = title && displayLine(title, HINT_MAX_CHARS);
+  return { id: sourceIdFrom(host, s.ids), type: "rss", name: shown ? `${base}: ${shown}` : base, url: feedUrl };
 }
 
 async function askQueries(s: SourceSession): Promise<QueryInput[]> {
@@ -456,7 +477,7 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
       );
       const seen = new Set<string>();
       s.suggestions = reply.queries
-        .map((q) => displayLine(q, SHOWN_MAX_CHARS))
+        .map(cleanQuery)
         .filter((q) => q !== "" && once(seen, q.toLowerCase()))
         .slice(0, MAX_QUERY_SUGGESTIONS);
     } catch (err) {
@@ -473,24 +494,23 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
     candidates.push(
       ...(await p.multiselect({
         message: "Search queries to run every morning (space to select)",
-        options: offered.map((q) => ({ value: q, label: q })),
+        options: offered.map((q) => ({ value: q, label: displayLine(q, SHOWN_MAX_CHARS) })),
       })),
     );
   }
-  candidates.push(
-    ...(await askList(p, {
-      message: "Add a search query",
-      placeholder: "Qwen model release",
-      min: 0,
-      max: MAX_TYPED_QUERIES,
-    })),
-  );
+  const typed = await askList(p, {
+    message: "Add a search query",
+    placeholder: "Qwen model release",
+    min: 0,
+    max: MAX_TYPED_QUERIES,
+  });
+  candidates.push(...typed.map(cleanQuery));
 
   const added: QueryInput[] = [];
   for (const query of candidates) {
     const id = sourceIdFrom(query, s.ids);
     if (!claim(s, queryKey(query), id)) {
-      p.warn(`Already added: ${query}; skipped.`);
+      p.warn(`Already added: ${displayLine(query, SHOWN_MAX_CHARS)}; skipped.`);
       continue;
     }
     added.push({ id, query, topic: "news" });
@@ -508,12 +528,23 @@ async function trialFetch(
   const sources = SourcesSchema.parse({ version: 1, feeds, queries });
   // Queries only get here with a Tavily key.
   const configs = sourceConfigs(sources, true);
-  const outcomes = await p.spin(
-    `Fetching the latest from ${plural(configs.length, "source")}`,
-    () => fetchEach(configs, sources.defaults, { signal }),
-    signal,
-  );
-  if (signal?.aborted || outcomes.some((o) => "aborted" in o)) throw new PromptCancelled();
+  // Feeds come first in configs, in the order given; GitHub already showed the checked ones.
+  const known = (i: number) => i < feeds.length && s.checked.has(feeds[i]!);
+  const toFetch = configs.filter((_, i) => !known(i));
+  const fetched =
+    toFetch.length === 0
+      ? []
+      : await p.spin(
+          `Fetching the latest from ${plural(toFetch.length, "source")}`,
+          () => fetchEach(toFetch, sources.defaults, { signal }),
+          signal,
+        );
+  if (signal?.aborted || fetched.some((o) => "aborted" in o)) throw new PromptCancelled();
+  const outcomes = configs.map((source, i): SourceOutcome => {
+    if (!known(i)) return fetched.shift()!;
+    const latest = s.checked.get(feeds[i]!);
+    return { source, items: latest ? [latest] : [] };
+  });
 
   const rejected = new Set<string>();
   for (const outcome of outcomes) {
@@ -555,7 +586,12 @@ function keyOf(source: FeedInput | QueryInput): string {
 }
 
 function queryKey(query: string): string {
-  return `query:${query.toLowerCase()}`;
+  return `query:${cleanQuery(query).toLowerCase()}`;
+}
+
+// What is stored and searched for; shortening for the screen is left to displayLine.
+function cleanQuery(query: string): string {
+  return collapseWhitespace(stripControlChars(query));
 }
 
 /** Records the source as added; false when it already was. */

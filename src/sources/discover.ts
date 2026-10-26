@@ -101,7 +101,8 @@ async function verifyFeed(url: string, signal: AbortSignal | undefined): Promise
   }
 }
 
-function isTransient(err: HttpError): boolean {
+/** A failure that may pass on another try: timeout, network, 5xx, 429. */
+export function isTransient(err: HttpError): boolean {
   if (err.kind === "status") return err.status === 429 || (err.status ?? 0) >= 500;
   return err.kind !== "invalid_url";
 }

@@ -11,13 +11,19 @@ const clack = vi.hoisted(() => {
     confirm: vi.fn(),
     multiselect: vi.fn(),
     spinner: vi.fn(),
+    log: { warn: vi.fn() },
   };
 });
 vi.mock("@clack/prompts", () => clack);
 
 const { PromptCancelled, createClackPrompter } = await import("../../src/util/prompter.js");
+const { log, resetLog } = await import("../../src/util/log.js");
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.restoreAllMocks();
+  resetLog();
+});
 
 describe("createClackPrompter", () => {
   it("returns the answer", async () => {
@@ -66,5 +72,48 @@ describe("createClackPrompter", () => {
     const boom = new Error("boom");
     await expect(p.spin("Fetching", async () => Promise.reject(boom))).rejects.toBe(boom);
     expect(s.error).toHaveBeenCalledWith("Fetching");
+  });
+
+  it("turns Ctrl-C while spinning into SIGINT instead of letting clack exit with 0", async () => {
+    // What @clack/core's block() does once the spinner starts.
+    const clackExit = vi.fn();
+    const s = { start: vi.fn(() => process.stdin.on("keypress", clackExit)), stop: vi.fn(), error: vi.fn() };
+    clack.spinner.mockReturnValue(s);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    const before = process.stdin.listenerCount("keypress");
+
+    let release!: () => void;
+    const spinning = createClackPrompter().spin("Fetching", () => new Promise<void>((r) => (release = r)));
+    process.stdin.emit("keypress", "x", { name: "x" });
+    expect(kill).not.toHaveBeenCalled();
+    process.stdin.emit("keypress", "\x03", { name: "c", ctrl: true });
+    expect(clackExit).not.toHaveBeenCalled();
+    expect(kill).toHaveBeenCalledExactlyOnceWith(process.pid, "SIGINT");
+
+    release();
+    await spinning;
+    expect(process.stdin.listenerCount("keypress")).toBe(before);
+  });
+
+  it("holds log lines written while spinning until the spinner has stopped", async () => {
+    const order: string[] = [];
+    const s = { start: vi.fn(), stop: vi.fn(() => order.push("stop")), error: vi.fn(() => order.push("error")) };
+    clack.spinner.mockReturnValue(s);
+    clack.log.warn.mockImplementation((m: string) => order.push(`warn: ${m}`));
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const p = createClackPrompter();
+
+    await p.spin("Fetching", async () => log.warn("could not check an advertised feed"));
+    await expect(
+      p.spin("Fetching", async () => {
+        log.warn("second");
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect(order).toEqual(["stop", "warn: could not check an advertised feed", "error", "warn: second"]);
+    expect(stderr).not.toHaveBeenCalled();
+    // Back to stderr once the spinner is gone.
+    log.warn("after");
+    expect(stderr).toHaveBeenCalledOnce();
   });
 });
