@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { ExitCode, PochiError } from "../errors.js";
@@ -38,7 +38,8 @@ export class StateError extends PochiError {
 // Entries are checked one by one, so only the envelope has to be intact.
 const FileSchema = z.object({ version: z.literal(1), entries: z.record(z.string(), z.unknown()) });
 const KEY = /^[0-9a-f]{32}$/;
-const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+// A calendar check, not just the shape: "2026-13-01" would make pruneState throw.
+const day = z.iso.date();
 const EntrySchema = z.object({ s: z.enum(["n", "i", "r"]), f: day, l: day });
 
 export function emptyState(): State {
@@ -46,15 +47,17 @@ export function emptyState(): State {
 }
 
 export function resolveStatePath(opts: { flag?: string; env?: NodeJS.ProcessEnv } = {}): string {
+  const fromFlag = opts.flag?.trim();
   const fromEnv = (opts.env ?? process.env).POCHI_STATE_PATH?.trim();
-  return opts.flag ?? (fromEnv || DEFAULT_STATE_PATH);
+  return fromFlag || fromEnv || DEFAULT_STATE_PATH;
 }
 
 /**
  * A missing file is an empty state. A file that is not a state file is moved aside and the run
  * starts empty; any other read failure throws, since starting empty would notify everything again.
+ * With readOnly (a dry run), a file that is not a state file is left in place.
  */
-export async function loadState(path: string, opts: { now?: Date } = {}): Promise<State> {
+export async function loadState(path: string, opts: { now?: Date; readOnly?: boolean } = {}): Promise<State> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -65,7 +68,13 @@ export async function loadState(path: string, opts: { now?: Date } = {}): Promis
 
   const file = FileSchema.safeParse(parseJson(text));
   if (!file.success) {
-    const backup = `${path}.corrupt-${toIsoSeconds(opts.now ?? new Date()).replace(/[-:]/g, "")}`;
+    if (opts.readOnly) {
+      log.warn(`${path} is not a valid state file; starting empty (left in place)`);
+      return emptyState();
+    }
+    // The suffix keeps a second corruption within the same second from replacing the first backup.
+    const stamp = toIsoSeconds(opts.now ?? new Date()).replace(/[-:]/g, "");
+    const backup = `${path}.corrupt-${stamp}-${randomBytes(3).toString("hex")}`;
     try {
       await rename(path, backup);
     } catch (err) {
@@ -115,10 +124,8 @@ export function statusOf(state: State, keys: readonly string[]): EntryStatus | u
  * another source) inherit the known entry, so the next run finds it by any of them.
  */
 export function touch(state: State, keys: readonly string[], today: string): void {
-  const known = existing(state, keys);
-  const s = strongest(known.map((e) => e.s));
-  if (s === undefined) return;
-  write(state, keys, merged(known, s, today));
+  // r is the weakest status, so recording it keeps whatever the item already had.
+  if (isKnown(state, keys)) record(state, keys, "r", today);
 }
 
 /**
@@ -135,10 +142,19 @@ export async function saveState(state: State, path: string, opts: { now?: Date }
   const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   try {
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(tmp, serialize(state, updatedAt), { flag: "wx" });
+    const fh = await open(tmp, "wx");
+    try {
+      await fh.writeFile(serialize(state, updatedAt));
+      // Without this a crash after the rename can leave an empty file under the real name. The
+      // directory is not synced: losing the rename only keeps the old file.
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
     await rename(tmp, path);
   } catch (err) {
-    await rm(tmp, { force: true });
+    // A failed cleanup must not hide why the write failed.
+    await rm(tmp, { force: true }).catch(() => {});
     throw new StateError(`cannot write ${path}`, { cause: err });
   }
 }
