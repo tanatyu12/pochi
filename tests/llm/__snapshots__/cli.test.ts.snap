@@ -13,6 +13,7 @@ exports[`buildCliArgs > builds the arguments in this exact order 1`] = `
   "none",
   "--no-session-persistence",
   "--strict-mcp-config",
+  "--safe-mode",
   "--model",
   "haiku",
   "--system-prompt",

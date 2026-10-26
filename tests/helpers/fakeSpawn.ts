@@ -53,10 +53,17 @@ export class FakeChild extends EventEmitter {
     return true;
   }
 
-  /** Ends the output streams, then emits close the way node does once stdio has drained. */
-  exit(code: number | null, signal: NodeJS.Signals | null = null): void {
+  /**
+   * Ends the output streams, then emits close the way node does once stdio has drained. With
+   * keepPipesOpen, only exit is emitted, as when a process the child started still holds stdio.
+   */
+  exit(code: number | null, signal: NodeJS.Signals | null = null, opts: { keepPipesOpen?: boolean } = {}): void {
     if (this.exited) return;
     this.exited = true;
+    if (opts.keepPipesOpen) {
+      process.nextTick(() => this.emit("exit", code, signal));
+      return;
+    }
     this.stdout.end();
     this.stderr.end();
     void Promise.all([finished(this.stdout), finished(this.stderr)]).then(() => {
@@ -69,12 +76,12 @@ export class FakeChild extends EventEmitter {
 export const run = {
   /** Reads all of stdin, prints stdout (and stderr), then exits with code. */
   exit:
-    (stdout: string, opts: { code?: number; stderr?: string } = {}): Script =>
+    (stdout: string, opts: { code?: number; stderr?: string; keepPipesOpen?: boolean } = {}): Script =>
     (child) => {
       void child.stdinEnded().then(() => {
         child.stdout.write(stdout);
         if (opts.stderr) child.stderr.write(opts.stderr);
-        child.exit(opts.code ?? 0);
+        child.exit(opts.code ?? 0, null, { keepPipesOpen: opts.keepPipesOpen });
       });
     },
   /** run.exit with the contents of tests/fixtures/claude/<name>. */
@@ -91,10 +98,12 @@ export const run = {
     },
   /** Never exits on its own. With ignoreSigint, only SIGKILL ends it. */
   hang:
-    (opts: { ignoreSigint?: boolean } = {}): Script =>
+    (opts: { ignoreSigint?: boolean; keepPipesOpen?: boolean } = {}): Script =>
     (child) => {
       child.onKill = (signal) => {
-        if (signal === "SIGKILL" || !opts.ignoreSigint) child.exit(null, signal);
+        if (signal === "SIGKILL" || !opts.ignoreSigint) {
+          child.exit(null, signal, { keepPipesOpen: opts.keepPipesOpen });
+        }
       };
     },
   /** The command could not be started: error, then close, as node reports ENOENT. */
@@ -112,6 +121,8 @@ export const run = {
 export interface SpawnMock {
   spawn: SpawnFn;
   calls: SpawnCall[];
+  /** Resolves once spawn has been called n times. Uses no timers, so it works under fake ones. */
+  spawned(n?: number): Promise<void>;
 }
 
 /**
@@ -121,6 +132,7 @@ export interface SpawnMock {
 export function fakeSpawn(scripts: Script | Script[]): SpawnMock {
   const queue = Array.isArray(scripts) ? [...scripts] : undefined;
   const calls: SpawnCall[] = [];
+  const waiters: { n: number; resolve: () => void }[] = [];
   const spawn: SpawnFn = (command, args, options) => {
     const script = queue ? queue.shift() : (scripts as Script);
     if (script === undefined) throw new Error(`fakeSpawn: no scripts left for ${command}`);
@@ -136,7 +148,10 @@ export function fakeSpawn(scripts: Script | Script[]): SpawnMock {
     const child: FakeChild = new FakeChild(call);
     calls.push(call);
     script(child);
+    for (const w of waiters.filter((w) => calls.length >= w.n)) w.resolve();
     return child as unknown as ChildProcessWithoutNullStreams;
   };
-  return { spawn, calls };
+  const spawned = (n = 1) =>
+    calls.length >= n ? Promise.resolve() : new Promise<void>((resolve) => waiters.push({ n, resolve }));
+  return { spawn, calls, spawned };
 }

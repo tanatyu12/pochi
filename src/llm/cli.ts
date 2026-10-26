@@ -1,15 +1,19 @@
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from "node:child_process";
 import { spawn as nodeSpawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { log } from "../util/log.js";
 import {
   type GenerateRequest,
-  issuePaths,
   type LlmClient,
   LlmError,
   type LlmTier,
+  type StatusKind,
+  statusKind,
   toJsonSchema,
+  validateReply,
 } from "./schema.js";
 
 export const DEFAULT_CLI_MODELS: Record<LlmTier, string> = { triage: "haiku", analyze: "sonnet" };
@@ -17,6 +21,8 @@ export const DEFAULT_CLI_MODELS: Record<LlmTier, string> = { triage: "haiku", an
 const TIMEOUT_MS = 300_000;
 // How long claude gets to exit after SIGINT before it is killed.
 const KILL_GRACE_MS = 5_000;
+// How long stdout may stay open after claude exits: a process it started can hold the pipe.
+const EXIT_DRAIN_MS = 1_000;
 const MAX_STDOUT_BYTES = 10 * 1024 * 1024;
 const STDERR_TAIL_BYTES = 8 * 1024;
 
@@ -29,7 +35,8 @@ export type SpawnFn = (
 
 /**
  * The prompt goes through stdin, not here: argv has a length limit and shows up in process lists.
- * No tools and no MCP servers, so fetched text cannot make claude act, only answer.
+ * No tools and no MCP servers, so fetched text cannot make claude act, only answer. --safe-mode
+ * turns off CLAUDE.md, hooks, plugins and skills, so no local configuration runs or steers it.
  */
 export function buildCliArgs(req: GenerateRequest<unknown>, model: string): string[] {
   return [
@@ -44,6 +51,7 @@ export function buildCliArgs(req: GenerateRequest<unknown>, model: string): stri
     "none",
     "--no-session-persistence",
     "--strict-mcp-config",
+    "--safe-mode",
     "--model",
     model,
     "--system-prompt",
@@ -103,26 +111,63 @@ interface Exit {
 }
 
 // Resolves once claude has exited, also when it was stopped, so no process outlives the call.
-function runClaude(
+async function runClaude(
   run: RunOptions,
   args: string[],
   input: string,
   model: string,
   signal: AbortSignal | undefined,
 ): Promise<Exit> {
-  if (signal?.aborted) return Promise.reject(signal.reason);
+  if (signal?.aborted) throw abortReason(signal);
+  // A private cwd, outside the project and not the shared temp directory, where anyone could
+  // leave a .claude or CLAUDE.md for claude to pick up.
+  const cwd = await mkdtemp(join(tmpdir(), "pochi-claude-")).catch((err: NodeJS.ErrnoException) => {
+    throw new LlmError("unavailable", `could not create a directory to run claude in: ${err.code ?? err.message}`, {
+      cause: err,
+    });
+  });
+  try {
+    return await runIn(cwd, run, args, input, model, signal);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+}
+
+function runIn(
+  cwd: string,
+  run: RunOptions,
+  args: string[],
+  input: string,
+  model: string,
+  signal: AbortSignal | undefined,
+): Promise<Exit> {
   return new Promise((resolve, reject) => {
-    // cwd is outside the project so claude does not load its .claude settings or CLAUDE.md.
-    const child = run.spawn(run.command, args, { cwd: tmpdir(), shell: false, windowsHide: true });
+    if (signal?.aborted) {
+      reject(abortReason(signal));
+      return;
+    }
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = run.spawn(run.command, args, { cwd, shell: false, windowsHide: true });
+    } catch (err) {
+      // Thrown before a process exists, such as ERR_INVALID_ARG_VALUE for a NUL byte in an
+      // argument. Its message quotes the argument (the system prompt), so only the code is kept.
+      const code = (err as NodeJS.ErrnoException).code ?? (err instanceof Error ? err.name : "error");
+      reject(new LlmError("unavailable", `could not run ${run.command}: ${code} (${model})`));
+      return;
+    }
     const stdout: Buffer[] = [];
     let stdoutBytes = 0;
     let stderr = Buffer.alloc(0);
+    let stopping = false;
     let failure: unknown;
     let settled = false;
     let killTimer: NodeJS.Timeout | undefined;
+    let drainTimer: NodeJS.Timeout | undefined;
 
     const stop = (reason: unknown) => {
-      if (failure !== undefined) return;
+      if (stopping) return;
+      stopping = true;
       failure = reason;
       child.kill("SIGINT");
       killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
@@ -131,7 +176,7 @@ function runClaude(
       () => stop(new LlmError("timeout", `claude did not answer within ${run.timeoutMs}ms (${model})`)),
       run.timeoutMs,
     );
-    const onAbort = () => stop(signal?.reason);
+    const onAbort = () => stop(abortReason(signal!));
     signal?.addEventListener("abort", onAbort, { once: true });
 
     const finish = (settle: () => void) => {
@@ -139,12 +184,26 @@ function runClaude(
       settled = true;
       clearTimeout(timer);
       clearTimeout(killTimer);
+      clearTimeout(drainTimer);
       signal?.removeEventListener("abort", onAbort);
       settle();
     };
+    const exited = (code: number | null, exitSignal: NodeJS.Signals | null) => {
+      finish(() => {
+        if (stopping) reject(failure);
+        else {
+          resolve({
+            code,
+            signal: exitSignal,
+            stdout: Buffer.concat(stdout).toString("utf8"),
+            stderr: stderr.toString("utf8").trim(),
+          });
+        }
+      });
+    };
 
     child.stdout.on("data", (chunk: Buffer) => {
-      if (failure !== undefined) return;
+      if (stopping) return;
       stdoutBytes += chunk.byteLength;
       if (stdoutBytes > run.maxBytes) {
         stop(new LlmError("invalid_output", `claude output exceeds ${run.maxBytes} bytes (${model})`));
@@ -162,26 +221,30 @@ function runClaude(
         err.code === "ENOENT"
           ? new LlmError("unavailable", `${run.command} command not found`, { cause: err })
           : new LlmError("transport", `could not run ${run.command}: ${err.code ?? err.message}`, { cause: err });
-      finish(() => reject(failure ?? llmErr));
+      finish(() => reject(stopping ? failure : llmErr));
     });
-    child.on("close", (code: number | null, exitSignal: NodeJS.Signals | null) => {
-      finish(() => {
-        if (failure !== undefined) reject(failure);
-        else {
-          resolve({
-            code,
-            signal: exitSignal,
-            stdout: Buffer.concat(stdout).toString("utf8"),
-            stderr: stderr.toString("utf8").trim(),
-          });
-        }
-      });
+    // close waits until every process holding stdout or stderr lets go, which a process claude
+    // started may never do. Once claude itself has exited, the wait is bounded.
+    child.on("exit", (code: number | null, exitSignal: NodeJS.Signals | null) => {
+      const release = () => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        exited(code, exitSignal);
+      };
+      if (stopping) release();
+      else drainTimer = setTimeout(release, EXIT_DRAIN_MS);
     });
+    child.on("close", exited);
 
     // claude may exit before reading stdin (a bad flag, say); its exit status tells the story.
     child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
+}
+
+// Some AbortSignal implementations leave reason undefined; the caller still gets an AbortError.
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("This operation was aborted", "AbortError");
 }
 
 // Only the fields read below; the envelope carries many more (usage, timings, ...).
@@ -193,62 +256,75 @@ const EnvelopeSchema = z.looseObject({
   structured_output: z.unknown().optional(),
   api_error_status: z.number().nullish(),
   stop_reason: z.string().nullish(),
+  terminal_reason: z.string().nullish(),
   total_cost_usd: z.number().nullish(),
 });
 type Envelope = z.output<typeof EnvelopeSchema>;
 
+// The envelope is one line; a notice printed before it (an update hint, say) must not hide it.
 function readEnvelope(stdout: string): Envelope | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(stdout);
-  } catch {
-    return undefined;
+  const lastLine = stdout.trimEnd().split("\n").at(-1) ?? "";
+  for (const text of [stdout, lastLine]) {
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    const parsed = EnvelopeSchema.safeParse(value);
+    if (parsed.success) return parsed.data;
   }
-  const parsed = EnvelopeSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
+  return undefined;
 }
 
 // Messages are built from status fields only; result holds claude's own text, which can echo the request.
 function parseEnvelope<T>(envelope: Envelope, req: GenerateRequest<T>, model: string): T {
   if (envelope.is_error) throw errorFromEnvelope(envelope, model);
-  if (envelope.structured_output != null) return validate(envelope.structured_output, req, model);
-  if (envelope.stop_reason === "refusal") throw new LlmError("refusal", `Claude declined the request (${model})`);
+  if (envelope.structured_output != null) return validateReply(envelope.structured_output, req.schema, model);
+  switch (envelope.stop_reason) {
+    case "refusal":
+      throw new LlmError("refusal", `Claude declined the request (${model})`);
+    case "max_tokens":
+    case "model_context_window_exceeded":
+      throw new LlmError("max_tokens", `Claude's reply was cut off: ${envelope.stop_reason} (${model})`);
+  }
   // Fallback for when claude answers in plain text instead of through the schema.
   const value = findFirstJsonObject(stripAnsi(envelope.result ?? ""));
-  if (value === undefined) {
-    if (envelope.stop_reason === "max_tokens") {
-      throw new LlmError("max_tokens", `Claude's reply was cut off: max_tokens (${model})`);
-    }
-    throw new LlmError("invalid_output", `claude returned no structured output (${model})`);
-  }
-  return validate(value, req, model);
+  if (value === undefined) throw new LlmError("invalid_output", `claude returned no structured output (${model})`);
+  return validateReply(value, req.schema, model);
 }
+
+const STATUS_MESSAGES: Record<StatusKind, string> = {
+  auth: "claude is not logged in or its credentials were rejected",
+  rate_limit: "Claude usage limit reached",
+  timeout: "Claude timed out",
+  transport: "Claude is unavailable",
+  unavailable: "claude rejected the request",
+};
+
+// claude's reply when it has no credentials at all. It sends no request, so there is no status.
+const NOT_LOGGED_IN = /not logged in|\/login\b/i;
 
 function errorFromEnvelope(envelope: Envelope, model: string): LlmError {
   const status = envelope.api_error_status;
-  if (status == null) {
-    if (envelope.subtype === "error_max_structured_output_retries") {
-      return new LlmError("invalid_output", `Claude kept failing the output schema (${model})`);
-    }
-    return new LlmError("transport", `claude failed: ${envelope.subtype} (${model})`);
+  if (status != null) {
+    const kind = statusKind(status);
+    return new LlmError(kind, `${STATUS_MESSAGES[kind]} (HTTP ${status}, ${model})`);
   }
-  const where = `HTTP ${status}, ${model}`;
-  if (status === 401 || status === 403) {
-    return new LlmError("auth", `claude is not logged in or its credentials were rejected (${where})`);
+  if (envelope.subtype === "error_max_structured_output_retries") {
+    return new LlmError("invalid_output", `Claude kept failing the output schema (${model})`);
   }
-  if (status === 429) return new LlmError("rate_limit", `Claude usage limit reached (${where})`);
-  if (status >= 500) return new LlmError("transport", `Claude is unavailable (${where})`);
-  // 400 / 404 and the rest: usually a model name claude does not know, which retrying will not fix.
-  return new LlmError("unavailable", `claude rejected the request (${where})`);
-}
-
-function validate<T>(value: unknown, req: GenerateRequest<T>, model: string): T {
-  const parsed = req.schema.safeParse(value);
-  if (!parsed.success) {
-    const paths = issuePaths(parsed.error);
-    throw new LlmError("invalid_output", `Claude's reply did not match the schema at ${paths} (${model})`);
+  // result is only matched here, never quoted.
+  if (NOT_LOGGED_IN.test(envelope.result ?? "")) {
+    return new LlmError("auth", `claude is not logged in; run claude and then /login (${model})`);
   }
-  return parsed.data;
+  // An API error without a status: the request never got a response (refused, DNS, TLS, ...).
+  if (envelope.terminal_reason === "api_error") {
+    return new LlmError("transport", `claude could not reach the Anthropic API (${model})`);
+  }
+  // subtype stays "success" on most errors, so terminal_reason says more.
+  const reason = envelope.terminal_reason ?? envelope.subtype;
+  return new LlmError("unavailable", `claude reported an error: ${reason} (${model})`);
 }
 
 // CSI sequences (colours, cursor moves) and OSC sequences (titles, hyperlinks).
@@ -265,7 +341,8 @@ function stripAnsi(text: string): string {
 export function findFirstJsonObject(text: string): Record<string, unknown> | undefined {
   for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
     const end = matchingBrace(text, start);
-    if (end === -1) return undefined;
+    // A { that never closes may be prose; a later one can still hold the reply.
+    if (end === -1) continue;
     try {
       const value: unknown = JSON.parse(text.slice(start, end + 1));
       if (typeof value === "object" && value !== null && !Array.isArray(value)) {
