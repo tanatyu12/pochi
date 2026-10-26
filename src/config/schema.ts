@@ -5,6 +5,9 @@ const text = z.string().trim().min(1);
 const sourceId = z.string().regex(/^[a-z0-9][a-z0-9_-]*$/, { error: "must be lowercase letters, digits, - or _" });
 const positiveInt = z.int().positive();
 
+// Owners cannot contain dots; repos may start with one (.github) but "." and ".." would escape the API path.
+export const REPO_PATTERN = /^[\w-]+\/(?!\.\.?$)[\w.-]+$/;
+
 export const ImpactSchema = z.enum(["High", "Medium", "Low"]);
 export type Impact = z.output<typeof ImpactSchema>;
 
@@ -52,8 +55,7 @@ const GithubFeedSchema = z.strictObject({
   id: sourceId,
   type: z.literal("github"),
   name: text,
-  // Owners cannot contain dots; repos may start with one (.github) but "." and ".." would escape the API path.
-  repo: z.string().regex(/^[\w-]+\/(?!\.\.?$)[\w.-]+$/, { error: "must be owner/repo" }),
+  repo: z.string().regex(REPO_PATTERN, { error: "must be owner/repo" }),
   feed: z.enum(["releases", "tags"]).default("releases"),
   includePrereleases: z.boolean().default(false),
 });
