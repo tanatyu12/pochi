@@ -1,11 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   type GenerateRequest,
-  issuePaths,
   type LlmClient,
   LlmError,
   type LlmTier,
+  type StatusKind,
+  statusKind,
   toJsonSchema,
+  validateReply,
 } from "./schema.js";
 
 export const DEFAULT_API_MODELS: Record<LlmTier, string> = {
@@ -85,13 +87,16 @@ function parseReply<T>(message: Anthropic.Message, req: GenerateRequest<T>, mode
     // The SyntaxError quotes the reply, so it is not kept as the cause.
     throw new LlmError("invalid_output", `Claude returned malformed JSON (${where})`);
   }
-  const parsed = req.schema.safeParse(value);
-  if (!parsed.success) {
-    const paths = issuePaths(parsed.error);
-    throw new LlmError("invalid_output", `Claude's reply did not match the schema at ${paths} (${where})`);
-  }
-  return parsed.data;
+  return validateReply(value, req.schema, where);
 }
+
+const STATUS_MESSAGES: Record<StatusKind, string> = {
+  auth: "Anthropic API rejected ANTHROPIC_API_KEY",
+  rate_limit: "Anthropic API rate limit reached",
+  timeout: "Anthropic API timed out",
+  transport: "Anthropic API is unavailable",
+  unavailable: "Anthropic API rejected the request",
+};
 
 // Messages are built here rather than taken from the SDK. Its API error text carries the response
 // body, which can echo request fields, so API errors are not kept as the cause either (the CLI
@@ -119,17 +124,6 @@ function toLlmError(err: unknown, model: string, signal: AbortSignal | undefined
   }
   const status = [err.status && `HTTP ${err.status}`, err.type].filter(Boolean).join(" ");
   const where = [status, model, err.requestID && `request ${err.requestID}`].filter(Boolean).join(", ");
-  if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
-    return new LlmError("auth", `Anthropic API rejected ANTHROPIC_API_KEY (${where})`);
-  }
-  if (err instanceof Anthropic.RateLimitError) {
-    return new LlmError("rate_limit", `Anthropic API rate limit reached (${where})`);
-  }
-  // 408 / 409 and 5xx are transient: the SDK has already retried them.
-  if (err.status === 408) return new LlmError("timeout", `Anthropic API timed out (${where})`);
-  if (err instanceof Anthropic.ConflictError || err instanceof Anthropic.InternalServerError) {
-    return new LlmError("transport", `Anthropic API is unavailable (${where})`);
-  }
-  // 400 / 404 and the rest: usually a model name the API does not know, which retrying will not fix.
-  return new LlmError("unavailable", `Anthropic API rejected the request (${where})`);
+  const kind = statusKind(err.status);
+  return new LlmError(kind, `${STATUS_MESSAGES[kind]} (${where})`);
 }
