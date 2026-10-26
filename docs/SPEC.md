@@ -196,8 +196,11 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、guid または正規化 URL が同じ記事は最も新しいものだけを残してから、最新 N 件を取る。plain text の本文も HTML の本文と同じ見出し優先の切り詰めを行う。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
   - `fetchRssItems` は取得・解析・変換をまとめた薄い関数
 - **github.ts**
-  - `verifyRepo` はまず releases.atom を取得する（404 なら「存在しない」）。0件なら tags.atom を試す
-  - `isPrerelease` はタグ名の -alpha / -beta / -rc / -canary / -next / -preview / -nightly / -dev で判定する。プレリリースを除いてから件数を絞る
+  - `fetchGithubItems` は `https://github.com/<repo>/<releases|tags>.atom` を取得し、rss.ts の `parseFeedText` と `toItems`（kind は github）で変換する。HTTP や解析のエラーはそのまま投げる
+  - `verifyRepo` はまず releases.atom を取得する（404 なら not_found）。1件以上あれば found（releases）、0件なら tags.atom を試し、1件以上なら found（tags）、0件なら empty を返す。件数はプレリリースを除く前に数える。404 以外の HTTP エラー、通信エラー、フィードでない応答は投げ、「存在しない」と「確認できない」を区別する
+  - `isPrerelease` はタグ名の -alpha / -beta / -rc / -canary / -next / -preview / -nightly / -dev で判定する（大文字小文字は問わない）。直前が数字で、直後に英字が続かない場合だけ一致させ、`eslint-config-next@14.0.0` や `-devtools` を誤判定しない
+  - タグ名は link の `/releases/tag/` 以降 → guid（`tag:github.com,2008:Repository/<id>/<tag>`）の末尾 → title の順に採る。title はリリース名でタグと異なることがあるため最後にする
+  - プレリリースを除いてから件数を絞る（includePrereleases が true なら除かない）
 - **discover.ts**（RSS自動探索）
   1. 入力された URL がそれ自体フィードなら、それを返す
   2. head 内の `<link>` を正規表現で拾う。属性の順序や引用符の種類、大文字小文字は問わない。rel に alternate を含み、type が rss / atom / feed+json のものを対象とし、`<base>` またはリダイレクト後の URL を基準に解決する
@@ -311,7 +314,7 @@ README に書く注意点：
 | T3 | M0 土台 | 設定のスキーマ・読み込み・書き出しと example ファイル | T1 | example が検証を通る。環境変数がファイルより優先される。エラーに値が出ない | 完了 |
 | T4 | M1 情報収集 | html.ts | T1 | 二重エスケープ、絵文字や日本語での切り詰めを含むテスト | 完了 |
 | T5 | M1 情報収集 | rss.ts（feedsmith）。最初に feedsmith の API をフィクスチャで確かめる | T2, T4 | RSS2、Atom、RDF、JSON Feed、BOM、壊れた XML のフィクスチャ | 完了 |
-| T6 | M1 情報収集 | github.ts | T5 | verifyRepo の4パターン、プレリリース判定を表形式でテスト | 未着手 |
+| T6 | M1 情報収集 | github.ts | T5 | verifyRepo の4パターン、プレリリース判定を表形式でテスト | 完了 |
 | T7 | M1 情報収集 | discover.ts（T6・T8 と並行可） | T5 | 属性の順序、単引用符、大文字、base 要素、相対パス、代替パスを試す順序、URL 自体がフィードの場合 | 未着手 |
 | T8 | M1 情報収集 | tavily.ts（T6・T7 と並行可） | T2, T4 | リクエストの本文とヘッダーを検証。401 と 429 の扱い | 未着手 |
 | T9 | M1 情報収集 | 収集の統合（sources/index） | T3, T5, T6, T8 | 3件中1件が失敗しても続行する、重複排除、キーがなければ Tavily を使わない、同時実行は4件まで | 未着手 |
