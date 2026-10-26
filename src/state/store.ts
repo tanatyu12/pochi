@@ -1,0 +1,163 @@
+import { randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { z } from "zod";
+import { ExitCode, PochiError } from "../errors.js";
+import { log } from "../util/log.js";
+import { daysBetween, toIsoSeconds } from "../util/time.js";
+
+export const DEFAULT_STATE_PATH = "state/notified.json";
+
+/** n: notified. i: judged irrelevant, so it is not triaged again. */
+export type EntryStatus = "n" | "i";
+
+export interface StateEntry {
+  s: EntryStatus;
+  /** UTC day the item was first seen. */
+  f: string;
+  /** UTC day the item was last seen in a feed. */
+  l: string;
+}
+
+export interface State {
+  entries: Map<string, StateEntry>;
+}
+
+export class StateError extends PochiError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, ExitCode.INTERNAL, options);
+  }
+}
+
+// Entries are checked one by one, so only the envelope has to be intact.
+const FileSchema = z.object({ version: z.literal(1), entries: z.record(z.string(), z.unknown()) });
+const KEY = /^[0-9a-f]{32}$/;
+const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const EntrySchema = z.object({ s: z.enum(["n", "i"]), f: day, l: day });
+
+export function emptyState(): State {
+  return { entries: new Map() };
+}
+
+export function resolveStatePath(opts: { flag?: string; env?: NodeJS.ProcessEnv } = {}): string {
+  const fromEnv = (opts.env ?? process.env).POCHI_STATE_PATH?.trim();
+  return opts.flag ?? (fromEnv || DEFAULT_STATE_PATH);
+}
+
+/**
+ * A missing file is an empty state. A file that is not a state file is moved aside and the run
+ * starts empty; any other read failure throws, since starting empty would notify everything again.
+ */
+export async function loadState(path: string, opts: { now?: Date } = {}): Promise<State> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyState();
+    throw new StateError(`cannot read ${path}`, { cause: err });
+  }
+
+  const file = FileSchema.safeParse(parseJson(text));
+  if (!file.success) {
+    const backup = `${path}.corrupt-${toIsoSeconds(opts.now ?? new Date()).replace(/[-:]/g, "")}`;
+    try {
+      await rename(path, backup);
+    } catch (err) {
+      throw new StateError(`cannot move aside the corrupt ${path}`, { cause: err });
+    }
+    log.warn(`${path} is not a valid state file; moved it to ${backup} and starting empty`);
+    return emptyState();
+  }
+
+  const state = emptyState();
+  let dropped = 0;
+  for (const [key, value] of Object.entries(file.data.entries)) {
+    const entry = EntrySchema.safeParse(value);
+    if (KEY.test(key) && entry.success) state.entries.set(key, entry.data);
+    else dropped++;
+  }
+  // One damaged line should not cost the whole history.
+  if (dropped > 0) log.warn(`dropped ${dropped} invalid entries from ${path}`);
+  return state;
+}
+
+/** Removes entries not seen for more than ttlDays, and returns how many were removed. */
+export function pruneState(state: State, ttlDays: number, today: string): number {
+  // l, not f: a stale blog keeps old posts in its feed, and expiring them by first sight would
+  // notify them again once the TTL passed.
+  let removed = 0;
+  for (const [key, entry] of state.entries) {
+    if (daysBetween(entry.l, today) > ttlDays) {
+      state.entries.delete(key);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+export function isKnown(state: State, keys: readonly string[]): boolean {
+  return keys.some((k) => state.entries.has(k));
+}
+
+/**
+ * Marks a known item as seen today under every key. Keys the state lacks (a page first seen under
+ * another source) inherit the known entry, so the next run finds it by any of them.
+ */
+export function touch(state: State, keys: readonly string[], today: string): void {
+  const known = existing(state, keys);
+  if (known.length === 0) return;
+  write(state, keys, merged(known, known.some((e) => e.s === "n") ? "n" : "i", today));
+}
+
+/** Records a decision under every key. A notified item is never downgraded to irrelevant. */
+export function record(state: State, keys: readonly string[], status: EntryStatus, today: string): void {
+  const known = existing(state, keys);
+  const s = status === "n" || known.some((e) => e.s === "n") ? "n" : "i";
+  write(state, keys, merged(known, s, today));
+}
+
+export async function saveState(state: State, path: string, opts: { now?: Date } = {}): Promise<void> {
+  const updatedAt = toIsoSeconds(opts.now ?? new Date());
+  const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(tmp, serialize(state, updatedAt), { flag: "wx" });
+    await rename(tmp, path);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw new StateError(`cannot write ${path}`, { cause: err });
+  }
+}
+
+// One entry per line keeps the daily commit's diff to the entries that changed; pretty-printing
+// would spend five lines on each of tens of thousands of entries.
+function serialize(state: State, updatedAt: string): string {
+  const keys = [...state.entries.keys()].sort();
+  const lines = keys.map((k, i) => {
+    const { s, f, l } = state.entries.get(k)!;
+    return `    ${JSON.stringify(k)}: ${JSON.stringify({ s, f, l })}${i < keys.length - 1 ? "," : ""}`;
+  });
+  const entries = lines.length > 0 ? `{\n${lines.join("\n")}\n  }` : "{}";
+  return `{\n  "version": 1,\n  "updatedAt": ${JSON.stringify(updatedAt)},\n  "entries": ${entries}\n}\n`;
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function existing(state: State, keys: readonly string[]): StateEntry[] {
+  return keys.flatMap((k) => state.entries.get(k) ?? []);
+}
+
+function merged(known: StateEntry[], s: EntryStatus, today: string): StateEntry {
+  const f = known.reduce((min, e) => (e.f < min ? e.f : min), today);
+  return { s, f, l: today };
+}
+
+function write(state: State, keys: readonly string[], entry: StateEntry): void {
+  for (const k of keys) state.entries.set(k, { ...entry });
+}
