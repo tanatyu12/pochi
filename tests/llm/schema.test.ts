@@ -114,9 +114,10 @@ describe("statusKind", () => {
     [408, "timeout"],
     [409, "transport"],
     [429, "rate_limit"],
+    [413, "too_large"],
     [500, "transport"],
     [529, "transport"],
-    [400, "unavailable"],
+    [400, "bad_request"],
     [404, "unavailable"],
     [undefined, "unavailable"],
   ] as const)("maps %s to %s", (status, kind) => {

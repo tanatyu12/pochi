@@ -10,6 +10,7 @@ import {
   type LlmClient,
   LlmError,
   type LlmTier,
+  PROMPT_TOO_LONG,
   type StatusKind,
   statusKind,
   toJsonSchema,
@@ -59,17 +60,31 @@ export function buildCliArgs(req: GenerateRequest<unknown>, model: string): stri
   ];
 }
 
+/**
+ * The environment claude runs with. Without ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN, so claude
+ * uses its own login rather than billing the API account the user chose not to use. With a gateway
+ * (ANTHROPIC_BASE_URL), claude signs in to it with the key or the token, so nothing is removed.
+ * Bedrock and Vertex settings always stay: those are set up for claude on purpose.
+ */
+export function cliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  if (env.ANTHROPIC_BASE_URL?.trim()) return { ...env };
+  const { ANTHROPIC_API_KEY: _key, ANTHROPIC_AUTH_TOKEN: _token, ...rest } = env;
+  return rest;
+}
+
 /** The model names are already resolved (config over DEFAULT_CLI_MODELS) by the adapter. */
 export function createCliLlm(opts: {
   models: Record<LlmTier, string>;
   spawn?: SpawnFn;
   command?: string;
+  env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   maxBytes?: number;
 }): LlmClient {
   const run: RunOptions = {
     spawn: opts.spawn ?? nodeSpawn,
     command: opts.command ?? "claude",
+    env: opts.env ?? cliEnv(),
     timeoutMs: opts.timeoutMs ?? TIMEOUT_MS,
     maxBytes: opts.maxBytes ?? MAX_STDOUT_BYTES,
   };
@@ -96,26 +111,30 @@ export function createCliLlm(opts: {
   };
 }
 
-interface RunOptions {
+export interface RunOptions {
   spawn: SpawnFn;
   command: string;
+  env: NodeJS.ProcessEnv;
   timeoutMs: number;
   maxBytes: number;
 }
 
-interface Exit {
+export interface Exit {
   code: number | null;
   signal: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
 }
 
-// Resolves once claude has exited, also when it was stopped, so no process outlives the call.
-async function runClaude(
+/**
+ * Resolves once claude has exited, also when it was stopped, so no process outlives the call.
+ * label (the model, or what the run is for) goes in error messages.
+ */
+export async function runClaude(
   run: RunOptions,
   args: string[],
   input: string,
-  model: string,
+  label: string,
   signal: AbortSignal | undefined,
 ): Promise<Exit> {
   if (signal?.aborted) throw abortReason(signal);
@@ -127,7 +146,7 @@ async function runClaude(
     });
   });
   try {
-    return await runIn(cwd, run, args, input, model, signal);
+    return await runIn(cwd, run, args, input, label, signal);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -138,7 +157,7 @@ function runIn(
   run: RunOptions,
   args: string[],
   input: string,
-  model: string,
+  label: string,
   signal: AbortSignal | undefined,
 ): Promise<Exit> {
   return new Promise((resolve, reject) => {
@@ -148,12 +167,12 @@ function runIn(
     }
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = run.spawn(run.command, args, { cwd, shell: false, windowsHide: true });
+      child = run.spawn(run.command, args, { cwd, env: run.env, shell: false, windowsHide: true });
     } catch (err) {
       // Thrown before a process exists, such as ERR_INVALID_ARG_VALUE for a NUL byte in an
       // argument. Its message quotes the argument (the system prompt), so only the code is kept.
       const code = (err as NodeJS.ErrnoException).code ?? (err instanceof Error ? err.name : "error");
-      reject(new LlmError("unavailable", `could not run ${run.command}: ${code} (${model})`));
+      reject(new LlmError("unavailable", `could not run ${run.command}: ${code} (${label})`));
       return;
     }
     const stdout: Buffer[] = [];
@@ -173,7 +192,7 @@ function runIn(
       killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
     };
     const timer = setTimeout(
-      () => stop(new LlmError("timeout", `claude did not answer within ${run.timeoutMs}ms (${model})`)),
+      () => stop(new LlmError("timeout", `claude did not answer within ${run.timeoutMs}ms (${label})`)),
       run.timeoutMs,
     );
     const onAbort = () => stop(abortReason(signal!));
@@ -206,7 +225,7 @@ function runIn(
       if (stopping) return;
       stdoutBytes += chunk.byteLength;
       if (stdoutBytes > run.maxBytes) {
-        stop(new LlmError("invalid_output", `claude output exceeds ${run.maxBytes} bytes (${model})`));
+        stop(new LlmError("invalid_output", `claude output exceeds ${run.maxBytes} bytes (${label})`));
         return;
       }
       stdout.push(chunk);
@@ -300,12 +319,18 @@ const STATUS_MESSAGES: Record<StatusKind, string> = {
   timeout: "Claude timed out",
   transport: "Claude is unavailable",
   unavailable: "claude rejected the request",
+  too_large: "the request is too large for Claude",
+  bad_request: "Claude rejected the request as invalid",
 };
 
 // claude's reply when it has no credentials at all. It sends no request, so there is no status.
 const NOT_LOGGED_IN = /not logged in|\/login\b/i;
 
 function errorFromEnvelope(envelope: Envelope, model: string): LlmError {
+  // result is only matched here, never quoted.
+  if (PROMPT_TOO_LONG.test(envelope.result ?? "")) {
+    return new LlmError("too_large", `${STATUS_MESSAGES.too_large} (${model})`);
+  }
   const status = envelope.api_error_status;
   if (status != null) {
     const kind = statusKind(status);
@@ -314,7 +339,6 @@ function errorFromEnvelope(envelope: Envelope, model: string): LlmError {
   if (envelope.subtype === "error_max_structured_output_retries") {
     return new LlmError("invalid_output", `Claude kept failing the output schema (${model})`);
   }
-  // result is only matched here, never quoted.
   if (NOT_LOGGED_IN.test(envelope.result ?? "")) {
     return new LlmError("auth", `claude is not logged in; run claude and then /login (${model})`);
   }
@@ -322,9 +346,10 @@ function errorFromEnvelope(envelope: Envelope, model: string): LlmError {
   if (envelope.terminal_reason === "api_error") {
     return new LlmError("transport", `claude could not reach the Anthropic API (${model})`);
   }
-  // subtype stays "success" on most errors, so terminal_reason says more.
+  // subtype stays "success" on most errors, so terminal_reason says more. Not known to be
+  // permanent, so it is retried rather than stopping the run.
   const reason = envelope.terminal_reason ?? envelope.subtype;
-  return new LlmError("unavailable", `claude reported an error: ${reason} (${model})`);
+  return new LlmError("transport", `claude reported an error: ${reason} (${model})`);
 }
 
 // CSI sequences (colours, cursor moves) and OSC sequences (titles, hyperlinks).

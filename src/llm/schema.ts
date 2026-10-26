@@ -68,16 +68,30 @@ export function validateReply<T>(value: unknown, schema: z.ZodType<T>, where: st
   return parsed.data;
 }
 
-export type StatusKind = Extract<LlmErrorKind, "auth" | "rate_limit" | "timeout" | "transport" | "unavailable">;
+export type StatusKind = Extract<
+  LlmErrorKind,
+  "auth" | "rate_limit" | "timeout" | "transport" | "unavailable" | "too_large" | "bad_request"
+>;
+
+/**
+ * The error text for an input over the context window, from the API (a 400 body) and from claude
+ * (its result, with or without a status). Only matched, never quoted: it is the response body.
+ */
+export const PROMPT_TOO_LONG = /prompt is too long/i;
 
 /** The kind for an HTTP status from the Anthropic API, in both modes. */
 export function statusKind(status: number | undefined): StatusKind {
   if (status === 401 || status === 403) return "auth";
   if (status === 429) return "rate_limit";
+  // The request was too large; smaller batches get through.
+  if (status === 413) return "too_large";
   // 408 / 409 and 5xx are transient: the SDK and claude have already retried them.
   if (status === 408) return "timeout";
   if (status === 409 || (status !== undefined && status >= 500)) return "transport";
-  // 400 / 404 and the rest: usually a model name that is not known, which retrying will not fix.
+  // A 400 can come from one item's content, so the batch is split; a configuration error shows up
+  // as every part failing, which stops the run then.
+  if (status === 400) return "bad_request";
+  // 404 and the rest: usually a model name that is not known, which retrying will not fix.
   return "unavailable";
 }
 
@@ -103,6 +117,8 @@ export type LlmErrorKind =
   | "timeout"
   | "refusal"
   | "max_tokens"
+  | "too_large"
+  | "bad_request"
   | "invalid_output";
 
 /** Messages never include the prompt or the model's output, since both carry fetched text. */

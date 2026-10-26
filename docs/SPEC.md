@@ -85,7 +85,7 @@ llm:
   triageModel: ~             # 既定: api なら claude-haiku-5-5、cli なら haiku
   analyzeModel: ~            # 既定: api なら claude-sonnet-5-5、cli なら sonnet
   maxItemsPerCall: 40
-  maxItemsPerRun: 150
+  maxItemsPerRun: 150        # 新しい記事と状態 r の記事を合わせた1回の上限
 notify:
   slack: { postWhenEmpty: false, minImpact: Low }
 state: { ttlDays: 45, maxItemAgeDays: 14 }   # ttlDays > maxItemAgeDays であること
@@ -134,12 +134,12 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 ```
 
 - キーは記事の `stateKeys(item)`（id と urlKey）。どれか1つでも entries にあれば既知とみなし、l の更新や状態の記録は全キーに対して行う。id だけで引くと、収集時に URL の重複として落とした側や、別の日に別のソースから来た同じページが再通知される
-- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）
+- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
 - f は初めて見た日、l は最後にフィード上で見た日
 - 古いエントリは l を基準に ttlDays で削除する。更新の止まったブログの記事はフィードに残り続けるため、通知日を基準にすると期限後に再通知されてしまう
 - キーはソートし、1エントリ1行で書く（毎日のコミットの差分を変わったエントリだけにするため）。一時ファイルに書いてから rename する
-- 壊れていた場合（JSON でない、version が 1 でない、entries が object でない）は `notified.json.corrupt-<YYYYMMDDTHHmmssZ>-<6桁の16進>` に退避して warn を出し、空の状態から始める（同じ秒に2回壊れても前の退避を上書きしないよう、末尾に乱数を付ける）。dry-run では退避せず、ファイルをそのまま残して空の状態から始める。個々のエントリだけが不正（キーが32桁の16進でない、s が n / i 以外、日付が実在する YYYY-MM-DD でない）なら、そのエントリだけを捨てる。ファイルがなければ空の状態とし、それ以外の読み込みエラーや退避の失敗は終了コード1にする（空で始めると全記事が再通知されるため）
-- 既知の記事は欠けているキーにも、既存のエントリの状態と最も古い f を引き継いで記録する。通知済み（n）を無関係（i）に戻すことはない
+- 壊れていた場合（JSON でない、version が 1 でない、entries が object でない）は `notified.json.corrupt-<YYYYMMDDTHHmmssZ>-<6桁の16進>` に退避して warn を出し、空の状態から始める（同じ秒に2回壊れても前の退避を上書きしないよう、末尾に乱数を付ける）。dry-run では退避せず、ファイルをそのまま残して空の状態から始める。個々のエントリだけが不正（キーが32桁の16進でない、s が n / i / r 以外、日付が実在する YYYY-MM-DD でない）なら、そのエントリだけを捨てる。ファイルがなければ空の状態とし、それ以外の読み込みエラーや退避の失敗は終了コード1にする（空で始めると全記事が再通知されるため）
+- 既知の記事は欠けているキーにも、既存のエントリの状態と最も古い f を引き継いで記録する。通知済み（n）を無関係（i）に、n や i を未分析（r）に戻すことはない
 - パスの優先順位は `--state` > `POCHI_STATE_PATH` > 既定パス。空白だけの値は未指定として扱う
 - 書き込みは一時ファイルに書いて fsync してから rename する
 - upstream リポジトリでは `state/*.json` を gitignore し、各自のコピーでは Actions が `git add -f` でコミットする
@@ -157,7 +157,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 
 `llm/schema.ts` は `toJsonSchema` で JSON Schema（output 側。全 object が `additionalProperties: false`、`$schema` なし）を作り、CLI の `--json-schema` と API の代替経路で使う。同じファイルに共通の契約 `LlmTier`（triage / analyze）、`GenerateRequest<T>`、`LlmClient`、`LlmError` を置く。`LlmError` は終了コード3で、kind は unavailable / auth / rate_limit / transport / timeout / refusal / max_tokens / invalid_output。メッセージにはプロンプトや LLM の出力を含めない。
 
-記事は短縮 ID（i1〜iN）で LLM に渡す。LLM が返した未知の ID は破棄する。回答に含まれなかった記事は「未決」として状態に記録せず、翌日に再判定する。
+記事は短縮 ID（i1〜iN）で LLM に渡す。LLM が返した未知の ID は破棄する。Triage で回答に含まれなかった記事は「未決」として状態に記録せず、翌日に再判定する。Analyze で回答のなかった記事は状態 r にし、翌日は Analyze だけ行う。
 
 ## モジュール仕様
 
@@ -232,23 +232,25 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 
 ### LLM（llm/, pipeline/）
 
-- **adapter.ts** `resolveLlm`：共通インターフェースは `LlmClient.generate<T>({system, prompt, schema, tier})`
-  - ANTHROPIC_API_KEY があれば APIモード
-  - なければ `claude --version` が成功するとき CLIモード
-  - どちらも使えなければ unavailable エラー（Windows は CLIモード非対応）
+- **adapter.ts** `resolveLlm(context.llm, { env?, platform?, spawn?, command?, signal? })` は `{ client, models, cliVersion? }` を返す。共通インターフェースは `LlmClient.generate<T>({system, prompt, schema, tier})`
+  - provider が auto のとき：ANTHROPIC_API_KEY（前後の空白を除いて判定し、空白だけは未設定扱い。APIモードではこの除いた値を SDK に `apiKey` として渡すので、判定と送るキーが食い違わない）があれば APIモード、なければ `claude --version` が成功するとき CLIモード。どちらも使えなければ unavailable（Windows は CLIモード非対応で、claude を起動しない）
+  - provider が api でキーがなければ auth。provider が cli ならキーがあっても CLIモードとし、Windows や `claude --version` の失敗は unavailable
+  - モデル名は triageModel / analyzeModel、なければモードの既定（`DEFAULT_API_MODELS` / `DEFAULT_CLI_MODELS`）
+  - CLIモードの claude（`claude --version` を含む）には ANTHROPIC_API_KEY と ANTHROPIC_AUTH_TOKEN を除いた環境変数（`cliEnv`）を渡す。どちらかがあると claude はログインではなくそれで動き、API の従量課金になるため。ただし ANTHROPIC_BASE_URL が空でないとき（ゲートウェイや LiteLLM 経由の構成）は何も除かない。claude はキーかトークンでゲートウェイに認証するため。Bedrock / Vertex の設定は、利用者が claude 用に設定したものとして常に残す
+  - `claude --version` は cli.ts の `runClaude` で実行する（専用の一時ディレクトリを cwd とし、shell: false。10秒でタイムアウトし、SIGINT、5秒後に SIGKILL。中断は signal の reason、なければ AbortError）。終了コード0で何か出力したときだけ成功とし、その1行目（200字まで）を `cliVersion` として doctor に渡す
 - **api.ts**
-  - `createApiLlm({ models, client? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
+  - `createApiLlm({ models, apiKey?, client? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
   - `messages.create` に `output_config.format`（`toJsonSchema` の JSON Schema。CLI と同じもの。schema ごとにキャッシュする）を渡し、`stop_reason` を確かめてから text ブロックを連結して JSON.parse し、zod で検証する。`zodOutputFormat` は zod v4 で動くが、`messages.parse` は stop_reason を見る前に全 text ブロックを解析して汎用の例外を投げるため、refusal や途中で切れた応答を区別できず使わない
   - max_tokens は 16000（思考トークンを含む）、タイムアウトは再試行を含めた呼び出し全体で300秒、SDK の再試行（2回）は既定のまま。thinking は送らず既定の adaptive に任せ、effort は triage が low、analyze が medium。effort を受け付けない既知のモデル（3.x、Haiku 4.5、Sonnet 4 / 4.5、Opus 4 / 4.1）には effort を送らない
   - temperature、tool_choice、prefill は使わない
   - 応答の変換：refusal → refusal（stop_details.category をメッセージに入れる）、max_tokens / model_context_window_exceeded → max_tokens、text なし・JSON でない・スキーマ不一致 → invalid_output（失敗したパスだけを示し、値は出さない）
-  - 例外の変換：APIConnectionTimeoutError と全体のタイムアウト → timeout、APIConnectionError → transport、401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx（529 を含む）→ transport、400 / 404 などその他 → unavailable。認証情報が見つからない → auth、SDK が送信前に拒否した要求 → unavailable。メッセージは SDK の文面を使わず、HTTP ステータス、エラー種別、モデル名、request-id で組み立てる。API エラーの本文はリクエストの内容を含みうるので、SDK の例外を cause にも残さない（接続エラーは残す）。呼び出し側による中断（APIUserAbortError）は LlmError にせず signal の reason を投げる
+  - 例外の変換：APIConnectionTimeoutError と全体のタイムアウト → timeout、APIConnectionError → transport、401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx（529 を含む）→ transport、413 → too_large、本文が "prompt is too long" の 400 → too_large（本文は照合するだけで引用しない）、その他の 400 → bad_request（記事の中身が原因でありうるので分割の対象。設定の誤りなら filter が止める）、404 などその他 → unavailable。認証情報が見つからない → auth、SDK が送信前に拒否した要求 → unavailable。メッセージは SDK の文面を使わず、HTTP ステータス、エラー種別、モデル名、request-id で組み立てる。API エラーの本文はリクエストの内容を含みうるので、SDK の例外を cause にも残さない（接続エラーは残す）。呼び出し側による中断（APIUserAbortError）は LlmError にせず signal の reason を投げる
 - **cli.ts**
-  - `createCliLlm({ models, spawn?, command?, timeoutMs?, maxBytes? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_CLI_MODELS`（haiku / sonnet）。spawn は差し替えられ、テストは `tests/helpers/fakeSpawn.ts` を使う
+  - `createCliLlm({ models, spawn?, command?, env?, timeoutMs?, maxBytes? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_CLI_MODELS`（haiku / sonnet）。spawn は差し替えられ、テストは `tests/helpers/fakeSpawn.ts` を使う
   - 引数（`buildCliArgs`）：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --strict-mcp-config --safe-mode --model <m> --system-prompt <s>`。`--strict-mcp-config` は利用者の MCP サーバーを起動させないため。`--safe-mode` は CLAUDE.md・hooks・plugins・skills を無効にするため（認証とモデル選択は通常どおり動く。claude 2.1.310 で確認）
   - プロンプトは stdin で渡し、shell: false。cwd は呼び出しごとに `mkdtemp` で作る専用の一時ディレクトリ（`pochi-claude-*`、0700）とし、終わったら消す。共有の /tmp に他人が置いた .claude や CLAUDE.md を読ませないため。`node:child_process` だけを使うので Bun でも動く
   - stdout は 10MB を上限とし（超えたら停止して invalid_output）、300秒でタイムアウトさせる（SIGINT、5秒後に SIGKILL）。中断されたら同じ手順で止め、signal の reason を投げる（reason がなければ AbortError）。stderr は末尾 8KB を debug ログにだけ出す。claude が起動したプロセスが stdio を持ち続けても待ち続けないよう、停止中は exit の時点で確定させる。正常終了なら exit から1秒待っても close が来なければ、それまでの出力で確定させる。spawn が同期で投げた例外（引数の NUL など）は unavailable とし、メッセージにはコードだけを入れる
-  - 出力の解析：stdout の JSON の封筒で type==="result" を確認する。全体が JSON として読めなければ最後の行を読む（前に通知が出ても読めるように）。エラーでも終了コード1で封筒が返り、is_error が true、subtype は "success" のまま、api_error_status に HTTP ステータスが入る（実機で確認）。ステータスの対応は api.ts と共通の `statusKind`（schema.ts）を使う：401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx → transport、400 / 404 など → unavailable（存在しないモデル名は 404）。ステータスがない場合：subtype が error_max_structured_output_retries なら invalid_output、result が未ログインの文面（"Not logged in · Please run /login"）なら auth、terminal_reason が api_error（接続できない場合）なら transport、それ以外は unavailable（メッセージは terminal_reason で組み立てる）。いずれも実機で確認した
+  - 出力の解析：stdout の JSON の封筒で type==="result" を確認する。全体が JSON として読めなければ最後の行を読む（前に通知が出ても読めるように）。エラーでも終了コード1で封筒が返り、is_error が true、subtype は "success" のまま、api_error_status に HTTP ステータスが入る（実機で確認）。ステータスの対応は api.ts と共通の `statusKind`（schema.ts）を使う：401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx → transport、413 → too_large、400 → bad_request、404 など → unavailable（存在しないモデル名は 404）。result が "Prompt is too long" なら、ステータスの有無によらず too_large（分ければ通る）。ステータスがない場合：subtype が error_max_structured_output_retries なら invalid_output、result が未ログインの文面（"Not logged in · Please run /login"）なら auth、terminal_reason が api_error（接続できない場合）なら transport、それ以外も transport（原因不明で恒久的とは限らないので、実行を止めずに1回再試行する。メッセージは terminal_reason で組み立てる）。prompt is too long 以外は実機で確認した
   - 判定の順：is_error → structured_output（`validateReply` で検証）→ stop_reason が refusal なら refusal、max_tokens / model_context_window_exceeded なら max_tokens → 代替経路。代替経路では result から ANSI を除去し、JSON として解析できる最初の釣り合った `{}` を取り出す（`findFirstJsonObject`。閉じない `{` があっても、その後ろを探す）。見つからなければ invalid_output
   - 封筒として読めない出力は、終了コードが0以外なら transport、0なら invalid_output。claude が見つからなければ（ENOENT）unavailable。メッセージには result や stderr を含めず、ステータス、モデル名、終了コードだけで組み立てる
 - **prompts.ts**
@@ -258,12 +260,21 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - Triage では「迷ったら無関係」とし、本文は `truncate` で300字まで渡す。Analyze には、収集時に maxContentChars（既定2000）で切った本文をそのまま渡す。URL はエスケープせず、`parseHttpUrl` で正規化した href を渡す。記事や技術名が0件のときはリクエストを作らず、例外を投げる
   - リポジトリ候補は最大3件（`MAX_REPO_CANDIDATES`）、検索クエリの提案は最大5件（`MAX_QUERY_SUGGESTIONS`）とする。スキーマでは件数を制限しないので、呼び出し側（T19）がこの定数で切り詰める
   - Analyze の影響度の基準：High は今週対応が必要（破壊的変更、セキュリティ、非推奨化）、Medium は計画に入れる、Low は参考情報
-- **filter.ts** `filterAndAnalyze`
-  - Triage は40件ずつ順に実行し、関連する記事を Analyze に15件ずつ渡す
-  - 失敗したバッチは1回再試行し、それでも失敗した記事は未決とする
+- **filter.ts** `filterAndAnalyze(llm, context, items, { signal?, retryDelayMs?, pretriaged? })` は `{ insights, irrelevant, undecided, pending, stats, error?, aborted }` を返す。insights（`Insight`、types.ts）は通知する分、irrelevant は状態 i にする分、undecided は状態に記録せず翌日に Triage からやり直す分、pending は状態 r にする分（関連ありで Analyze が済んでいない）
+  - pretriaged には状態 r の既知の記事を渡す。Triage を飛ばして Analyze に回す
+  - maxItemsPerRun は pretriaged と新しい記事を合わせた上限。先に pretriaged を、残りの枠に新しい記事を、それぞれ日付の新しい順（日付なしは後ろ）に採る。あふれた pretriaged は pending（r のまま）、あふれた新しい記事は未決とする
+  - Triage は maxItemsPerCall（既定40）件ずつ、関連する記事と pretriaged を Analyze に15件ずつ渡す。どちらも0件なら LLM を呼ばない。バッチは1つずつ順に送る（同時に送ると、止める判定や連続失敗の数え方が実行順に左右されるため）。止まった後や中断の後は、残りのバッチを送らない
+  - 回答の ID はバッチ内の短縮 ID で記事に戻す。未知の ID は破棄し、同じ ID は最初の回答だけを使う。回答のない記事は、Triage なら未決、Analyze なら pending。バッチの記事のどれにも合う ID がない回答は invalid_output として扱う。Analyze の title が空なら記事のタイトルで補う
+  - 一時的な失敗（rate_limit / timeout / transport）のバッチは `RETRY_DELAY_MS`（10秒）待ってから1回再試行する（SDK と claude は自前で再試行済みなので、間を空けないと同じ制限に当たる）。再試行しても rate_limit なら、制限はすぐには解けない（CLIモードではサブスクリプションの利用上限）ので、auth と同じく以降を止める
+  - 再試行や分割をしても1件も回答を得られなかったバッチが2つ続いたら、以降を止める（`MAX_FAILED_IN_A_ROW`）。続く timeout・transport（原因不明の claude のエラーを含む）、設定の誤りによる bad_request などがここで止まる。回答を得たバッチ（i にした記事があるバッチを含む）を挟めば数え直す
+  - バッチの中身が原因の失敗（max_tokens / refusal / invalid_output / too_large / bad_request）は同じまま再送せず、二分探索で原因を探す。半分ずつ順に1回送り、中身の原因で失敗した側をさらに分ける。両方の半分が失敗したら、大きさが原因（too_large / max_tokens）なら両方とも分け続け、それ以外は特定の記事のせいではない（モデルの出力の問題など）とみなして分けるのをやめ、記事を未決（Analyze なら pending）にする。1つの元のバッチで分割に使う呼び出しは `2 + 4·⌈log₂n⌉` 回まで（40件なら26回）で、使い切ったら残りを未決にする
+  - 1件の記事が中身の原因で失敗したとき（分割の結果でも、最初から1件のバッチでも）、この実行で既に何かが回答を得ていれば、その記事をもう一度だけ送る（たまたまの失敗で記事を永久に捨てないため）。また中身の原因で失敗したら、その記事が原因とみなして irrelevant（状態 i）にし、warn を出す（`stats.dropped`）。まだ何も回答を得ていなければ、モデルや設定の問題でありうるので未決にする。原因が1件なら呼び出しは約 2 + 2·log₂n 回。既知の制限：大きさ以外の原因の記事が同じバッチの両方の半分にあると絞り込めず、翌日も同じ結果になりうる
+  - stats の失敗数は、分けた分も含めて1件も回答を得られなかった（i にした記事もない）、送ったバッチだけを数える。止まった後や中断の後に飛ばしたバッチは数えない
+  - auth と unavailable は再試行せず、以降のバッチ（Analyze を含む）も呼ばずに未決（Analyze なら pending）とする。LlmError 以外の例外はそのまま投げる
+  - 中断（signal）は再試行せず、例外も投げない。各バッチを送る前に signal を確かめ、中断されていれば送らない。それまでの判定を返し、送れなかったバッチは未決（Analyze なら pending）、`aborted: true` とする。中断の後は error を入れない（Slack 送信の `aborted` と同じ作り）
   - minImpact 未満の記事は状態 i として記録し、通知しない
-  - 並び順は影響度（High → Low）、同じ影響度なら日付の新しい順
-  - 全バッチが失敗したときだけ終了コード3にする
+  - 並び順は影響度（High → Low）、同じ影響度なら日付の新しい順（日付なしは後ろ）
+  - 例外は投げずに `error`（LlmError、終了コード3）を入れて返す場合：Triage か Analyze のどちらかで、送った全バッチが失敗し、飛ばしたバッチがないとき（"<段>: all N batches failed"。kind は最後の失敗のもの）。または、auth / unavailable / 続く rate_limit / 回答のないバッチが2つ続いたことで途中から止まったとき（"stopped after: …"）。error があっても insights は有効なので、呼び出し側は通知し、irrelevant を状態 i、pending を状態 r に記録し（課金済みの判定を捨てない）、それから error を投げる。関連する記事が0件で Analyze のバッチがない場合は失敗としない
 
 ### 通知とコマンド
 
@@ -282,10 +293,10 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   3. LLM を解決する（失敗すれば3）。手順2と3は記事の取得や LLM の課金より前に済ませる
   4. 状態ファイルを読み、期限切れのエントリを削除する
   5. 記事を収集する（全ソースが失敗すれば5）
-  6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。新規で maxItemAgeDays より古い記事は状態 i にする
-  7. Triage と Analyze を実行する
-  8. Slack に送る。dry-run のときは stdout に出し、状態は書かない
-  9. 状態を保存する（Slack への送信が失敗していれば4）
+  6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が r の記事は除外せず、`pretriaged` として手順7に渡す。新規で maxItemAgeDays より古い記事は状態 i にする
+  7. Triage と Analyze を実行する（状態 r の記事は `pretriaged` として渡す）。結果が `aborted` なら Slack には送らず、irrelevant を i、pending と insights を r として記録して保存し、130 で終える
+  8. Slack に送る（filter の結果に error があっても送る）。dry-run のときは stdout に出し、状態は書かない
+  9. 状態を保存する（Slack への送信が失敗していれば4）。irrelevant は i、pending は r、届いた insights は n として記録する。filter の結果に error があれば、保存した後に投げる（3）。送信にも失敗していれば 3 を優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
   - フラグ：`--dry-run`、`--state`、`--no-state`、`--json`、`--config-dir`、`--verbose`、`--quiet`
 - **commands/doctor.ts**：設定の読込元と妥当性、LLMモードとモデル、環境変数の有無（値は表示しない）、状態ファイルの件数を表示する。`--fetch` を付けると各ソースの最新タイトルも表示する
 - **commands/init.ts**（端末での対話が必要。Ctrl-C で終了コード130とし、何も書かない）
@@ -349,7 +360,7 @@ README に書く注意点：
 | T10 | M2 LLM | llm/schema と prompts | T3 | JSON Schema のスナップショット。記事に紛れ込ませた閉じタグで囲みを抜けられない | 完了 |
 | T11 | M2 LLM | api.ts（T12 と並行可）。最初に zodOutputFormat が zod v4 で動くか確かめる | T10 | 偽クライアントで成功・null・refusal・max_tokens・エラー変換を確認。リクエストに temperature と tool_choice が含まれない | 完了 |
 | T12 | M2 LLM | cli.ts と fakeSpawn（T11 と並行可） | T10 | 引数のスナップショット、stdin 経由、cwd が専用の一時ディレクトリ、shell なし、出力形式ごとのフィクスチャ、タイムアウト、10MB 上限。手元の claude で実際に1回呼ぶ | 完了 |
-| T13 | M2 LLM | adapter と pipeline/filter | T11, T12 | モード解決の全パターン、バッチ分割、短縮 ID の対応付け、一部失敗と全失敗、minImpact、並び順 | 未着手 |
+| T13 | M2 LLM | adapter と pipeline/filter | T11, T12 | モード解決の全パターン、バッチ分割、短縮 ID の対応付け、一部失敗と全失敗、minImpact、並び順 | 完了 |
 | T14 | M3 通知・状態 | state/store（M0 の直後から着手可） | T2 | 最終観測日を基準にした期限切れ削除、touch、壊れたファイルの退避、アトミックな書き込み、キーのソート | 完了 |
 | T15 | M3 通知・状態 | notifiers/slack（M0 の直後から着手可） | T2 | エスケープ、100件を3メッセージに分割、ブロック数の上限、429 と 400 の扱い、一部成功時は届いた記事の ID だけを返す | 完了 |
 | T16 | M3 通知・状態 | commands/run と各フラグ | T9, T13, T14, T15 | 正常系、dry-run、Slack 失敗で4、全ソース失敗で5、LLM なしなら取得前に3 | 未着手 |

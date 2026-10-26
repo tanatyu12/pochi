@@ -4,6 +4,7 @@ import {
   type LlmClient,
   LlmError,
   type LlmTier,
+  PROMPT_TOO_LONG,
   type StatusKind,
   statusKind,
   toJsonSchema,
@@ -36,11 +37,13 @@ const TIMEOUT_MS = 300_000;
  */
 export function createApiLlm(opts: {
   models: Record<LlmTier, string>;
+  /** The key the adapter chose the mode with; without one, the SDK reads ANTHROPIC_API_KEY itself. */
+  apiKey?: string;
   client?: Anthropic;
   timeoutMs?: number;
 }): LlmClient {
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
-  const client = opts.client ?? new Anthropic({ timeout: timeoutMs });
+  const client = opts.client ?? new Anthropic({ apiKey: opts.apiKey, timeout: timeoutMs });
   return {
     mode: "api",
     async generate<T>(req: GenerateRequest<T>, { signal }: { signal?: AbortSignal } = {}): Promise<T> {
@@ -96,6 +99,8 @@ const STATUS_MESSAGES: Record<StatusKind, string> = {
   timeout: "Anthropic API timed out",
   transport: "Anthropic API is unavailable",
   unavailable: "Anthropic API rejected the request",
+  too_large: "Anthropic API rejected the request as too large",
+  bad_request: "Anthropic API rejected the request as invalid",
 };
 
 // Messages are built here rather than taken from the SDK. Its API error text carries the response
@@ -124,6 +129,6 @@ function toLlmError(err: unknown, model: string, signal: AbortSignal | undefined
   }
   const status = [err.status && `HTTP ${err.status}`, err.type].filter(Boolean).join(" ");
   const where = [status, model, err.requestID && `request ${err.requestID}`].filter(Boolean).join(", ");
-  const kind = statusKind(err.status);
+  const kind = err.status === 400 && PROMPT_TOO_LONG.test(err.message) ? "too_large" : statusKind(err.status);
   return new LlmError(kind, `${STATUS_MESSAGES[kind]} (${where})`);
 }
