@@ -242,11 +242,11 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 例外の変換：APIConnectionTimeoutError と全体のタイムアウト → timeout、APIConnectionError → transport、401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx（529 を含む）→ transport、400 / 404 などその他 → unavailable。認証情報が見つからない → auth、SDK が送信前に拒否した要求 → unavailable。メッセージは SDK の文面を使わず、HTTP ステータス、エラー種別、モデル名、request-id で組み立てる。API エラーの本文はリクエストの内容を含みうるので、SDK の例外を cause にも残さない（接続エラーは残す）。呼び出し側による中断（APIUserAbortError）は LlmError にせず signal の reason を投げる
 - **cli.ts**
   - `createCliLlm({ models, spawn?, command?, timeoutMs?, maxBytes? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_CLI_MODELS`（haiku / sonnet）。spawn は差し替えられ、テストは `tests/helpers/fakeSpawn.ts` を使う
-  - 引数（`buildCliArgs`）：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --strict-mcp-config --model <m> --system-prompt <s>`。`--strict-mcp-config` は利用者の MCP サーバーを起動させないため
-  - プロンプトは stdin で渡し、shell: false、cwd は tmpdir（プロジェクトの .claude を読ませないため）。`node:child_process` だけを使うので Bun でも動く
-  - stdout は 10MB を上限とし（超えたら停止して invalid_output）、300秒でタイムアウトさせる（SIGINT、5秒後に SIGKILL）。中断されたら同じ手順で止め、signal の reason を投げる。stderr は末尾 8KB を debug ログにだけ出す
-  - 出力の解析：stdout の JSON の封筒で type==="result" を確認する。エラーでも終了コード1で封筒が返り、is_error が true、subtype は "success" のまま、api_error_status に HTTP ステータスが入る（実機で確認）。401 / 403 → auth、429 → rate_limit、5xx → transport、400 / 404 など → unavailable（存在しないモデル名は 404）。ステータスがなければ、subtype が error_max_structured_output_retries なら invalid_output、それ以外は transport。structured_output があれば zod で検証して返す
-  - 代替経路：structured_output がなければ、result から ANSI を除去し、JSON として解析できる最初の釣り合った `{}` を取り出す（`findFirstJsonObject`）。見つからなければ stop_reason が max_tokens なら max_tokens、それ以外は invalid_output。stop_reason が refusal なら refusal
+  - 引数（`buildCliArgs`）：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --strict-mcp-config --safe-mode --model <m> --system-prompt <s>`。`--strict-mcp-config` は利用者の MCP サーバーを起動させないため。`--safe-mode` は CLAUDE.md・hooks・plugins・skills を無効にするため（認証とモデル選択は通常どおり動く。claude 2.1.310 で確認）
+  - プロンプトは stdin で渡し、shell: false。cwd は呼び出しごとに `mkdtemp` で作る専用の一時ディレクトリ（`pochi-claude-*`、0700）とし、終わったら消す。共有の /tmp に他人が置いた .claude や CLAUDE.md を読ませないため。`node:child_process` だけを使うので Bun でも動く
+  - stdout は 10MB を上限とし（超えたら停止して invalid_output）、300秒でタイムアウトさせる（SIGINT、5秒後に SIGKILL）。中断されたら同じ手順で止め、signal の reason を投げる（reason がなければ AbortError）。stderr は末尾 8KB を debug ログにだけ出す。claude が起動したプロセスが stdio を持ち続けても待ち続けないよう、停止中は exit の時点で確定させる。正常終了なら exit から1秒待っても close が来なければ、それまでの出力で確定させる。spawn が同期で投げた例外（引数の NUL など）は unavailable とし、メッセージにはコードだけを入れる
+  - 出力の解析：stdout の JSON の封筒で type==="result" を確認する。全体が JSON として読めなければ最後の行を読む（前に通知が出ても読めるように）。エラーでも終了コード1で封筒が返り、is_error が true、subtype は "success" のまま、api_error_status に HTTP ステータスが入る（実機で確認）。ステータスの対応は api.ts と共通の `statusKind`（schema.ts）を使う：401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx → transport、400 / 404 など → unavailable（存在しないモデル名は 404）。ステータスがない場合：subtype が error_max_structured_output_retries なら invalid_output、result が未ログインの文面（"Not logged in · Please run /login"）なら auth、terminal_reason が api_error（接続できない場合）なら transport、それ以外は unavailable（メッセージは terminal_reason で組み立てる）。いずれも実機で確認した
+  - 判定の順：is_error → structured_output（`validateReply` で検証）→ stop_reason が refusal なら refusal、max_tokens / model_context_window_exceeded なら max_tokens → 代替経路。代替経路では result から ANSI を除去し、JSON として解析できる最初の釣り合った `{}` を取り出す（`findFirstJsonObject`。閉じない `{` があっても、その後ろを探す）。見つからなければ invalid_output
   - 封筒として読めない出力は、終了コードが0以外なら transport、0なら invalid_output。claude が見つからなければ（ENOENT）unavailable。メッセージには result や stderr を含めず、ステータス、モデル名、終了コードだけで組み立てる
 - **prompts.ts**
   - system プロンプトには、プロジェクト、課題、除外ルール、言語を入れる
@@ -342,7 +342,7 @@ README に書く注意点：
 | T9 | M1 情報収集 | 収集の統合（sources/index） | T3, T5, T6, T8 | 3件中1件が失敗しても続行する、重複排除、キーがなければ Tavily を使わない、同時実行は4件まで | 完了 |
 | T10 | M2 LLM | llm/schema と prompts | T3 | JSON Schema のスナップショット。記事に紛れ込ませた閉じタグで囲みを抜けられない | 完了 |
 | T11 | M2 LLM | api.ts（T12 と並行可）。最初に zodOutputFormat が zod v4 で動くか確かめる | T10 | 偽クライアントで成功・null・refusal・max_tokens・エラー変換を確認。リクエストに temperature と tool_choice が含まれない | 完了 |
-| T12 | M2 LLM | cli.ts と fakeSpawn（T11 と並行可） | T10 | 引数のスナップショット、stdin 経由、cwd が tmpdir、shell なし、出力形式ごとのフィクスチャ、タイムアウト、10MB 上限。手元の claude で実際に1回呼ぶ | 完了 |
+| T12 | M2 LLM | cli.ts と fakeSpawn（T11 と並行可） | T10 | 引数のスナップショット、stdin 経由、cwd が専用の一時ディレクトリ、shell なし、出力形式ごとのフィクスチャ、タイムアウト、10MB 上限。手元の claude で実際に1回呼ぶ | 完了 |
 | T13 | M2 LLM | adapter と pipeline/filter | T11, T12 | モード解決の全パターン、バッチ分割、短縮 ID の対応付け、一部失敗と全失敗、minImpact、並び順 | 未着手 |
 | T14 | M3 通知・状態 | state/store（M0 の直後から着手可） | T2 | 最終観測日を基準にした期限切れ削除、touch、壊れたファイルの退避、アトミックな書き込み、キーのソート | 未着手 |
 | T15 | M3 通知・状態 | notifiers/slack（M0 の直後から着手可） | T2 | エスケープ、100件を3メッセージに分割、ブロック数の上限、429 と 400 の扱い、一部成功時は届いた記事の ID だけを返す | 未着手 |
