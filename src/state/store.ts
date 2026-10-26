@@ -113,9 +113,7 @@ export function isKnown(state: State, keys: readonly string[]): boolean {
  * another source) inherit the known entry, so the next run finds it by any of them.
  */
 export function touch(state: State, keys: readonly string[], today: string): void {
-  const known = existing(state, keys);
-  if (known.length === 0) return;
-  write(state, keys, merged(known, known.some((e) => e.s === "n") ? "n" : "i", today));
+  if (isKnown(state, keys)) record(state, keys, "i", today);
 }
 
 /** Records a decision under every key. A notified item is never downgraded to irrelevant. */
