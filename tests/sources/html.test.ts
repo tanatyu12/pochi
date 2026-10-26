@@ -35,13 +35,55 @@ describe("htmlToText", () => {
     ["<!-- hidden -->keep<!-- also hidden -->", "keep"],
     ["keep<script>never closed", "keep"],
     ["keep<!-- never closed", "keep"],
+    ["keep<nav", "keep"],
+    ["a<!-- x -->b<nav>n</nav>c<!--y", "abc"],
   ])("drops %j", (html, expected) => {
     expect(htmlToText(html, 1000)).toBe(expected);
   });
 
-  it("handles many unclosed tags in linear time", () => {
+  it.each([
+    ['<script>var s="<!--";</script><p>keep</p>', "keep"],
+    ["<style>/* <!-- */</style>keep<!-- c -->", "keep"],
+    ['<script>"<nav>"</script>keep', "keep"],
+    ['<nav><script>"</nav>"</script>x</nav>keep', "keep"],
+    ["<nav><!-- </nav> -->x</nav>keep", "keep"],
+    ["<script><script>x</script>shown", "shown"],
+  ])("reads comments and raw text in document order in %j", (html, expected) => {
+    expect(htmlToText(html, 1000)).toBe(expected);
+  });
+
+  it.each([
+    ["<iframe src=https://x/>fallback</iframe>keep", "keep"],
+    ["<form action=/submit/><input></form>keep", "keep"],
+    ["<nav data-base=/>Home</nav>keep", "keep"],
+    ["<svg a=b/>x</svg>keep", "keep"],
+    ["<svg a = b/>x</svg>keep", "keep"],
+    ["<svg />keep", "keep"],
+    ['<svg a="b"/>keep', "keep"],
+    ["<svg a/>keep", "keep"],
+    ["<svg a=b />keep", "keep"],
+    ['<svg a="p=q"/>keep', "keep"],
+  ])("tells self-closing tags from unquoted values ending in a slash in %j", (html, expected) => {
+    expect(htmlToText(html, 1000)).toBe(expected);
+  });
+
+  it.each([
+    ["<nav><nav>a</nav>leak</nav>keep", "keep"],
+    ["<svg><svg><text>a</text></svg>leak</svg>keep", "keep"],
+    ["<NAV><nav>a</NAV>leak</Nav>keep", "keep"],
+    ["<nav><aside>x</nav>keep", "keep"],
+    ["keep<nav><nav>a</nav>", "keep"],
+    ["</nav>keep", "keep"],
+    ["<nav></nav></nav>keep", "keep"],
+    ["<navigation>keep</navigation>", "keep"],
+    ["<header-x>keep</header-x>", "keep"],
+  ])("counts nested dropped elements in %j", (html, expected) => {
+    expect(htmlToText(html, 1000)).toBe(expected);
+  });
+
+  it.each(["<svg ", "<nav>", "<nav></nav>"])("handles many %j tags in linear time", (tag) => {
     const start = performance.now();
-    expect(htmlToText(`keep${"<svg ".repeat(200_000)}`, 100)).toBe("keep");
+    expect(htmlToText(`keep${tag.repeat(200_000)}`, 100)).toBe("keep");
     expect(performance.now() - start).toBeLessThan(1000);
   });
 

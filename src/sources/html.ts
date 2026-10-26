@@ -5,10 +5,19 @@ import { decodeHTML } from "entities";
 const HEADING = "\u0001";
 const CONTROL_CHARS = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
 
-const DROPPED_ELEMENTS =
-  /<(script|style|noscript|template|svg|iframe|head|nav|header|footer|aside|form)\b(?:[^>]*\/>|[^>]*(?:>[\s\S]*?(?:<\/\1\s*>|$)|$))/gi;
-// An unclosed comment or element runs to the end, so nothing inside it leaks.
-const COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
+// Comments and the start and end tags of dropped elements, found in one left-to-right pass.
+const HIDDEN =
+  /<!--|<(\/?)(script|style|noscript|iframe|template|svg|head|nav|header|footer|aside|form)(?=[\s/>]|$)([^>]*)(>?)/gi;
+// Raw text: tags and comments inside these mean nothing, so skip straight to the end tag.
+const RAW_TEXT_END: Record<string, RegExp> = {
+  script: /<\/script\s*>/gi,
+  style: /<\/style\s*>/gi,
+  noscript: /<\/noscript\s*>/gi,
+  iframe: /<\/iframe\s*>/gi,
+};
+const COMMENT_END = /-->/g;
+// "/>" closes the tag unless the "/" belongs to an unquoted value (src=https://x/).
+const SELF_CLOSING = /(?<!=\s*[^\s"']*)\/$/;
 const HEADING_OPEN = /<h[1-6]\b[^>]*>/gi;
 const BLOCK_TAG =
   /<\/?(?:p|div|br|li|dt|dd|tr|blockquote|pre|ul|ol|dl|table|section|article|main|figcaption|hr|h[1-6])\b[^>]*>/gi;
@@ -39,9 +48,7 @@ export function truncate(text: string, maxChars: number): string {
 }
 
 function toText(html: string): string {
-  const stripped = html
-    .replace(COMMENT, "")
-    .replace(DROPPED_ELEMENTS, "")
+  const stripped = dropHidden(html)
     .replace(HEADING_OPEN, `\n${HEADING}`)
     .replace(BLOCK_TAG, "\n")
     .replace(CELL_TAG, " ")
@@ -51,6 +58,52 @@ function toText(html: string): string {
     .split(HEADING)
     .map((part) => decodeHTML(part).replace(CONTROL_CHARS, ""))
     .join(HEADING);
+}
+
+// Drops comments and dropped elements, counting nested elements of the same name. An
+// unclosed comment or element runs to the end, so nothing inside it leaks.
+function dropHidden(html: string): string {
+  let out = "";
+  let kept = 0; // html[kept..] is not yet copied or dropped
+  let open = ""; // the outermost dropped element we are inside
+  let depth = 0;
+  HIDDEN.lastIndex = 0;
+  for (let m = HIDDEN.exec(html); m; m = HIDDEN.exec(html)) {
+    const [, slash, tag, attrs = "", gt] = m;
+    const name = tag?.toLowerCase();
+    const rawTextEnd = name === undefined ? undefined : RAW_TEXT_END[name];
+    if (name === undefined) {
+      HIDDEN.lastIndex = skipPast(html, COMMENT_END, HIDDEN.lastIndex);
+    } else if (slash) {
+      // A stray end tag, or one of another name inside, is left for TAG.
+      if (name !== open || --depth > 0) continue;
+      open = "";
+      kept = HIDDEN.lastIndex;
+      continue;
+    } else if (!gt || SELF_CLOSING.test(attrs)) {
+      // An unclosed start tag already reaches the end, and a self-closed one is empty.
+    } else if (rawTextEnd) {
+      HIDDEN.lastIndex = skipPast(html, rawTextEnd, HIDDEN.lastIndex);
+    } else {
+      if (depth === 0) {
+        out += html.slice(kept, m.index);
+        open = name;
+      }
+      if (name === open) depth++;
+      continue;
+    }
+    // Inside an open element, comments and raw text are only skipped.
+    if (depth === 0) {
+      out += html.slice(kept, m.index);
+      kept = HIDDEN.lastIndex;
+    }
+  }
+  return depth > 0 ? out : out + html.slice(kept);
+}
+
+function skipPast(html: string, end: RegExp, from: number): number {
+  end.lastIndex = from;
+  return end.exec(html) ? end.lastIndex : html.length;
 }
 
 function hasTag(text: string): boolean {

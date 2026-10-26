@@ -183,7 +183,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 ### 情報収集（sources/）
 
 - **html.ts** `htmlToText(html, maxChars)` と `truncate(text, maxChars)`
-  1. 制御文字を除去する。コメントと script / style / noscript / template / svg / iframe / head / nav / header / footer / aside / form を中身ごと除去する（閉じタグがなければ末尾まで）
+  1. 制御文字を除去する。コメントと script / style / noscript / template / svg / iframe / head / nav / header / footer / aside / form を中身ごと除去する（閉じタグがなければ末尾まで）。先頭から1回の走査で処理し、同名要素の入れ子を数える。script / style / noscript / iframe の中身はテキストとして扱い、中のタグやコメントは解釈しない
   2. ブロック要素を改行にし、見出し（h1〜h6）に印を付ける。残りのタグを除去してから entities でデコードする
   3. まだタグが残っていれば（GitHub の Atom は二重にエスケープされている）、手順1と2をもう1回だけ繰り返す
   4. 空白を詰めて行に分け、定型文（WordPress の「The post … appeared first on …」、短い Read more / Continue reading）を落とす
