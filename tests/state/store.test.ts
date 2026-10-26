@@ -15,6 +15,7 @@ import {
   record,
   resolveStatePath,
   saveState,
+  statusOf,
   touch,
 } from "../../src/state/store.js";
 
@@ -92,6 +93,12 @@ describe("loadState", () => {
     expect(logs.join("")).toContain("moved it to");
   });
 
+  it("reads pending entries (r)", async () => {
+    const pending = { s: "r", f: "2026-10-24", l: "2026-10-25" };
+    await writeFile(path, JSON.stringify({ version: 1, updatedAt: "2026-10-25T00:00:00Z", entries: { [A]: pending } }));
+    expect([...(await loadState(path)).entries]).toEqual([[A, pending]]);
+  });
+
   it("drops only the invalid entries", async () => {
     const good = { s: "n", f: "2026-10-20", l: "2026-10-25" };
     await writeFile(
@@ -124,8 +131,9 @@ describe("pruneState", () => {
       [A]: { s: "n", f: "2026-01-01", l: "2026-09-10" }, // seen 45 days ago: kept
       [B]: { s: "i", f: "2026-09-09", l: "2026-09-09" }, // 46 days ago: removed
       [C]: { s: "n", f: "2025-01-01", l: "2026-10-25" }, // first seen long ago but still in a feed
+      ["d".repeat(32)]: { s: "r", f: "2026-09-01", l: "2026-09-01" }, // pending expires the same way
     });
-    expect(pruneState(state, 45, "2026-10-25")).toBe(1);
+    expect(pruneState(state, 45, "2026-10-25")).toBe(2);
     expect([...state.entries.keys()]).toEqual([A, C]);
   });
 });
@@ -139,7 +147,28 @@ describe("isKnown", () => {
   });
 });
 
+describe("statusOf", () => {
+  it("is the strongest status under any key: notified, then irrelevant, then pending", () => {
+    const state = stateOf({
+      [A]: { s: "r", f: "2026-10-20", l: "2026-10-20" },
+      [B]: { s: "i", f: "2026-10-20", l: "2026-10-20" },
+      [C]: { s: "n", f: "2026-10-20", l: "2026-10-20" },
+    });
+    expect(statusOf(state, [A])).toBe("r");
+    expect(statusOf(state, [A, B])).toBe("i");
+    expect(statusOf(state, [A, B, C])).toBe("n");
+    expect(statusOf(state, ["d".repeat(32)])).toBeUndefined();
+  });
+});
+
 describe("touch", () => {
+  it("keeps a pending item pending", () => {
+    const state = stateOf({ [A]: { s: "r", f: "2026-10-24", l: "2026-10-24" } });
+    touch(state, [A, B], "2026-10-25");
+    expect(state.entries.get(A)).toEqual({ s: "r", f: "2026-10-24", l: "2026-10-25" });
+    expect(state.entries.get(B)).toEqual({ s: "r", f: "2026-10-24", l: "2026-10-25" });
+  });
+
   it("updates the last-seen day and fills in missing keys from the known entry", () => {
     const state = stateOf({ [A]: { s: "n", f: "2026-10-01", l: "2026-10-20" } });
     touch(state, [A, B], "2026-10-25");
@@ -180,6 +209,28 @@ describe("record", () => {
     const state = stateOf({ [A]: { s: "i", f: "2026-10-01", l: "2026-10-20" } });
     record(state, [A], "n", "2026-10-25");
     expect(state.entries.get(A)).toEqual({ s: "n", f: "2026-10-01", l: "2026-10-25" });
+  });
+
+  it("upgrades pending to irrelevant or notified", () => {
+    const state = stateOf({
+      [A]: { s: "r", f: "2026-10-01", l: "2026-10-20" },
+      [B]: { s: "r", f: "2026-10-01", l: "2026-10-20" },
+    });
+    record(state, [A], "i", "2026-10-25");
+    record(state, [B], "n", "2026-10-25");
+    expect(state.entries.get(A)?.s).toBe("i");
+    expect(state.entries.get(B)?.s).toBe("n");
+  });
+
+  it("never makes an irrelevant or notified item pending again", () => {
+    const state = stateOf({
+      [A]: { s: "i", f: "2026-10-01", l: "2026-10-20" },
+      [B]: { s: "n", f: "2026-10-01", l: "2026-10-20" },
+    });
+    record(state, [A], "r", "2026-10-25");
+    record(state, [B], "r", "2026-10-25");
+    expect(state.entries.get(A)?.s).toBe("i");
+    expect(state.entries.get(B)?.s).toBe("n");
   });
 
   it("never downgrades notified to irrelevant", () => {

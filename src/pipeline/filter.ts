@@ -9,49 +9,68 @@ import { parseDate, sleep } from "../util/time.js";
 export const ANALYZE_BATCH_SIZE = 15;
 
 const IMPACT_RANK: Record<Impact, number> = { High: 0, Medium: 1, Low: 2 };
-// Every later call would fail the same way, so these stop the run's remaining batches.
+// Every later call would fail the same way, so these are not retried and stop the run.
 const FATAL_KINDS: ReadonlySet<LlmErrorKind> = new Set(["auth", "unavailable"]);
 // Caused by the batch itself, so resending it as is fails again; its halves are sent instead.
-const SPLIT_KINDS: ReadonlySet<LlmErrorKind> = new Set(["max_tokens", "refusal", "invalid_output"]);
+const SPLIT_KINDS: ReadonlySet<LlmErrorKind> = new Set(["max_tokens", "refusal", "invalid_output", "too_large"]);
 // The SDK and claude have already retried with their own backoff; this gives a limit time to pass.
 export const RETRY_DELAY_MS = 10_000;
 
 export interface FilterResult {
   /** To notify: by impact (High first), then newest first. */
   insights: Insight[];
-  /** Recorded as state i: not relevant, or below notify.slack.minImpact. */
-  irrelevant: Item[];
-  /** Not recorded, so the next run judges them again: failed batches, unanswered items, over maxItemsPerRun. */
-  undecided: Item[];
-  stats: { triageBatches: number; triageFailed: number; analyzeBatches: number; analyzeFailed: number };
   /**
-   * Set when every batch of a stage failed. The caller records irrelevant first (those answers
-   * are paid for), then throws this (exit 3).
+   * Recorded as state i: not relevant, below notify.slack.minImpact, or the one item a batch kept
+   * failing on (refused, say), found by splitting the batch.
+   */
+  irrelevant: Item[];
+  /** Not recorded, so the next run triages them again: failed batches, unanswered items, over maxItemsPerRun. */
+  undecided: Item[];
+  /** Recorded as state r: relevant, but Analyze failed or did not answer; the next run analyzes them. */
+  pending: Item[];
+  stats: {
+    triageBatches: number;
+    triageFailed: number;
+    analyzeBatches: number;
+    analyzeFailed: number;
+    /** Items in irrelevant because they alone made their batch fail. */
+    dropped: number;
+  };
+  /**
+   * Set when every batch of a stage failed, or when an auth, unavailable or lasting rate_limit
+   * error stopped the run. The caller records irrelevant and pending first (those answers are
+   * paid for), then throws this (exit 3).
    */
   error?: LlmError;
 }
 
 /**
- * Triage in batches of maxItemsPerCall, then Analyze the relevant items in batches of
- * ANALYZE_BATCH_SIZE. A batch that fails transiently is retried once after retryDelayMs; one
- * that fails because of its content is split in halves. Items still without an answer are left
- * undecided. Throws only the abort reason and errors that are not LlmErrors.
+ * Triage in batches of maxItemsPerCall, then Analyze the relevant items, and the pretriaged ones
+ * (state r), in batches of ANALYZE_BATCH_SIZE. A batch that fails transiently is retried once
+ * after retryDelayMs; one that fails because of its content is split to find the item causing it.
+ * Throws only the abort reason and errors that are not LlmErrors.
  */
 export async function filterAndAnalyze(
   llm: LlmClient,
   context: Context,
   items: readonly Item[],
-  { signal, retryDelayMs = RETRY_DELAY_MS }: { signal?: AbortSignal; retryDelayMs?: number } = {},
+  {
+    signal,
+    retryDelayMs = RETRY_DELAY_MS,
+    pretriaged = [],
+  }: { signal?: AbortSignal; retryDelayMs?: number; pretriaged?: readonly Item[] } = {},
 ): Promise<FilterResult> {
   const result: FilterResult = {
     insights: [],
     irrelevant: [],
     undecided: [],
-    stats: { triageBatches: 0, triageFailed: 0, analyzeBatches: 0, analyzeFailed: 0 },
+    pending: [],
+    stats: { triageBatches: 0, triageFailed: 0, analyzeBatches: 0, analyzeFailed: 0, dropped: 0 },
   };
-  if (items.length === 0) return result;
-  const byNewest = newestFirst(items);
+  if (items.length === 0 && pretriaged.length === 0) return result;
+  const byNewest = newestFirst([...items, ...pretriaged]);
 
+  // Only new items count: pretriaged ones skip triage, and their number is bounded by earlier runs.
   let selected: readonly Item[] = items;
   if (items.length > context.llm.maxItemsPerRun) {
     const newest = [...items].sort(byNewest);
@@ -62,46 +81,41 @@ export async function filterAndAnalyze(
     );
   }
 
-  const run: StageRun = { llm, signal, retryDelayMs, undecided: result.undecided };
-  const relevant: Item[] = [];
+  const run: StageRun = { llm, signal, retryDelayMs, dropped: result.irrelevant };
+  const relevant: Item[] = [...pretriaged];
   const triage = await runStage(
     run,
     "triage",
     chunk(selected, context.llm.maxItemsPerCall),
+    result.undecided,
     (batch) => triageRequest(context, batch),
     (batch, reply) => {
       const decisions = byShortId(batch, reply.decisions, "triage");
-      for (const [i, item] of batch.entries()) {
+      return batch.filter((item, i) => {
         const decision = decisions.get(i);
-        if (!decision) {
-          result.undecided.push(item);
-          continue;
-        }
+        if (!decision) return true;
         (decision.relevant ? relevant : result.irrelevant).push(item);
         log.debug(
           `triage ${item.sourceId}/${item.id}: ${decision.relevant ? "relevant" : "not relevant"}: ${decision.reason}`,
         );
-      }
+        return false;
+      });
     },
   );
-  result.stats.triageBatches = triage.batches;
-  result.stats.triageFailed = triage.failed;
-  result.error = stageError("triage", triage);
-  if (result.error) return result;
 
   const threshold = IMPACT_RANK[context.notify.slack.minImpact];
   const analyze = await runStage(
     run,
     "analyze",
     chunk(relevant, ANALYZE_BATCH_SIZE),
+    result.pending,
     (batch) => analyzeRequest(context, batch),
     (batch, reply) => {
       const insights = byShortId(batch, reply.insights, "analyze");
-      for (const [i, item] of batch.entries()) {
+      return batch.filter((item, i) => {
         const insight = insights.get(i);
-        if (!insight) {
-          result.undecided.push(item);
-        } else if (IMPACT_RANK[insight.impact] > threshold) {
+        if (!insight) return true;
+        if (IMPACT_RANK[insight.impact] > threshold) {
           result.irrelevant.push(item);
         } else {
           result.insights.push({
@@ -112,12 +126,22 @@ export async function filterAndAnalyze(
             action: insight.action.trim(),
           });
         }
-      }
+        return false;
+      });
     },
   );
-  result.stats.analyzeBatches = analyze.batches;
-  result.stats.analyzeFailed = analyze.failed;
-  result.error = stageError("analyze", analyze);
+
+  result.stats = {
+    triageBatches: triage.batches,
+    triageFailed: triage.failed,
+    analyzeBatches: analyze.batches,
+    analyzeFailed: analyze.failed,
+    dropped: triage.dropped + analyze.dropped,
+  };
+  result.error = stageError("triage", triage) ?? stageError("analyze", analyze);
+  if (!result.error && run.fatal) {
+    result.error = new LlmError(run.fatal.kind, `stopped after: ${run.fatal.message}`);
+  }
 
   result.insights.sort((a, b) => IMPACT_RANK[a.impact] - IMPACT_RANK[b.impact] || byNewest(a.item, b.item));
   return result;
@@ -127,8 +151,12 @@ interface StageRun {
   llm: LlmClient;
   signal: AbortSignal | undefined;
   retryDelayMs: number;
-  undecided: Item[];
-  /** Set by an auth or unavailable error; every batch after it is skipped, in both stages. */
+  /** Where an item goes that alone made its batch fail. */
+  dropped: Item[];
+  /**
+   * Set by an auth or unavailable error, or a rate_limit that outlasted the retry; every batch
+   * after it is skipped, in both stages.
+   */
   fatal?: LlmError;
 }
 
@@ -136,46 +164,107 @@ interface StageOutcome {
   batches: number;
   /** Batches that got no answer at all, not even for one of their halves. */
   failed: number;
+  dropped: number;
   last?: LlmError;
 }
 
+/**
+ * Runs each batch; items without an answer go to leftover. apply takes a reply and returns the
+ * items it had no answer for. A reply answering none of them counts as invalid output.
+ */
 async function runStage<T>(
   run: StageRun,
   stage: LlmTier,
   batches: Item[][],
+  leftover: Item[],
   build: (batch: Item[]) => GenerateRequest<T>,
-  apply: (batch: Item[], reply: T) => void,
+  apply: (batch: Item[], reply: T) => Item[],
 ): Promise<StageOutcome> {
-  const outcome: StageOutcome = { batches: batches.length, failed: 0 };
-  const runBatch = async (batch: Item[], label: string): Promise<boolean> => {
+  const outcome: StageOutcome = { batches: batches.length, failed: 0, dropped: 0 };
+
+  /**
+   * Undefined when the batch got at least one answer, else the error it failed with. A batch that
+   * failed because of its content is left to the caller; any other failure goes to leftover.
+   */
+  const attempt = async (batch: Item[], label: string): Promise<LlmError | undefined> => {
     if (run.fatal) {
       outcome.last = run.fatal;
-      run.undecided.push(...batch);
-      return false;
+      leftover.push(...batch);
+      return run.fatal;
     }
-    let reply: T;
+    let err: LlmError;
     try {
-      reply = await generateWithRetry(run, build(batch), label);
-    } catch (err) {
-      if (!(err instanceof LlmError)) throw err;
-      outcome.last = err;
-      if (FATAL_KINDS.has(err.kind)) run.fatal = err;
-      if (SPLIT_KINDS.has(err.kind) && batch.length > 1 && !run.fatal) {
-        log.debug(`${label} failed (${err.kind}); sending its ${batch.length} items in halves`);
-        const half = Math.ceil(batch.length / 2);
-        const first = await runBatch(batch.slice(0, half), `${label} (part 1)`);
-        const second = await runBatch(batch.slice(half), `${label} (part 2)`);
-        return first || second;
+      const reply = await generateWithRetry(run, build(batch), label);
+      const unanswered = apply(batch, reply);
+      if (unanswered.length < batch.length) {
+        leftover.push(...unanswered);
+        return undefined;
       }
-      run.undecided.push(...batch);
-      log.warn(`${label} failed; its ${batch.length} items wait for the next run`, err);
+      // apply recorded nothing, so the batch can be split like any other content failure.
+      err = new LlmError("invalid_output", `the reply answered none of the batch's ids (${label})`);
+    } catch (e) {
+      if (!(e instanceof LlmError)) throw e;
+      err = e;
+    }
+    outcome.last = err;
+    if (SPLIT_KINDS.has(err.kind)) return err;
+    // A rate_limit here has already been retried once, so the limit is not about to lift.
+    if (FATAL_KINDS.has(err.kind) || err.kind === "rate_limit") run.fatal = err;
+    leftover.push(...batch);
+    log.warn(`${label} failed; its ${batch.length} items wait for the next run`, err);
+    return err;
+  };
+
+  /**
+   * Sends both halves of a batch that failed because of its content, and whether any item got an
+   * answer. When only one half fails that way, the cause is in it, so it is split again until one
+   * item is left, which goes to dropped. When both do, the cause is not one item (a model that
+   * writes too much, say), so splitting stops and their items wait for the next run.
+   */
+  const bisect = async (batch: Item[], label: string): Promise<boolean> => {
+    log.debug(`${label} failed because of its content; sending its ${batch.length} items in halves`);
+    const middle = Math.ceil(batch.length / 2);
+    const halves = [batch.slice(0, middle), batch.slice(middle)];
+    const errors: (LlmError | undefined)[] = [];
+    for (const [i, half] of halves.entries()) errors.push(await attempt(half, `${label} (part ${i + 1})`));
+    const answered = errors.some((e) => e === undefined);
+    const onContent = halves.filter((_, i) => errors[i] !== undefined && SPLIT_KINDS.has(errors[i].kind));
+    if (onContent.length === 0) return answered;
+    if (onContent.length === 2) {
+      for (const half of onContent) leftover.push(...half);
+      log.warn(
+        `${label}: both halves failed, so no one item is the cause; its ${batch.length} items wait for the next run`,
+      );
+      return answered;
+    }
+    const half = onContent[0]!;
+    const part = halves.indexOf(half) + 1;
+    if (half.length > 1) return (await bisect(half, `${label} (part ${part})`)) || answered;
+    // Only an answered other half shows that this item, not the model, is the cause.
+    const item = half[0]!;
+    if (!answered) {
+      leftover.push(item);
       return false;
     }
-    apply(batch, reply);
-    return true;
+    run.dropped.push(item);
+    outcome.dropped++;
+    log.warn(`${label}: ${item.sourceId}/${item.id} alone makes the request fail; recorded as irrelevant`);
+    return answered;
   };
+
   for (const [n, batch] of batches.entries()) {
-    if (!(await runBatch(batch, `${stage} batch ${n + 1}/${batches.length}`))) outcome.failed++;
+    const label = `${stage} batch ${n + 1}/${batches.length}`;
+    const err = await attempt(batch, label);
+    if (!err) continue;
+    if (SPLIT_KINDS.has(err.kind)) {
+      // A batch of one is not split: nothing shows that its item, rather than the model, is the cause.
+      if (batch.length > 1 && (await bisect(batch, label))) continue;
+      if (batch.length === 1) {
+        leftover.push(...batch);
+        log.warn(`${label} failed; its item waits for the next run`, err);
+      }
+    }
+    outcome.failed++;
   }
   return outcome;
 }

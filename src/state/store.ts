@@ -8,8 +8,14 @@ import { daysBetween, toIsoSeconds } from "../util/time.js";
 
 export const DEFAULT_STATE_PATH = "state/notified.json";
 
-/** n: notified. i: judged irrelevant, so it is not triaged again. */
-export type EntryStatus = "n" | "i";
+/**
+ * n: notified. i: judged irrelevant, so it is not triaged again. r: judged relevant but not yet
+ * analyzed, so the next run analyzes it without triaging it again.
+ */
+export type EntryStatus = "n" | "i" | "r";
+
+// A later decision never weakens an earlier one: notified beats irrelevant beats pending.
+const RANK: Record<EntryStatus, number> = { n: 2, i: 1, r: 0 };
 
 export interface StateEntry {
   s: EntryStatus;
@@ -33,7 +39,7 @@ export class StateError extends PochiError {
 const FileSchema = z.object({ version: z.literal(1), entries: z.record(z.string(), z.unknown()) });
 const KEY = /^[0-9a-f]{32}$/;
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const EntrySchema = z.object({ s: z.enum(["n", "i"]), f: day, l: day });
+const EntrySchema = z.object({ s: z.enum(["n", "i", "r"]), f: day, l: day });
 
 export function emptyState(): State {
   return { entries: new Map() };
@@ -99,21 +105,29 @@ export function isKnown(state: State, keys: readonly string[]): boolean {
   return keys.some((k) => state.entries.has(k));
 }
 
+/** The strongest status under any of the keys, or undefined for an item the state does not know. */
+export function statusOf(state: State, keys: readonly string[]): EntryStatus | undefined {
+  return strongest(existing(state, keys).map((e) => e.s));
+}
+
 /**
  * Marks a known item as seen today under every key. Keys the state lacks (a page first seen under
  * another source) inherit the known entry, so the next run finds it by any of them.
  */
 export function touch(state: State, keys: readonly string[], today: string): void {
   const known = existing(state, keys);
-  if (known.length === 0) return;
-  write(state, keys, merged(known, known.some((e) => e.s === "n") ? "n" : "i", today));
+  const s = strongest(known.map((e) => e.s));
+  if (s === undefined) return;
+  write(state, keys, merged(known, s, today));
 }
 
-/** Records a decision under every key. A notified item is never downgraded to irrelevant. */
+/**
+ * Records a decision under every key. A status is never weakened: a notified item does not become
+ * irrelevant, and neither becomes pending again.
+ */
 export function record(state: State, keys: readonly string[], status: EntryStatus, today: string): void {
   const known = existing(state, keys);
-  const s = status === "n" || known.some((e) => e.s === "n") ? "n" : "i";
-  write(state, keys, merged(known, s, today));
+  write(state, keys, merged(known, strongest([status, ...known.map((e) => e.s)])!, today));
 }
 
 export async function saveState(state: State, path: string, opts: { now?: Date } = {}): Promise<void> {
@@ -147,6 +161,10 @@ function parseJson(text: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function strongest(statuses: readonly EntryStatus[]): EntryStatus | undefined {
+  return statuses.reduce<EntryStatus | undefined>((a, b) => (a === undefined || RANK[b] > RANK[a] ? b : a), undefined);
 }
 
 function existing(state: State, keys: readonly string[]): StateEntry[] {
