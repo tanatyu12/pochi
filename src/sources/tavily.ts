@@ -4,8 +4,8 @@ import type { Item } from "../types.js";
 import { itemId, normalizeUrl, parseHttpUrl } from "../util/hash.js";
 import { HttpError, postJson } from "../util/http.js";
 import { parseDate } from "../util/time.js";
+import { parseApi } from "./api.js";
 import { plainTextToText, truncate } from "./html.js";
-import { FeedParseError } from "./rss.js";
 
 const SEARCH_URL = "https://api.tavily.com/search";
 const TITLE_MAX_CHARS = 300;
@@ -14,7 +14,8 @@ const SearchSchema = z.object({
   results: z.array(
     z.object({
       title: z.string().nullish(),
-      url: z.string(),
+      // A result without a URL is skipped, not a reason to lose the others.
+      url: z.string().nullish(),
       content: z.string().nullish(),
       published_date: z.string().nullish(),
     }),
@@ -49,31 +50,15 @@ export async function fetchTavilyItems(
   };
   let text: string;
   try {
-    // POST already skips 5xx retries (the search may have been billed); 429 is retried once.
-    ({ text } = await postJson(SEARCH_URL, body, {
-      signal,
-      headers: { authorization: `Bearer ${key}` },
-      retry: { rateLimit: 1 },
-    }));
+    // By default a POST is not retried on 5xx (the search may have been billed) and a 429 is retried once.
+    ({ text } = await postJson(SEARCH_URL, body, { signal, headers: { authorization: `Bearer ${key}` } }));
   } catch (err) {
     if (err instanceof HttpError && err.status === 401) {
       throw new HttpError("status", err.url, "Tavily rejected TAVILY_API_KEY (HTTP 401)", { status: 401, cause: err });
     }
     throw err;
   }
-  return toTavilyItems(parseSearch(text).results, query, defaults);
-}
-
-function parseSearch(text: string): z.infer<typeof SearchSchema> {
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch (err) {
-    throw new FeedParseError(`not JSON: ${SEARCH_URL}`, { cause: err });
-  }
-  const parsed = SearchSchema.safeParse(json);
-  if (!parsed.success) throw new FeedParseError(`unexpected Tavily response: ${SEARCH_URL}`, { cause: parsed.error });
-  return parsed.data;
+  return toTavilyItems(parseApi(text, SearchSchema, SEARCH_URL, "Tavily").results, query, defaults);
 }
 
 // Keeps Tavily's relevance order. The id leaves out the query, so the same page found by two
@@ -81,7 +66,7 @@ function parseSearch(text: string): z.infer<typeof SearchSchema> {
 function toTavilyItems(results: SearchResult[], query: QueryConfig, defaults: Sources["defaults"]): Item[] {
   const seen = new Set<string>();
   return results.flatMap((r) => {
-    const url = parseHttpUrl(r.url.trim())?.toString();
+    const url = r.url ? parseHttpUrl(r.url.trim())?.toString() : undefined;
     if (!url) return [];
     const normalized = normalizeUrl(url) ?? url;
     if (seen.has(normalized)) return [];

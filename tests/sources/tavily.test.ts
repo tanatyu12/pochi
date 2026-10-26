@@ -99,6 +99,12 @@ describe("fetchTavilyItems", () => {
     expect(items[2]!.title).toBe("https://forum.example.net/t/qwen-4");
   });
 
+  it("skips results without a URL and keeps the rest", async () => {
+    const results = [{ title: "no url", url: null }, { title: "missing url" }, ...fixture.results];
+    mockFetch({ [SEARCH]: reply.json({ results }) });
+    expect(await fetchTavilyItems(query, defaults)).toHaveLength(3);
+  });
+
   it("gives the same page the same id under different queries", async () => {
     mockFetch({ [SEARCH]: reply.json(fixture) });
     const [a] = await fetchTavilyItems(query, defaults);

@@ -3,7 +3,8 @@ import type { GithubFeed, Sources } from "../config/schema.js";
 import type { Item } from "../types.js";
 import { fetchText, HttpError } from "../util/http.js";
 import { log } from "../util/log.js";
-import { FeedParseError, fetchFeedEntries, fetchFeedItems, toItems, type RawEntry } from "./rss.js";
+import { parseApi } from "./api.js";
+import { fetchFeedEntries, fetchFeedItems, toItems, type RawEntry } from "./rss.js";
 
 type GithubFeedKind = GithubFeed["feed"];
 
@@ -67,7 +68,7 @@ export async function verifyRepo(repo: string, signal?: AbortSignal): Promise<Re
   try {
     const res = await fetchText(`${API}/repos/${repo}`, { signal, headers: apiHeaders("json") });
     // The API follows a rename or transfer, and full_name is where the repository lives now.
-    current = parseApi(res.text, RepoSchema, res.url).full_name;
+    current = parseApi(res.text, RepoSchema, res.url, "GitHub API").full_name;
   } catch (err) {
     if (isNotFound(err)) return { status: "not_found" };
     throw err;
@@ -110,7 +111,7 @@ export async function fetchGithubItems(
 
 async function fetchReleases(repo: string, body: "json" | "html", signal?: AbortSignal): Promise<Release[]> {
   const res = await fetchText(releasesUrl(repo), { signal, headers: apiHeaders(body), maxBytes: API_MAX_BYTES });
-  return parseApi(res.text, ReleasesSchema, res.url).filter((r) => !r.draft);
+  return parseApi(res.text, ReleasesSchema, res.url, "GitHub API").filter((r) => !r.draft);
 }
 
 function releasesUrl(repo: string): string {
@@ -127,18 +128,6 @@ function apiHeaders(body: "json" | "html"): Record<string, string> {
   const token = process.env.GITHUB_TOKEN?.trim();
   if (token) headers.authorization = `Bearer ${token}`;
   return headers;
-}
-
-function parseApi<T>(text: string, schema: z.ZodType<T>, url: string): T {
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch (err) {
-    throw new FeedParseError(`not JSON: ${url}`, { cause: err });
-  }
-  const parsed = schema.safeParse(json);
-  if (!parsed.success) throw new FeedParseError(`unexpected GitHub API response: ${url}`, { cause: parsed.error });
-  return parsed.data;
 }
 
 function isNotFound(err: unknown): boolean {
