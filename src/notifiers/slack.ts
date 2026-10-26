@@ -2,7 +2,7 @@ import type { Impact } from "../config/schema.js";
 import type { Insight } from "../types.js";
 import { HttpError, postJson } from "../util/http.js";
 import { log } from "../util/log.js";
-import { collapseWhitespace, truncate, truncateUnits } from "../util/text.js";
+import { collapseWhitespace, plural, truncate, truncateUnits } from "../util/text.js";
 import { sleep } from "../util/time.js";
 
 export const MAX_ITEMS_PER_MESSAGE = 45;
@@ -283,8 +283,4 @@ function escapeUnits(raw: string): string[] {
 /** Escaped text no longer than maxChars (UTF-16 units, which over-count rather than under-count). */
 function fitEscaped(raw: string, maxChars: number): string {
   return truncateUnits(escapeUnits(raw), maxChars);
-}
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }

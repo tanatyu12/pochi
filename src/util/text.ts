@@ -32,3 +32,12 @@ function cut(units: string[], max: number, size: (unit: string) => number): stri
   }
   return `${out.trimEnd()}…`;
 }
+
+/** C0 controls other than tab and newline, DEL and C1, so no ANSI or OSC sequence can survive. */
+export function stripControlChars(text: string): string {
+  return text.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, "");
+}
+
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}

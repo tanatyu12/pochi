@@ -9,6 +9,7 @@ import {
   type StateEntry,
   StateError,
   emptyState,
+  inspectState,
   isKnown,
   loadState,
   pruneState,
@@ -165,6 +166,28 @@ describe("loadState", () => {
   it("throws when the file exists but cannot be read", async () => {
     await mkdir(path);
     await expect(loadState(path)).rejects.toBeInstanceOf(StateError);
+  });
+});
+
+describe("inspectState", () => {
+  it("reports a missing file", async () => {
+    expect(await inspectState(path)).toEqual({ kind: "missing" });
+  });
+
+  it("reports a file that is not a state file, without moving it or logging", async () => {
+    await writeFile(path, "{ not json");
+    expect(await inspectState(path)).toEqual({ kind: "invalid" });
+    expect(await readdir(dir)).toEqual(["notified.json"]);
+    expect(logs).toEqual([]);
+  });
+
+  it("returns the valid entries and counts the dropped ones", async () => {
+    const entry = { s: "n", f: "2026-10-01", l: "2026-10-25" };
+    await writeFile(path, JSON.stringify({ version: 1, entries: { [A]: entry, short: entry, [B]: { s: "x" } } }));
+    const found = await inspectState(path);
+    expect(found).toMatchObject({ kind: "ok", dropped: 2 });
+    expect(found.kind === "ok" && [...found.state.entries]).toEqual([[A, entry]]);
+    expect(logs).toEqual([]);
   });
 });
 

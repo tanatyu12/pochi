@@ -228,7 +228,8 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 結果は完了順ではなく設定の順（feeds → queries）に並べ、id と urlKey で重複を除く。先に出た記事（フィードの記事と Tavily の同じ URL ならフィード側）を残す
   - signal で中断されたら、待っているソースは始めず、中断で止まった取得は失敗として記録せず、その reason を投げる（「全ソースの失敗」と区別するため）。中断と同時に起きた中断以外の失敗は warn を出す。全ソースの取得が終わってから中断された場合は結果をそのまま返す
   - 終了コードは決めない。全ソースの失敗（5）の判定は commands/run が `attempted` と `failures` から行う
-  - `fetchSource` は1ソースを kind に応じて rss / github / tavily に振り分ける（doctor --fetch 向け）
+  - `fetchSource` は1ソースを kind に応じて rss / github / tavily に振り分ける
+  - `fetchEach(configs, defaults, { signal?, concurrency? })` は同時実行数を守ってソースを取得し、入力の順に `{ items } / { error } / { aborted }` を返す。例外は投げず、中断の扱いは呼び出し側が決める。collectAll と doctor --fetch が共有する
 
 ### LLM（llm/, pipeline/）
 
@@ -298,7 +299,14 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   8. Slack に送る（filter の結果に error があっても送る）。dry-run のときは stdout に出し、状態は書かない
   9. 状態を保存する（Slack への送信が失敗していれば4）。irrelevant は i、pending は r、届いた insights は n として記録する。filter の結果に error があれば、保存した後に投げる（3）。送信にも失敗していれば 3 を優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
   - フラグ：`--dry-run`、`--state`、`--no-state`、`--json`、`--config-dir`、`--verbose`、`--quiet`
-- **commands/doctor.ts**：設定の読込元と妥当性、LLMモードとモデル、環境変数の有無（値は表示しない）、状態ファイルの件数を表示する。`--fetch` を付けると各ソースの最新タイトルも表示する
+- **commands/doctor.ts**：設定の読込元と妥当性、LLMモードとモデル、環境変数の有無（値は表示しない）、状態ファイルの件数を表示する。`--fetch` を付けると各ソースの最新タイトルも表示する。LLM の生成呼び出しと Slack への送信はしない（課金も通知もしない）
+  - 出力は stdout に「区分ごとの見出し＋ `ok / warn / fail / skip / -`、ラベル、詳細」の行で、全行を `redact()` に通す。ラベルと詳細は制御文字（C0・DEL・C1）を除いて1行にし、200字までに切る（フィードのタイトルに含まれた ANSI / OSC シーケンスを端末に流さないため）。ログは warn 以上だけを stderr に出し（`--verbose` で debug まで）、終わったらログの設定を元に戻す
+  - Config：`loadConfig` の読込元（ファイルパスか環境変数名）、project 名、feeds / queries の件数。失敗なら ConfigError を1件の fail として、その各行を続けて表示し、LLM と `--fetch` は skip。run の手順2と同じく、feeds が空で queries があり TAVILY_API_KEY がなければ fail、feeds があれば warn
+  - LLM：`resolveLlm` の結果（モード、モデル名、CLIモードなら `claude --version` の1行目）。APIモードではキーの有効性までは確かめない。状態ファイルはこの確認と並行して読み、表示は区分の順のまま
+  - 環境変数：ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、TAVILY_API_KEY、SLACK_WEBHOOK_URL、GITHUB_TOKEN、POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、POCHI_STATE_PATH を set / not set / blank だけで示す。SLACK_WEBHOOK_URL は未設定か `https://hooks.slack.com/` で始まらなければ warn
+  - 状態ファイル：パスは run と同じ優先順位（`--state` > `POCHI_STATE_PATH` > 既定）。`inspectState`（state/store）で読むだけで、壊れていても退避しない。エントリ数、n / i / r の件数、ttlDays を過ぎた件数を示す。ファイルがなければ ok、壊れていれば fail、不正なエントリがあれば warn
+  - `--fetch`：`sourceConfigs`（sources/index）の順に `fetchEach` で同時に4件まで取得し、最新1件のタイトルか「no items」、失敗ならエラーのメッセージを示す。TAVILY_API_KEY がなければ queries は skip
+  - 終了コード：全項目を表示してから、最初の fail の区分で終える（設定・取得するソースがない 2、LLM 3、状態ファイル 1、`--fetch` で全ソースが失敗 5、中断 130）。一部のソースの失敗と warn は 0。最後の行は問題の件数に加え、一部のソースの失敗を「non-fatal failure」、warn を「warning」として別々に数える。中断はどの確認の最中でも 130 とし、最後の行は出さない
 - **commands/init.ts**（端末での対話が必要。Ctrl-C で終了コード130とし、何も書かない）
   1. プロジェクト名、説明、課題（複数）、除外ルール、言語を対話で聞く
   2. 技術名の入力（アプローチB）：owner/repo の形ならそのまま使う。それ以外は LLM に候補を最大3件出させ、verifyRepo で存在を確認できたものだけを選択肢にする
@@ -364,7 +372,7 @@ README に書く注意点：
 | T14 | M3 通知・状態 | state/store（M0 の直後から着手可） | T2 | 最終観測日を基準にした期限切れ削除、touch、壊れたファイルの退避、アトミックな書き込み、キーのソート | 完了 |
 | T15 | M3 通知・状態 | notifiers/slack（M0 の直後から着手可） | T2 | エスケープ、100件を3メッセージに分割、ブロック数の上限、429 と 400 の扱い、一部成功時は届いた記事の ID だけを返す | 完了 |
 | T16 | M3 通知・状態 | commands/run と各フラグ | T9, T13, T14, T15 | 正常系、dry-run、Slack 失敗で4、全ソース失敗で5、LLM なしなら取得前に3 | 未着手 |
-| T17 | M3 通知・状態 | commands/doctor（T16 と並行可） | T3, T9, T13 | 出力に秘密情報が含まれないことをテストで確認 | 未着手 |
+| T17 | M3 通知・状態 | commands/doctor（T16 と並行可） | T3, T9, T13 | 出力に秘密情報が含まれないことをテストで確認 | 完了 |
 | T18 | M4 init | init の対話と設定の書き出し（プロンプト関数を差し替え可能にする） | T3 | 端末でなければ2、キャンセルなら130で何も書かない。書いた設定を読み戻せる。権限600、.gitignore | 未着手 |
 | T19 | M4 init | init のソース特定と Trial Fetch | T18, T6, T7, T8, T13 | 存在を確認できないリポジトリは提示しない。owner/repo は LLM を通さない。LLM なしでも完了する。複数フィードは選ばせる。却下されたソースは除外する | 未着手 |
 | T20 | M5 CI・文書 | daily_briefing.yml | T16 | actionlint が通る。dry_run ではコミットしない。秘密情報を echo しない | 未着手 |

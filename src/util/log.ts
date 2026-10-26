@@ -35,10 +35,15 @@ const defaultWrite = (s: string) => {
 let threshold = THRESHOLD.normal;
 let write: (s: string) => void = defaultWrite;
 
-// Fields left out keep their current value.
-export function configureLog(opts: { level?: LogLevel; write?: (s: string) => void }): void {
+// Fields left out keep their current value. Returns a function that puts back the previous settings.
+export function configureLog(opts: { level?: LogLevel; write?: (s: string) => void }): () => void {
+  const previous = { threshold, write };
   if (opts.level) threshold = THRESHOLD[opts.level];
   if (opts.write) write = opts.write;
+  return () => {
+    threshold = previous.threshold;
+    write = previous.write;
+  };
 }
 
 export function resetLog(): void {

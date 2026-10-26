@@ -2,6 +2,7 @@ import type { GithubFeed, QueryConfig, RssFeed, Sources } from "../config/schema
 import type { Item, SourceKind } from "../types.js";
 import { pLimit } from "../util/concurrency.js";
 import { log } from "../util/log.js";
+import { plural } from "../util/text.js";
 import { fetchGithubItems } from "./github.js";
 import { fetchRssItems } from "./rss.js";
 import { fetchTavilyItems, tavilyApiKey } from "./tavily.js";
@@ -47,10 +48,53 @@ export function fetchSource(source: SourceConfig, defaults: Sources["defaults"],
   }
 }
 
+/** Feeds in config order, then queries; queries only when withQueries (a Tavily key is set). */
+export function sourceConfigs(sources: Sources, withQueries: boolean): SourceConfig[] {
+  const configs: SourceConfig[] = sources.feeds.map((feed) =>
+    feed.type === "github" ? { kind: "github", feed } : { kind: "rss", feed },
+  );
+  if (withQueries) configs.push(...sources.queries.map((query) => ({ kind: "tavily" as const, query })));
+  return configs;
+}
+
 export function sourceInfo(source: SourceConfig): { id: string; name: string; kind: SourceKind } {
   return source.kind === "tavily"
     ? { id: source.query.id, name: source.query.query, kind: "tavily" }
     : { id: source.feed.id, name: source.feed.name, kind: source.kind };
+}
+
+export type SourceOutcome =
+  | { source: SourceConfig; items: Item[] }
+  | { source: SourceConfig; error: unknown }
+  | { source: SourceConfig; aborted: true };
+
+/**
+ * Fetches each source, at most `concurrency` at a time, and settles every one in input order.
+ * Never throws: once `signal` is aborted, queued sources are not started and a fetch the abort
+ * cut short is `aborted`, not an error. What an abort means is left to the caller.
+ */
+export async function fetchEach(
+  configs: SourceConfig[],
+  defaults: Sources["defaults"],
+  opts: { signal?: AbortSignal; concurrency?: number } = {},
+): Promise<SourceOutcome[]> {
+  const { signal } = opts;
+  const limit = pLimit(opts.concurrency ?? DEFAULT_CONCURRENCY);
+  // Indexed by source, so the result does not depend on which fetch finishes first.
+  return Promise.all(
+    configs.map((source) =>
+      limit(async (): Promise<SourceOutcome> => {
+        if (signal?.aborted) return { source, aborted: true };
+        try {
+          return { source, items: await fetchSource(source, defaults, signal) };
+        } catch (error) {
+          // An abort is not the source's fault.
+          if (isAbort(error, signal)) return { source, aborted: true };
+          return { source, error };
+        }
+      }),
+    ),
+  );
 }
 
 /**
@@ -59,50 +103,40 @@ export function sourceInfo(source: SourceConfig): { id: string; name: string; ki
  */
 export async function collectAll(sources: Sources, opts: CollectOptions = {}): Promise<CollectResult> {
   const { signal } = opts;
-  const configs: SourceConfig[] = sources.feeds.map((feed) =>
-    feed.type === "github" ? { kind: "github", feed } : { kind: "rss", feed },
-  );
+  const withQueries = tavilyApiKey() !== undefined;
+  const configs = sourceConfigs(sources, withQueries);
   // Skipped here rather than relying on fetchTavilyItems returning [], so they do not count as successes.
   const skipped: string[] = [];
-  if (tavilyApiKey()) {
-    configs.push(...sources.queries.map((query) => ({ kind: "tavily" as const, query })));
-  } else if (sources.queries.length > 0) {
+  if (!withQueries && sources.queries.length > 0) {
     skipped.push(...sources.queries.map((q) => q.id));
-    const message = `TAVILY_API_KEY is not set; skipping ${skipped.length} ${skipped.length === 1 ? "query" : "queries"}`;
+    const message = `TAVILY_API_KEY is not set; skipping ${plural(skipped.length, "query", "queries")}`;
     // With nothing else to fetch, the run would quietly collect nothing.
     if (configs.length === 0) log.warn(message);
     else log.info(message);
   }
 
-  const limit = pLimit(concurrencyOf(opts.concurrency));
-  // Indexed by source, so the result does not depend on which fetch finishes first.
-  const settled = await Promise.all(
-    configs.map((config) =>
-      limit(async (): Promise<Settled> => {
-        // Queued sources are not started once the run is interrupted.
-        if (signal?.aborted) return { aborted: true };
-        const info = sourceInfo(config);
-        try {
-          const items = await fetchSource(config, sources.defaults, signal);
-          log.debug(`source ${info.id}: ${items.length} item${items.length === 1 ? "" : "s"}`);
-          return { items };
-        } catch (error) {
-          // An abort is not the source's fault; it is rethrown below instead.
-          if (isAbort(error, signal)) return { aborted: true };
-          log.warn(`source ${info.id} failed`, error);
-          return { failure: { sourceId: info.id, sourceName: info.name, kind: info.kind, error } };
-        }
-      }),
-    ),
-  );
+  const outcomes = await fetchEach(configs, sources.defaults, {
+    signal,
+    concurrency: concurrencyOf(opts.concurrency),
+  });
+  const failures: SourceFailure[] = [];
+  for (const outcome of outcomes) {
+    const info = sourceInfo(outcome.source);
+    if ("items" in outcome) {
+      log.debug(`source ${info.id}: ${plural(outcome.items.length, "item")}`);
+    } else if ("error" in outcome) {
+      log.warn(`source ${info.id} failed`, outcome.error);
+      failures.push({ sourceId: info.id, sourceName: info.name, kind: info.kind, error: outcome.error });
+    }
+  }
   // Otherwise an interrupted run would look like one where every source failed. An abort
   // that arrives after every fetch has finished cut nothing short, so the results stand.
-  if (signal && settled.some((s) => s.aborted)) throw signal.reason;
+  if (signal && outcomes.some((o) => "aborted" in o)) throw signal.reason;
 
   return {
-    items: dedupe(settled.flatMap((s) => s.items ?? [])),
+    items: dedupe(outcomes.flatMap((o) => ("items" in o ? o.items : []))),
     attempted: configs.length,
-    failures: settled.flatMap((s) => (s.failure ? [s.failure] : [])),
+    failures,
     skipped,
   };
 }
@@ -112,7 +146,6 @@ export function stateKeys(item: Item): string[] {
   return item.id === item.urlKey ? [item.id] : [item.id, item.urlKey];
 }
 
-type Settled = { items?: Item[]; failure?: SourceFailure; aborted?: true };
 
 function concurrencyOf(value: number | undefined): number {
   if (value === undefined) return DEFAULT_CONCURRENCY;

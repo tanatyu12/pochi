@@ -3,6 +3,10 @@ import { createProgram, main } from "../src/cli.js";
 import { VERSION } from "../src/version.js";
 
 describe("cli", () => {
+  it("has a doctor command", () => {
+    expect(createProgram().commands.map((c) => c.name())).toContain("doctor");
+  });
+
   it("prints the version with --version", async () => {
     let out = "";
     const program = createProgram()
@@ -20,6 +24,8 @@ describe("cli", () => {
     try {
       expect(await main(["node", "pochi", "--version"])).toBe(0);
       expect(await main(["node", "pochi", "--no-such-option"])).toBe(2);
+      // Subcommands report usage errors through main too, instead of exiting the process.
+      expect(await main(["node", "pochi", "doctor", "--no-such-option"])).toBe(2);
     } finally {
       stdout.mockRestore();
       stderr.mockRestore();

@@ -80,6 +80,15 @@ describe("log", () => {
     expect(lines).toEqual(["pochi: debug: first\n", "POCHI: DEBUG: SECOND\n"]);
   });
 
+  it("puts back the previous level and writer when the returned function is called", () => {
+    const lines = capture("normal");
+    const restore = configureLog({ level: "quiet", write: (s) => lines.push(`other ${s}`) });
+    log.info("hidden");
+    restore();
+    log.info("shown");
+    expect(lines).toEqual(["pochi: info: shown\n"]);
+  });
+
   it("writes to stderr, never stdout", () => {
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);

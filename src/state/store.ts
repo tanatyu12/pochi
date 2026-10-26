@@ -52,22 +52,44 @@ export function resolveStatePath(opts: { flag?: string; env?: NodeJS.ProcessEnv 
   return fromFlag || fromEnv || DEFAULT_STATE_PATH;
 }
 
+/** What is on disk, without moving anything aside or logging; loadState decides what to do with it. */
+export type StateInspection =
+  | { kind: "missing" }
+  | { kind: "invalid" }
+  | { kind: "ok"; state: State; dropped: number };
+
+/** Reads the state file as is. Only a read failure other than a missing file throws. */
+export async function inspectState(path: string): Promise<StateInspection> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+    throw new StateError(`cannot read ${path}`, { cause: err });
+  }
+
+  const file = FileSchema.safeParse(parseJson(text));
+  if (!file.success) return { kind: "invalid" };
+
+  const state = emptyState();
+  let dropped = 0;
+  for (const [key, value] of Object.entries(file.data.entries)) {
+    const entry = EntrySchema.safeParse(value);
+    if (KEY.test(key) && entry.success) state.entries.set(key, entry.data);
+    else dropped++;
+  }
+  return { kind: "ok", state, dropped };
+}
+
 /**
  * A missing file is an empty state. A file that is not a state file is moved aside and the run
  * starts empty; any other read failure throws, since starting empty would notify everything again.
  * With readOnly (a dry run), a file that is not a state file is left in place.
  */
 export async function loadState(path: string, opts: { now?: Date; readOnly?: boolean } = {}): Promise<State> {
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyState();
-    throw new StateError(`cannot read ${path}`, { cause: err });
-  }
-
-  const file = FileSchema.safeParse(parseJson(text));
-  if (!file.success) {
+  const found = await inspectState(path);
+  if (found.kind === "missing") return emptyState();
+  if (found.kind === "invalid") {
     if (opts.readOnly) {
       log.warn(`${path} is not a valid state file; starting empty (left in place)`);
       return emptyState();
@@ -83,17 +105,9 @@ export async function loadState(path: string, opts: { now?: Date; readOnly?: boo
     log.warn(`${path} is not a valid state file; moved it to ${backup} and starting empty`);
     return emptyState();
   }
-
-  const state = emptyState();
-  let dropped = 0;
-  for (const [key, value] of Object.entries(file.data.entries)) {
-    const entry = EntrySchema.safeParse(value);
-    if (KEY.test(key) && entry.success) state.entries.set(key, entry.data);
-    else dropped++;
-  }
   // One damaged line should not cost the whole history.
-  if (dropped > 0) log.warn(`dropped ${dropped} invalid entries from ${path}`);
-  return state;
+  if (found.dropped > 0) log.warn(`dropped ${found.dropped} invalid entries from ${path}`);
+  return found.state;
 }
 
 /** Removes entries not seen for more than ttlDays, and returns how many were removed. */

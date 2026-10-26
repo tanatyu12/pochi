@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
+import { doctorCommand } from "./commands/doctor.js";
 import { ExitCode, PochiError, exitCodeOf } from "./errors.js";
 import { VERSION } from "./version.js";
 
@@ -8,11 +9,14 @@ export function createProgram(): Command {
   return new Command()
     .name("pochi")
     .description("Daily tech briefing for your project, delivered to Slack")
-    .version(VERSION);
+    .version(VERSION)
+    .addCommand(doctorCommand());
 }
 
 export async function main(argv: readonly string[] = process.argv): Promise<number> {
-  const program = createProgram().exitOverride();
+  const program = createProgram();
+  // Subcommands do not inherit exitOverride once added, so each one gets it too.
+  for (const command of [program, ...program.commands]) command.exitOverride();
   try {
     await program.parseAsync(argv);
     return ExitCode.OK;
