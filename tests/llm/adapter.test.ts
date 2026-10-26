@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextSchema, type Context } from "../../src/config/schema.js";
 import { ExitCode, exitCodeOf } from "../../src/errors.js";
@@ -68,6 +71,12 @@ describe("resolveLlm with provider auto", () => {
     expect(mock.calls[0]?.options.shell).toBe(false);
   });
 
+  it("does not pass a blank key to claude either", async () => {
+    const mock = fakeSpawn(run.exit(VERSION));
+    await resolveLlm(llmConfig(), { env: { ANTHROPIC_API_KEY: "  " }, platform: "linux", spawn: mock.spawn });
+    expect(mock.calls[0]?.options.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+  });
+
   it("treats a blank key as not set", async () => {
     const mock = fakeSpawn(run.exit(VERSION));
     const resolved = await resolveLlm(llmConfig(), {
@@ -88,14 +97,26 @@ describe("resolveLlm with provider auto", () => {
     expect(err.message).toContain("ANTHROPIC_API_KEY");
   });
 
-  it("is unavailable when claude --version hangs", async () => {
+  it("is unavailable when claude --version hangs, and stops it with SIGINT, then SIGKILL", async () => {
     vi.useFakeTimers();
-    const mock = fakeSpawn(run.hang());
+    const mock = fakeSpawn(run.hang({ ignoreSigint: true }));
     const promise = expectLlmError(resolveLlm(llmConfig(), { env: {}, platform: "linux", spawn: mock.spawn }), "unavailable");
     await mock.spawned();
     await vi.advanceTimersByTimeAsync(10_000);
+    expect(mock.calls[0]?.signals).toEqual(["SIGINT"]);
+    await vi.advanceTimersByTimeAsync(5_000);
     await promise;
-    expect(mock.calls[0]?.signals).toEqual(["SIGKILL"]);
+    expect(mock.calls[0]?.signals).toEqual(["SIGINT", "SIGKILL"]);
+  });
+
+  it("runs claude --version in a private directory, not the shared temp directory", async () => {
+    const mock = fakeSpawn(run.exit(VERSION));
+    await resolveLlm(llmConfig(), { env: {}, platform: "linux", spawn: mock.spawn });
+    const cwd = String(mock.calls[0]?.options.cwd);
+    expect(cwd).not.toBe(tmpdir());
+    expect(dirname(cwd)).toBe(tmpdir());
+    expect(cwd).toContain("pochi-claude-");
+    expect(existsSync(cwd)).toBe(false);
   });
 
   it("is unavailable on Windows without a key, without running claude", async () => {
@@ -118,6 +139,16 @@ describe("resolveLlm with provider auto", () => {
     const reason = new Error("stop");
     controller.abort(reason);
     await expect(promise).rejects.toBe(reason);
+  });
+
+  it("throws an AbortError when the signal has no reason", async () => {
+    const mock = fakeSpawn(run.hang());
+    const signal = Object.assign(new EventTarget(), { aborted: false, reason: undefined }) as unknown as AbortSignal;
+    const promise = resolveLlm(llmConfig(), { env: {}, platform: "linux", spawn: mock.spawn, signal });
+    await mock.spawned();
+    Object.assign(signal, { aborted: true });
+    signal.dispatchEvent(new Event("abort"));
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" });
   });
 });
 
@@ -147,6 +178,18 @@ describe("resolveLlm with provider cli", () => {
       spawn: mock.spawn,
     });
     expect(resolved.client.mode).toBe("cli");
+  });
+
+  it("runs claude without ANTHROPIC_API_KEY, so it uses its own login", async () => {
+    const mock = fakeSpawn([run.exit(VERSION), run.fixture("structured.json")]);
+    const { client } = await resolveLlm(llmConfig({ provider: "cli" }), {
+      env: { ANTHROPIC_API_KEY: KEY, PATH: "/usr/bin" },
+      platform: "darwin",
+      spawn: mock.spawn,
+    });
+    await client.generate({ system: "s", prompt: "p", schema: TriageOutputSchema, tier: "triage" });
+    expect(mock.calls).toHaveLength(2);
+    for (const call of mock.calls) expect(call.options.env).toEqual({ PATH: "/usr/bin" });
   });
 
   it("is unavailable when claude --version fails", async () => {

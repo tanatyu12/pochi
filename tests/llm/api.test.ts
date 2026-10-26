@@ -224,6 +224,14 @@ describe("createApiLlm", () => {
     expect(fetchMock.callsTo(URL).length).toBeLessThan(3);
   });
 
+  it("sends the key it is given, not the one in the environment", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-from-env\n");
+    const mock = mockFetch({ [URL]: reply.json(message(JSON.stringify(ok))) });
+    await createApiLlm({ models: DEFAULT_API_MODELS, apiKey: "sk-ant-chosen" }).generate(request);
+    // This SDK sends an API key as a bearer token.
+    expect(mock.calls[0]?.headers.get("authorization")).toBe("Bearer sk-ant-chosen");
+  });
+
   it("turns missing credentials into auth", async () => {
     // Keeps the SDK from finding a key or an `ant auth login` profile on this machine.
     for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID"]) {

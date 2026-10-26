@@ -36,11 +36,13 @@ const TIMEOUT_MS = 300_000;
  */
 export function createApiLlm(opts: {
   models: Record<LlmTier, string>;
+  /** The key the adapter chose the mode with; without one, the SDK reads ANTHROPIC_API_KEY itself. */
+  apiKey?: string;
   client?: Anthropic;
   timeoutMs?: number;
 }): LlmClient {
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
-  const client = opts.client ?? new Anthropic({ timeout: timeoutMs });
+  const client = opts.client ?? new Anthropic({ apiKey: opts.apiKey, timeout: timeoutMs });
   return {
     mode: "api",
     async generate<T>(req: GenerateRequest<T>, { signal }: { signal?: AbortSignal } = {}): Promise<T> {

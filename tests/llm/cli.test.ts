@@ -57,6 +57,7 @@ async function expectLlmError(promise: Promise<unknown>, kind: LlmErrorKind): Pr
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   resetLog();
 });
 
@@ -131,6 +132,15 @@ describe("createCliLlm", () => {
     await llm(spawn).generate({ ...request, tier });
     const args = calls[0]!.args;
     expect(args[args.indexOf("--model") + 1]).toBe(model);
+  });
+
+  it("runs claude without ANTHROPIC_API_KEY from the environment", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-from-env");
+    vi.stubEnv("POCHI_TEST_VAR", "kept");
+    const { spawn, calls } = fakeSpawn(run.fixture("structured.json"));
+    await llm(spawn).generate(request);
+    expect(calls[0]?.options.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(calls[0]?.options.env).toMatchObject({ POCHI_TEST_VAR: "kept" });
   });
 
   it("uses the resolved model names and command it was given", async () => {
