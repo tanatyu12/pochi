@@ -235,11 +235,11 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - どちらも使えなければ unavailable エラー（Windows は CLIモード非対応）
 - **api.ts**
   - `createApiLlm({ models, client? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
-  - `messages.create` に `output_config.format`（`toJsonSchema` の JSON Schema。CLI と同じもの）を渡し、`stop_reason` を確かめてから text ブロックを JSON.parse して zod で検証する。`zodOutputFormat` は zod v4 で動くが、`messages.parse` は stop_reason を見る前に全 text ブロックを解析して汎用の例外を投げるため、refusal や途中で切れた応答を区別できず使わない
-  - max_tokens は 16000（思考トークンを含む）、タイムアウトは300秒、SDK の再試行（2回）は既定のまま。thinking は送らず既定の adaptive に任せ、effort は triage が low、analyze が medium
+  - `messages.create` に `output_config.format`（`toJsonSchema` の JSON Schema。CLI と同じもの。schema ごとにキャッシュする）を渡し、`stop_reason` を確かめてから text ブロックを連結して JSON.parse し、zod で検証する。`zodOutputFormat` は zod v4 で動くが、`messages.parse` は stop_reason を見る前に全 text ブロックを解析して汎用の例外を投げるため、refusal や途中で切れた応答を区別できず使わない
+  - max_tokens は 16000（思考トークンを含む）、タイムアウトは再試行を含めた呼び出し全体で300秒、SDK の再試行（2回）は既定のまま。thinking は送らず既定の adaptive に任せ、effort は triage が low、analyze が medium。effort を受け付けない既知のモデル（3.x、Haiku 4.5、Sonnet 4 / 4.5、Opus 4 / 4.1）には effort を送らない
   - temperature、tool_choice、prefill は使わない
   - 応答の変換：refusal → refusal（stop_details.category をメッセージに入れる）、max_tokens / model_context_window_exceeded → max_tokens、text なし・JSON でない・スキーマ不一致 → invalid_output（失敗したパスだけを示し、値は出さない）
-  - 例外の変換：APIConnectionTimeoutError → timeout、APIConnectionError → transport、401 / 403 → auth、429 → rate_limit、5xx（529 を含む）→ transport、400 / 404 などその他 → unavailable。メッセージは SDK の文面を使わず、HTTP ステータス、モデル名、request-id で組み立てる。中断（APIUserAbortError）は LlmError にせず signal の reason を投げる
+  - 例外の変換：APIConnectionTimeoutError と全体のタイムアウト → timeout、APIConnectionError → transport、401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx（529 を含む）→ transport、400 / 404 などその他 → unavailable。認証情報が見つからない → auth、SDK が送信前に拒否した要求 → unavailable。メッセージは SDK の文面を使わず、HTTP ステータス、エラー種別、モデル名、request-id で組み立てる。API エラーの本文はリクエストの内容を含みうるので、SDK の例外を cause にも残さない（接続エラーは残す）。呼び出し側による中断（APIUserAbortError）は LlmError にせず signal の reason を投げる
 - **cli.ts**
   - `createCliLlm({ models, spawn?, command?, timeoutMs?, maxBytes? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_CLI_MODELS`（haiku / sonnet）。spawn は差し替えられ、テストは `tests/helpers/fakeSpawn.ts` を使う
   - 引数（`buildCliArgs`）：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --strict-mcp-config --model <m> --system-prompt <s>`。`--strict-mcp-config` は利用者の MCP サーバーを起動させないため

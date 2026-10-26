@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExitCode, exitCodeOf } from "../../src/errors.js";
@@ -22,7 +24,7 @@ const request: GenerateRequest<TriageOutput> = {
   tier: "triage",
 };
 
-function fakeClient(opts: { timeout?: number } = {}): Anthropic {
+function fakeClient(opts: { timeout?: number; maxRetries?: number } = {}): Anthropic {
   // The SDK resolves fetch when it sends, so the stub installed by mockFetch is the one called.
   return new Anthropic({ apiKey: "sk-ant-test", maxRetries: 0, fetch: (...args) => fetch(...args), ...opts });
 }
@@ -69,11 +71,14 @@ async function expectLlmError(promise: Promise<unknown>, kind: LlmErrorKind): Pr
   expect(e.kind).toBe(kind);
   expect(exitCodeOf(e)).toBe(ExitCode.LLM);
   expect(e.message).not.toContain(SECRET);
+  // The CLI prints the cause's message too.
+  expect(String(e.cause instanceof Error ? e.cause.message : e.cause)).not.toContain(SECRET);
   return e;
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("createApiLlm", () => {
@@ -115,6 +120,32 @@ describe("createApiLlm", () => {
       request,
     );
     expect(JSON.parse(fetchMock.callsTo(URL)[0]!.body!).model).toBe("my-triage");
+  });
+
+  it.each([
+    ["claude-haiku-4-5", false],
+    ["claude-sonnet-4-5-20250929", false],
+    ["claude-3-5-haiku-latest", false],
+    ["claude-opus-4-1", false],
+    ["claude-opus-4-5", true],
+    ["claude-sonnet-4-6", true],
+    ["claude-haiku-5-5", true],
+  ])("sends effort to %s: %s", async (model, sent) => {
+    const fetchMock = mockFetch({ [URL]: reply.json(message(JSON.stringify(ok))) });
+    await createApiLlm({ models: { triage: model, analyze: model }, client: fakeClient() }).generate(request);
+    const config = JSON.parse(fetchMock.callsTo(URL)[0]!.body!).output_config;
+    expect(config).toHaveProperty("format");
+    expect("effort" in config).toBe(sent);
+  });
+
+  it("joins the reply's text blocks before parsing", async () => {
+    const [head, tail] = [JSON.stringify(ok).slice(0, 10), JSON.stringify(ok).slice(10)];
+    const content = [
+      { type: "text", text: head },
+      { type: "text", text: tail },
+    ];
+    mockFetch({ [URL]: reply.json(message(null, { content })) });
+    await expect(llm().generate(request)).resolves.toEqual(ok);
   });
 
   it("turns a refusal into a refusal error with its category", async () => {
@@ -159,13 +190,17 @@ describe("createApiLlm", () => {
     [429, "rate_limit_error", "rate_limit"],
     [500, "api_error", "transport"],
     [529, "overloaded_error", "transport"],
+    [408, "timeout_error", "timeout"],
+    [409, "conflict_error", "transport"],
     [400, "invalid_request_error", "unavailable"],
     [404, "not_found_error", "unavailable"],
   ] as const)("turns HTTP %i into %s", async (status, type, kind) => {
     mockFetch({ [URL]: apiError(status, type) });
     const err = await expectLlmError(llm().generate(request), kind as LlmErrorKind);
     expect(err.message).toContain(`HTTP ${status}`);
+    expect(err.message).toContain(`HTTP ${status} ${type}`);
     expect(err.message).toContain("req_123");
+    expect(err.cause).toBeUndefined();
   });
 
   it("turns a network error into transport", async () => {
@@ -176,6 +211,28 @@ describe("createApiLlm", () => {
   it("turns a timeout into timeout", async () => {
     mockFetch({ [URL]: reply.hang() });
     await expectLlmError(llm(fakeClient({ timeout: 20 })).generate(request), "timeout");
+  });
+
+  it("bounds the whole call, retries included", async () => {
+    const fetchMock = mockFetch({ [URL]: reply.hang() });
+    const client = createApiLlm({
+      models: DEFAULT_API_MODELS,
+      client: fakeClient({ timeout: 30, maxRetries: 2 }),
+      timeoutMs: 50,
+    });
+    await expectLlmError(client.generate(request), "timeout");
+    expect(fetchMock.callsTo(URL).length).toBeLessThan(3);
+  });
+
+  it("turns missing credentials into auth", async () => {
+    // Keeps the SDK from finding a key or an `ant auth login` profile on this machine.
+    for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID"]) {
+      vi.stubEnv(name, undefined);
+    }
+    vi.stubEnv("ANTHROPIC_CONFIG_DIR", join(tmpdir(), "pochi-no-anthropic-config"));
+    mockFetch({ [URL]: reply.json(message(JSON.stringify(ok))) });
+    const client = new Anthropic({ apiKey: null, authToken: null, maxRetries: 0, fetch: (...args) => fetch(...args) });
+    await expectLlmError(llm(client).generate(request), "auth");
   });
 
   it("rethrows the abort reason instead of an LlmError", async () => {
