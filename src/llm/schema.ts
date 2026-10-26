@@ -73,6 +73,12 @@ export type StatusKind = Extract<
   "auth" | "rate_limit" | "timeout" | "transport" | "unavailable" | "too_large" | "bad_request"
 >;
 
+/**
+ * The error text for an input over the context window, from the API (a 400 body) and from claude
+ * (its result, with or without a status). Only matched, never quoted: it is the response body.
+ */
+export const PROMPT_TOO_LONG = /prompt is too long/i;
+
 /** The kind for an HTTP status from the Anthropic API, in both modes. */
 export function statusKind(status: number | undefined): StatusKind {
   if (status === 401 || status === 403) return "auth";

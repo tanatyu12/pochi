@@ -134,14 +134,14 @@ describe("createCliLlm", () => {
     expect(args[args.indexOf("--model") + 1]).toBe(model);
   });
 
-  it("keeps ANTHROPIC_AUTH_TOKEN for a gateway set in ANTHROPIC_BASE_URL, but never the API key", async () => {
+  it("keeps ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN for a gateway set in ANTHROPIC_BASE_URL", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-from-env");
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "token-from-env");
     vi.stubEnv("ANTHROPIC_BASE_URL", "https://proxy.example.com");
     const { spawn, calls } = fakeSpawn(run.fixture("structured.json"));
     await llm(spawn).generate(request);
-    expect(calls[0]?.options.env).not.toHaveProperty("ANTHROPIC_API_KEY");
     expect(calls[0]?.options.env).toMatchObject({
+      ANTHROPIC_API_KEY: "sk-ant-from-env",
       ANTHROPIC_AUTH_TOKEN: "token-from-env",
       ANTHROPIC_BASE_URL: "https://proxy.example.com",
     });

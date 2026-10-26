@@ -134,7 +134,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 ```
 
 - キーは記事の `stateKeys(item)`（id と urlKey）。どれか1つでも entries にあれば既知とみなし、l の更新や状態の記録は全キーに対して行う。id だけで引くと、収集時に URL の重複として落とした側や、別の日に別のソースから来た同じページが再通知される
-- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
+- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
 - f は初めて見た日、l は最後にフィード上で見た日
 - 古いエントリは l を基準に ttlDays で削除する。更新の止まったブログの記事はフィードに残り続けるため、通知日を基準にすると期限後に再通知されてしまう
 - キーはソートし、1エントリ1行で書く（毎日のコミットの差分を変わったエントリだけにするため）。一時ファイルに書いてから rename する
@@ -236,7 +236,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - provider が auto のとき：ANTHROPIC_API_KEY（前後の空白を除いて判定し、空白だけは未設定扱い。APIモードではこの除いた値を SDK に `apiKey` として渡すので、判定と送るキーが食い違わない）があれば APIモード、なければ `claude --version` が成功するとき CLIモード。どちらも使えなければ unavailable（Windows は CLIモード非対応で、claude を起動しない）
   - provider が api でキーがなければ auth。provider が cli ならキーがあっても CLIモードとし、Windows や `claude --version` の失敗は unavailable
   - モデル名は triageModel / analyzeModel、なければモードの既定（`DEFAULT_API_MODELS` / `DEFAULT_CLI_MODELS`）
-  - CLIモードの claude（`claude --version` を含む）には ANTHROPIC_API_KEY を除いた環境変数（`cliEnv`）を渡す。キーがあると claude はログインではなくキーで動き、API の従量課金になるため。ANTHROPIC_AUTH_TOKEN も除くが、ANTHROPIC_BASE_URL が空でないときは残す（ゲートウェイや LiteLLM 経由の構成では、トークンが claude の認証そのもの）。Bedrock / Vertex の設定や ANTHROPIC_BASE_URL は、利用者が claude 用に設定したものとして残す
+  - CLIモードの claude（`claude --version` を含む）には ANTHROPIC_API_KEY と ANTHROPIC_AUTH_TOKEN を除いた環境変数（`cliEnv`）を渡す。どちらかがあると claude はログインではなくそれで動き、API の従量課金になるため。ただし ANTHROPIC_BASE_URL が空でないとき（ゲートウェイや LiteLLM 経由の構成）は何も除かない。claude はキーかトークンでゲートウェイに認証するため。Bedrock / Vertex の設定は、利用者が claude 用に設定したものとして常に残す
   - `claude --version` は cli.ts の `runClaude` で実行する（専用の一時ディレクトリを cwd とし、shell: false。10秒でタイムアウトし、SIGINT、5秒後に SIGKILL。中断は signal の reason、なければ AbortError）。終了コード0で何か出力したときだけ成功とし、その1行目（200字まで）を `cliVersion` として doctor に渡す
 - **api.ts**
   - `createApiLlm({ models, apiKey?, client? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
@@ -265,14 +265,16 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - maxItemsPerRun は pretriaged と新しい記事を合わせた上限。先に pretriaged を、残りの枠に新しい記事を、それぞれ日付の新しい順（日付なしは後ろ）に採る。あふれた pretriaged は pending（r のまま）、あふれた新しい記事は未決とする
   - Triage は maxItemsPerCall（既定40）件ずつ、関連する記事と pretriaged を Analyze に15件ずつ渡す。どちらも0件なら LLM を呼ばない。バッチは1つずつ順に送る（同時に送ると、止める判定や連続失敗の数え方が実行順に左右されるため）。止まった後や中断の後は、残りのバッチを送らない
   - 回答の ID はバッチ内の短縮 ID で記事に戻す。未知の ID は破棄し、同じ ID は最初の回答だけを使う。回答のない記事は、Triage なら未決、Analyze なら pending。バッチの記事のどれにも合う ID がない回答は invalid_output として扱う。Analyze の title が空なら記事のタイトルで補う
-  - 一時的な失敗（rate_limit / timeout / transport）のバッチは `RETRY_DELAY_MS`（10秒）待ってから1回再試行する（SDK と claude は自前で再試行済みなので、間を空けないと同じ制限に当たる）。再試行しても rate_limit なら、制限はすぐには解けない（CLIモードではサブスクリプションの利用上限）ので、auth と同じく以降を止める。timeout / transport は、再試行しても失敗したバッチが回答を挟まず2つ続いたら止める（`MAX_TRANSIENT_FAILURES`。原因不明の claude のエラーが続く場合もここで止まる）
-  - バッチの中身が原因の失敗（max_tokens / refusal / invalid_output / too_large / bad_request）は同じまま再送せず、二分探索で原因を探す。半分ずつ順に1回送り、片方だけが中身の原因で失敗したらその側をさらに分ける。1件まで絞れて、もう片方が回答を得ていれば、その1件をもう一度だけ送る（たまたまの失敗で記事を永久に捨てないため）。また中身の原因で失敗したら、その記事が原因とみなして irrelevant（状態 i）にし、warn を出す（`stats.dropped`）。両方の半分が失敗したら特定の記事のせいではない（モデルの出力が長すぎるなど）とみなして分けるのをやめ、記事を未決（Analyze なら pending）にする。両方の半分が bad_request なら、リクエストの組み立てや設定の誤りとみなして以降を止める。最初から1件のバッチは分けず、i にもしない。原因が1件なら呼び出しは約 2 + 2·log₂n 回（確かめの1回を含む）、特定の記事でなければ3回で止まる。既知の制限：同じバッチに原因の記事が2件あると両方の半分が失敗するため絞り込めず、翌日も同じ結果になりうる
-  - stats の失敗数は、分けた分も含めて1件も回答を得られなかった元のバッチだけを数える
+  - 一時的な失敗（rate_limit / timeout / transport）のバッチは `RETRY_DELAY_MS`（10秒）待ってから1回再試行する（SDK と claude は自前で再試行済みなので、間を空けないと同じ制限に当たる）。再試行しても rate_limit なら、制限はすぐには解けない（CLIモードではサブスクリプションの利用上限）ので、auth と同じく以降を止める
+  - 再試行や分割をしても1件も回答を得られなかったバッチが2つ続いたら、以降を止める（`MAX_FAILED_IN_A_ROW`）。続く timeout・transport（原因不明の claude のエラーを含む）、設定の誤りによる bad_request などがここで止まる。回答を得たバッチ（i にした記事があるバッチを含む）を挟めば数え直す
+  - バッチの中身が原因の失敗（max_tokens / refusal / invalid_output / too_large / bad_request）は同じまま再送せず、二分探索で原因を探す。半分ずつ順に1回送り、中身の原因で失敗した側をさらに分ける。両方の半分が失敗したら、大きさが原因（too_large / max_tokens）なら両方とも分け続け、それ以外は特定の記事のせいではない（モデルの出力の問題など）とみなして分けるのをやめ、記事を未決（Analyze なら pending）にする。1つの元のバッチで分割に使う呼び出しは `2 + 4·⌈log₂n⌉` 回まで（40件なら26回）で、使い切ったら残りを未決にする
+  - 1件の記事が中身の原因で失敗したとき（分割の結果でも、最初から1件のバッチでも）、この実行で既に何かが回答を得ていれば、その記事をもう一度だけ送る（たまたまの失敗で記事を永久に捨てないため）。また中身の原因で失敗したら、その記事が原因とみなして irrelevant（状態 i）にし、warn を出す（`stats.dropped`）。まだ何も回答を得ていなければ、モデルや設定の問題でありうるので未決にする。原因が1件なら呼び出しは約 2 + 2·log₂n 回。既知の制限：大きさ以外の原因の記事が同じバッチの両方の半分にあると絞り込めず、翌日も同じ結果になりうる
+  - stats の失敗数は、分けた分も含めて1件も回答を得られなかった（i にした記事もない）、送ったバッチだけを数える。止まった後や中断の後に飛ばしたバッチは数えない
   - auth と unavailable は再試行せず、以降のバッチ（Analyze を含む）も呼ばずに未決（Analyze なら pending）とする。LlmError 以外の例外はそのまま投げる
-  - 中断（signal）は再試行せず、例外も投げない。それまでの判定を返し、送れなかったバッチは未決（Analyze なら pending）、`aborted: true` とする。中断の後は error を入れない（Slack 送信の `aborted` と同じ作り）
+  - 中断（signal）は再試行せず、例外も投げない。各バッチを送る前に signal を確かめ、中断されていれば送らない。それまでの判定を返し、送れなかったバッチは未決（Analyze なら pending）、`aborted: true` とする。中断の後は error を入れない（Slack 送信の `aborted` と同じ作り）
   - minImpact 未満の記事は状態 i として記録し、通知しない
   - 並び順は影響度（High → Low）、同じ影響度なら日付の新しい順（日付なしは後ろ）
-  - 例外は投げずに `error`（LlmError、終了コード3）を入れて返す場合：Triage か Analyze のどちらかで、その段の全バッチが失敗したとき（kind は最後の失敗のもの）。または、auth / unavailable / 続く rate_limit / 続く timeout・transport / 両方の半分の bad_request で途中から止まったとき（メッセージは "stopped after: …"）。error があっても insights は有効なので、呼び出し側は通知し、irrelevant を状態 i、pending を状態 r に記録し（課金済みの判定を捨てない）、それから error を投げる。関連する記事が0件で Analyze のバッチがない場合は失敗としない
+  - 例外は投げずに `error`（LlmError、終了コード3）を入れて返す場合：Triage か Analyze のどちらかで、送った全バッチが失敗し、飛ばしたバッチがないとき（"<段>: all N batches failed"。kind は最後の失敗のもの）。または、auth / unavailable / 続く rate_limit / 回答のないバッチが2つ続いたことで途中から止まったとき（"stopped after: …"）。error があっても insights は有効なので、呼び出し側は通知し、irrelevant を状態 i、pending を状態 r に記録し（課金済みの判定を捨てない）、それから error を投げる。関連する記事が0件で Analyze のバッチがない場合は失敗としない
 
 ### 通知とコマンド
 

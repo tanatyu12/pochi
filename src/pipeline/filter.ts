@@ -21,8 +21,10 @@ const SPLIT_KINDS: ReadonlySet<LlmErrorKind> = new Set([
 ]);
 // The SDK and claude have already retried with their own backoff; this gives a limit time to pass.
 export const RETRY_DELAY_MS = 10_000;
-// Batches in a row that still failed with timeout or transport after their retry; then the run stops.
-const MAX_TRANSIENT_FAILURES = 2;
+// Too large for the context window or the output limit: halves can get through even when both failed.
+const SIZE_KINDS: ReadonlySet<LlmErrorKind> = new Set(["too_large", "max_tokens"]);
+// Batches in a row that got no answer at all (after retries and splitting); then the run stops.
+const MAX_FAILED_IN_A_ROW = 2;
 
 export interface FilterResult {
   /** To notify: by impact (High first), then newest first. */
@@ -48,8 +50,8 @@ export interface FilterResult {
     dropped: number;
   };
   /**
-   * Set when every batch of a stage failed, or when an error stopped the run (auth, unavailable, a
-   * lasting rate_limit, timeouts in a row, or a bad_request that is not one item's). The caller
+   * Set when every batch a stage sent failed, or when an error stopped the run (auth, unavailable, a
+   * lasting rate_limit, or two batches in a row without any answer). The caller
    * still notifies insights and records them, irrelevant and pending (those answers are paid for),
    * then throws this (exit 3).
    */
@@ -63,8 +65,9 @@ export interface FilterResult {
 
 /**
  * Triage in batches of maxItemsPerCall, then Analyze the relevant items, and the pretriaged ones
- * (state r), in batches of ANALYZE_BATCH_SIZE, one batch at a time. A batch that fails transiently is retried once after retryDelayMs; one that fails because of its content is
- * split to find the item causing it. Throws only errors that are not LlmErrors.
+ * (state r), in batches of ANALYZE_BATCH_SIZE, one batch at a time. A batch that fails transiently
+ * is retried once after retryDelayMs; one that fails because of its content is split to find the
+ * item causing it. Throws only errors that are not LlmErrors.
  */
 export async function filterAndAnalyze(
   llm: LlmClient,
@@ -105,7 +108,8 @@ export async function filterAndAnalyze(
     retryDelayMs,
     dropped: result.irrelevant,
     aborted: false,
-    transientFailures: 0,
+    answered: false,
+    failedInARow: 0,
   };
   const relevant: Item[] = [...analyzeFirst];
   const triage = await runStage(
@@ -191,18 +195,20 @@ interface StageRun {
   dropped: Item[];
   /**
    * Set by an error every later call would share (see FilterResult.error); every batch not yet
-   * started is skipped, in both stages.
+   * sent is skipped, in both stages.
    */
   fatal?: LlmError;
-  /** The signal aborted; batches not yet started are skipped the same way. */
+  /** The signal aborted before work was done; the rest is skipped the same way. */
   aborted: boolean;
-  /** Batches that failed transiently, after their retry, since the last answer. */
-  transientFailures: number;
+  /** Some call in this run got an answer, so the model and the request format work. */
+  answered: boolean;
+  /** Batches in a row that got no answer at all. */
+  failedInARow: number;
 }
 
 interface StageOutcome {
   batches: number;
-  /** Batches that got no answer at all, not even for one of their halves. */
+  /** Batches sent that got no answer at all, not even for a part; skipped batches are not counted. */
   failed: number;
   dropped: number;
   last?: LlmError;
@@ -212,11 +218,15 @@ interface StageOutcome {
 type Attempt = LlmError | "stopped" | undefined;
 
 const onContent = (a: Attempt): boolean => a instanceof LlmError && SPLIT_KINDS.has(a.kind);
+const onSize = (a: Attempt): boolean => a instanceof LlmError && SIZE_KINDS.has(a.kind);
+
+// Extra calls splitting one batch may make: enough to find one item, not to send every item alone.
+const splitBudget = (size: number) => 2 + 4 * Math.ceil(Math.log2(size));
 
 /**
- * Runs the batches one after another; items without an answer go to leftover. apply
- * takes a reply and returns the items it had no answer for. A reply answering none of them counts
- * as invalid output.
+ * Runs the batches one after another; items without an answer go to leftover. apply takes a
+ * reply and returns the items it had no answer for. A reply answering none of them counts as
+ * invalid output.
  */
 async function runStage<T>(
   run: StageRun,
@@ -233,8 +243,8 @@ async function runStage<T>(
    * is left to the caller; any other failure, or a skip after a stop or an abort, goes to leftover.
    */
   const attempt = async (batch: Item[], label: string): Promise<Attempt> => {
+    if (run.signal?.aborted) run.aborted = true;
     if (run.fatal || run.aborted) {
-      if (run.fatal) outcome.last = run.fatal;
       leftover.push(...batch);
       return "stopped";
     }
@@ -244,7 +254,7 @@ async function runStage<T>(
       const unanswered = apply(batch, reply);
       if (unanswered.length < batch.length) {
         leftover.push(...unanswered);
-        run.transientFailures = 0;
+        run.answered = true;
         return undefined;
       }
       // apply recorded nothing, so the batch can be split like any other content failure.
@@ -263,74 +273,82 @@ async function runStage<T>(
     if (onContent(err)) return err;
     // A rate_limit here has already been retried once, so the limit is not about to lift.
     if (FATAL_KINDS.has(err.kind) || err.kind === "rate_limit") run.fatal ??= err;
-    else if (++run.transientFailures >= MAX_TRANSIENT_FAILURES) run.fatal ??= err;
     leftover.push(...batch);
     log.warn(`${label} failed; its ${batch.length} items wait for the next run`, err);
     return err;
   };
 
   /**
-   * Sends both halves of a batch that failed because of its content, one after the other, and
-   * whether any item got an answer. When only one half fails that way, the cause is in it, so it
-   * is split again; a last single item is sent once more and, failing again, goes to dropped. When
-   * both halves fail, the cause is not one item (a model that writes too much, say), so splitting
-   * stops; for bad_request that means the request itself is wrong, which stops the run.
+   * One item that failed because of its content. Once something in this run has been answered, the
+   * item rather than the model is the likely cause: it is sent once more, so one unlucky reply does
+   * not keep it from ever being judged, and failing again it goes to dropped. Whether it was settled.
    */
-  const bisect = async (batch: Item[], label: string): Promise<boolean> => {
+  const single = async (item: Item, label: string, budget: { calls: number }): Promise<boolean> => {
+    if (!run.answered || budget.calls < 1) {
+      leftover.push(item);
+      log.warn(`${label} failed; its item waits for the next run`);
+      return false;
+    }
+    budget.calls--;
+    const again = await attempt([item], `${label}, again`);
+    if (again === undefined) return true;
+    if (!onContent(again)) return false;
+    run.dropped.push(item);
+    outcome.dropped++;
+    log.warn(`${label}: ${item.sourceId}/${item.id} alone makes the request fail; recorded as irrelevant`, again);
+    return true;
+  };
+
+  /**
+   * Sends both halves of a batch that failed because of its content, and whether any item was
+   * settled. A half that fails that way is split again, down to single items. When both halves
+   * fail, the cause is not one item (a model that writes too much, say), so splitting stops, unless
+   * both failed for size: then smaller parts can still get through. budget bounds the calls.
+   */
+  const bisect = async (batch: Item[], label: string, budget: { calls: number }): Promise<boolean> => {
+    if (budget.calls < 2) {
+      leftover.push(...batch);
+      log.warn(`${label}: gave up splitting; its ${batch.length} items wait for the next run`);
+      return false;
+    }
+    budget.calls -= 2;
     log.debug(`${label} failed because of its content; sending its ${batch.length} items in halves`);
     const middle = Math.ceil(batch.length / 2);
     const halves = [batch.slice(0, middle), batch.slice(middle)];
     const attempts: Attempt[] = [];
     for (const [i, half] of halves.entries()) attempts.push(await attempt(half, `${label} (part ${i + 1})`));
-    const answered = attempts.some((a) => a === undefined);
+    let settled = attempts.some((a) => a === undefined);
     const failing = halves.filter((_, i) => onContent(attempts[i]));
-    if (failing.length === 0) return answered;
-    if (failing.length === 2) {
+    if (failing.length === 2 && !attempts.every(onSize)) {
       for (const half of failing) leftover.push(...half);
-      const [a, b] = attempts as [LlmError, LlmError];
-      if (a.kind === "bad_request" && b.kind === "bad_request") {
-        run.fatal ??= a;
-        log.warn(`${label}: every part was rejected as invalid, so the request itself is wrong; stopping`, a);
-      } else {
-        log.warn(
-          `${label}: both halves failed, so no one item is the cause; its ${batch.length} items wait for the next run`,
-        );
-      }
-      return answered;
+      log.warn(`${label}: both halves failed, so no one item is the cause; its ${batch.length} items wait for the next run`);
+      return settled;
     }
-    const half = failing[0]!;
-    const part = `${label} (part ${halves.indexOf(half) + 1})`;
-    if (half.length > 1) return (await bisect(half, part)) || answered;
-    // Only an answered other half shows that this item, not the model, is the cause.
-    const item = half[0]!;
-    if (!answered) {
-      leftover.push(item);
-      return false;
+    for (const half of failing) {
+      const part = `${label} (part ${halves.indexOf(half) + 1})`;
+      const done = half.length > 1 ? await bisect(half, part, budget) : await single(half[0]!, part, budget);
+      settled ||= done;
     }
-    // Once more, so one unlucky reply does not keep the item from ever being judged.
-    const again = await attempt(half, `${part}, again`);
-    if (again === undefined) return true;
-    if (onContent(again)) {
-      run.dropped.push(item);
-      outcome.dropped++;
-      log.warn(`${part}: ${item.sourceId}/${item.id} alone makes the request fail; recorded as irrelevant`, again);
-    }
-    return answered;
+    return settled;
   };
 
   for (const [n, batch] of batches.entries()) {
     const label = `${stage} batch ${n + 1}/${batches.length}`;
     const first = await attempt(batch, label);
-    if (first === undefined) continue;
+    // Skipped after a stop or an abort: not sent, so not a failure.
+    if (first === "stopped") continue;
+    let settled = first === undefined;
     if (onContent(first)) {
-      // A batch of one is not split: nothing shows that its item, rather than the model, is the cause.
-      if (batch.length > 1 && (await bisect(batch, label))) continue;
-      if (batch.length === 1) {
-        leftover.push(...batch);
-        log.warn(`${label} failed; its item waits for the next run`, first);
-      }
+      const budget = { calls: splitBudget(batch.length) };
+      settled = batch.length > 1 ? await bisect(batch, label, budget) : await single(batch[0]!, label, budget);
+    }
+    if (settled) {
+      run.failedInARow = 0;
+      continue;
     }
     outcome.failed++;
+    // Two batches in a row with nothing answered: a lasting outage, or a request that is wrong.
+    if (++run.failedInARow >= MAX_FAILED_IN_A_ROW && outcome.last) run.fatal ??= outcome.last;
   }
   return outcome;
 }

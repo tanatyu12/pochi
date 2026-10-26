@@ -306,23 +306,52 @@ describe("filterAndAnalyze failures", () => {
   });
 
   it("stops splitting when both halves fail, since no one item is the cause", async () => {
-    const llm = fakeLlm({ triage: () => fail("max_tokens") });
+    const llm = fakeLlm({ triage: () => fail("refusal") });
     const result = await filterAndAnalyze(llm.client, makeContext(), items(40), NOW);
     expect(llm.of("triage")).toHaveLength(3);
     expect(result.undecided).toHaveLength(40);
     expect(result.irrelevant).toEqual([]);
     expect(result.stats).toMatchObject({ triageFailed: 1, dropped: 0 });
-    expect(result.error?.kind).toBe("max_tokens");
+    expect(result.error?.kind).toBe("refusal");
   });
 
-  it("does not drop an item when the other half did not answer either", async () => {
+  it.each(["too_large", "max_tokens"] as const)("keeps splitting both halves after %s, since smaller parts fit", async (kind) => {
+    const llm = fakeLlm({ triage: (call, n) => (call.ids.length > 2 ? fail(kind) : relevantAll(call, n)) });
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(8), NOW);
+    // 8, then 4 + 4 (both too large), then 2 + 2 for each.
+    expect(llm.of("triage").map((c) => c.ids.length)).toEqual([8, 4, 4, 2, 2, 2, 2]);
+    expect(result.undecided).toEqual([]);
+    expect(result.insights).toHaveLength(8);
+    expect(result.stats.triageFailed).toBe(0);
+  });
+
+  it("bounds the calls splitting one batch may make", async () => {
+    const llm = fakeLlm({ triage: () => fail("max_tokens") });
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(40), NOW);
+    // The first call, then at most 2 + 4·log2(40) more.
+    expect(llm.of("triage")).toHaveLength(1 + 2 + 4 * 6);
+    expect(result.undecided).toHaveLength(40);
+    expect(result.irrelevant).toEqual([]);
+  });
+
+  it("does not drop an item before anything in the run has been answered", async () => {
     const llm = fakeLlm({
-      analyze: (call) => (call.titles.includes("Title 1") ? fail("refusal") : fail("transport")),
+      triage: (call) => (call.titles.includes("Title 1") ? fail("refusal") : fail("transport")),
     });
     const result = await filterAndAnalyze(llm.client, makeContext(), items(2), NOW);
     expect(result.irrelevant).toEqual([]);
-    expect(titles(result.pending).sort()).toEqual(["Title 1", "Title 2"]);
+    expect(titles(result.undecided).sort()).toEqual(["Title 1", "Title 2"]);
     expect(result.stats.dropped).toBe(0);
+  });
+
+  it("drops a batch of one that keeps failing once the run has answers", async () => {
+    // Batch 1 (Title 1) answers; batch 2 holds only Title 2, which is always refused.
+    const llm = fakeLlm({ triage: (call, n) => (call.titles.includes("Title 2") ? fail("refusal") : relevantAll(call, n)) });
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 1 } }), items(2), NOW);
+    expect(llm.of("triage").map((c) => c.titles)).toEqual([["Title 1"], ["Title 2"], ["Title 2"]]);
+    expect(titles(result.irrelevant)).toEqual(["Title 2"]);
+    expect(result.stats).toMatchObject({ triageFailed: 0, dropped: 1 });
+    expect(result.error).toBeUndefined();
   });
 
   it("leaves analyze items pending when both halves fail", async () => {
@@ -400,7 +429,9 @@ describe("filterAndAnalyze failures", () => {
     const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(4), NOW);
     expect(titles(result.irrelevant)).toEqual(["Title 2"]);
     expect(result.error).toBeInstanceOf(LlmError);
-    expect(result.error?.message).toContain("analyze: the only batch failed");
+    // Analyze was never sent, so it did not fail: the run stopped.
+    expect(result.error?.message).toContain("stopped after");
+    expect(result.stats).toMatchObject({ analyzeBatches: 1, analyzeFailed: 0 });
   });
 
   it("returns exit 3 when every triage batch fails, without calling analyze", async () => {
@@ -496,11 +527,11 @@ describe("filterAndAnalyze failures", () => {
     expect(result.stats.dropped).toBe(0);
   });
 
-  it("stops the run when both halves are rejected as bad_request", async () => {
+  it("stops the run when every request is rejected as bad_request", async () => {
     const llm = fakeLlm({ triage: () => fail("bad_request") });
     const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 4 } }), items(12), NOW);
-    // Batch 1 and its two halves; batches 2 and 3 are skipped.
-    expect(llm.of("triage")).toHaveLength(3);
+    // Batches 1 and 2 with their two halves each; two batches in a row with no answer stop the run.
+    expect(llm.of("triage")).toHaveLength(6);
     expect(result.error?.kind).toBe("bad_request");
     expect(result.undecided).toHaveLength(12);
   });
@@ -531,6 +562,31 @@ describe("filterAndAnalyze failures", () => {
     expect(llm.of("triage")).toHaveLength(6);
     expect(result.stats.triageFailed).toBe(2);
     expect(result.error).toBeUndefined();
+  });
+
+  it("stops a run of single-item batches that are all rejected", async () => {
+    const llm = fakeLlm({ triage: () => fail("bad_request") });
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 1 } }), items(5), NOW);
+    expect(llm.of("triage")).toHaveLength(2);
+    expect(result.error?.kind).toBe("bad_request");
+    expect(result.undecided).toHaveLength(5);
+  });
+
+  it("does not send the next batch once the signal has aborted", async () => {
+    const controller = new AbortController();
+    const llm = fakeLlm({
+      triage: (call, n) => {
+        controller.abort(new Error("stop"));
+        return relevantAll(call, n);
+      },
+    });
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(4), {
+      signal: controller.signal,
+    });
+    expect(llm.calls).toHaveLength(1);
+    expect(result.aborted).toBe(true);
+    expect(titles(result.undecided)).toEqual(["Title 3", "Title 4"]);
+    expect(titles(result.pending)).toEqual(["Title 1", "Title 2"]);
   });
 
   it("does not catch errors that are not LlmErrors", async () => {

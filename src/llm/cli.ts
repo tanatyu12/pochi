@@ -10,6 +10,7 @@ import {
   type LlmClient,
   LlmError,
   type LlmTier,
+  PROMPT_TOO_LONG,
   type StatusKind,
   statusKind,
   toJsonSchema,
@@ -60,14 +61,15 @@ export function buildCliArgs(req: GenerateRequest<unknown>, model: string): stri
 }
 
 /**
- * The environment claude runs with. Without ANTHROPIC_API_KEY, and without ANTHROPIC_AUTH_TOKEN
- * unless ANTHROPIC_BASE_URL is set, so claude uses its own login rather than billing the API
- * account the user chose not to use. With a gateway (ANTHROPIC_BASE_URL), the token is how claude
- * signs in, so it stays, as do Bedrock and Vertex settings: those are set up for claude on purpose.
+ * The environment claude runs with. Without ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN, so claude
+ * uses its own login rather than billing the API account the user chose not to use. With a gateway
+ * (ANTHROPIC_BASE_URL), claude signs in to it with the key or the token, so nothing is removed.
+ * Bedrock and Vertex settings always stay: those are set up for claude on purpose.
  */
 export function cliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const { ANTHROPIC_API_KEY: _key, ANTHROPIC_AUTH_TOKEN: token, ...rest } = env;
-  return env.ANTHROPIC_BASE_URL?.trim() && token !== undefined ? { ...rest, ANTHROPIC_AUTH_TOKEN: token } : rest;
+  if (env.ANTHROPIC_BASE_URL?.trim()) return { ...env };
+  const { ANTHROPIC_API_KEY: _key, ANTHROPIC_AUTH_TOKEN: _token, ...rest } = env;
+  return rest;
 }
 
 /** The model names are already resolved (config over DEFAULT_CLI_MODELS) by the adapter. */
@@ -323,8 +325,6 @@ const STATUS_MESSAGES: Record<StatusKind, string> = {
 
 // claude's reply when it has no credentials at all. It sends no request, so there is no status.
 const NOT_LOGGED_IN = /not logged in|\/login\b/i;
-// claude's reply when the input is over the context window, with or without a status.
-const PROMPT_TOO_LONG = /prompt is too long/i;
 
 function errorFromEnvelope(envelope: Envelope, model: string): LlmError {
   // result is only matched here, never quoted.

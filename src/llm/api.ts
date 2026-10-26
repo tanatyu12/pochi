@@ -4,6 +4,7 @@ import {
   type LlmClient,
   LlmError,
   type LlmTier,
+  PROMPT_TOO_LONG,
   type StatusKind,
   statusKind,
   toJsonSchema,
@@ -101,9 +102,6 @@ const STATUS_MESSAGES: Record<StatusKind, string> = {
   too_large: "Anthropic API rejected the request as too large",
   bad_request: "Anthropic API rejected the request as invalid",
 };
-
-// The 400 for an input over the context window. Matched only, never quoted: the text is the body.
-const PROMPT_TOO_LONG = /prompt is too long/i;
 
 // Messages are built here rather than taken from the SDK. Its API error text carries the response
 // body, which can echo request fields, so API errors are not kept as the cause either (the CLI
