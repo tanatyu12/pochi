@@ -265,9 +265,12 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 ### 通知とコマンド
 
 - **notifiers/slack.ts**
-  - メッセージの構成：header ブロック、記事ごとの section（2900字まで）、最後に収集件数と失敗したソースを示す context ブロック
-  - 記事の表示：絵文字、[影響度]、<url|title>、要約、*Action:*、ソース名。mrkdwn の特殊文字をエスケープし、トップレベルの text も必ず付ける
-  - 送信：1メッセージにつき記事45件まで。間隔は1.1秒で、429 は最大3回、5xx は1回再試行する
+  - 入力は `Briefing`（project、date、`Finding[]`、収集件数、取得したソース数、失敗したソース名）。`Finding`（types.ts）は Item と LLM が書いた title / summary / impact / action で、pipeline/filter が返す
+  - `buildSlackMessages` は送るメッセージ（payload と含まれる記事の ID）を組み立てる純関数で、dry-run でも同じものを出力できる。`sendSlack` は送信し、`{ deliveredIds, sent, failures }` を返す。中断以外では例外を投げず、終了コード4の判定は commands/run が行う
+  - メッセージの構成：header ブロック（`Pochi · <project> · <date>`、150字まで、複数なら ` (1/3)`）、記事ごとの section（2900字まで）、最後に収集件数と失敗したソースを示す context ブロック（全メッセージに付ける。3000字まで）。1メッセージは最大47ブロックで、Slack の上限50に収まる
+  - 記事の表示：絵文字（High :red_circle: / Medium :large_orange_circle: / Low :large_blue_circle:）、[影響度]、<url|title>、要約、*Action:*（空なら省略）、ソース名。`& < >` をエスケープし（& を先に置換）、リンクのラベルの `|` は `｜`、URL の `|` は `%7C` にする。字数はエスケープ後に測ってエンティティの途中で切らず、要約から切り詰める（Action には少なくとも残りの半分を残す）
+  - トップレベルの text も必ず付ける（`Pochi: 12 updates for my-app (3 High)`）。記事が0件なら何も送らず、postWhenEmpty が true のときだけ「No relevant updates today.」を1通送る
+  - 送信：1メッセージにつき記事45件まで。間隔は1.1秒で、429 は Retry-After（30秒まで）に従って最大3回、5xx と通信エラーは1回再試行する。400 はそのメッセージだけの問題として次のメッセージに進み、それ以外の失敗（403 / 404 / 410、再試行し尽くした 429 と 5xx、通信エラー）では残りを送らない
   - 2xx が返ったメッセージに含まれる記事だけを通知済みにする
   - ラベルは英語固定、LLM が生成する文は language に従う
 - **commands/run.ts**
@@ -345,7 +348,7 @@ README に書く注意点：
 | T12 | M2 LLM | cli.ts と fakeSpawn（T11 と並行可） | T10 | 引数のスナップショット、stdin 経由、cwd が専用の一時ディレクトリ、shell なし、出力形式ごとのフィクスチャ、タイムアウト、10MB 上限。手元の claude で実際に1回呼ぶ | 完了 |
 | T13 | M2 LLM | adapter と pipeline/filter | T11, T12 | モード解決の全パターン、バッチ分割、短縮 ID の対応付け、一部失敗と全失敗、minImpact、並び順 | 未着手 |
 | T14 | M3 通知・状態 | state/store（M0 の直後から着手可） | T2 | 最終観測日を基準にした期限切れ削除、touch、壊れたファイルの退避、アトミックな書き込み、キーのソート | 未着手 |
-| T15 | M3 通知・状態 | notifiers/slack（M0 の直後から着手可） | T2 | エスケープ、100件を3メッセージに分割、ブロック数の上限、429 と 400 の扱い、一部成功時は届いた記事の ID だけを返す | 未着手 |
+| T15 | M3 通知・状態 | notifiers/slack（M0 の直後から着手可） | T2 | エスケープ、100件を3メッセージに分割、ブロック数の上限、429 と 400 の扱い、一部成功時は届いた記事の ID だけを返す | 完了 |
 | T16 | M3 通知・状態 | commands/run と各フラグ | T9, T13, T14, T15 | 正常系、dry-run、Slack 失敗で4、全ソース失敗で5、LLM なしなら取得前に3 | 未着手 |
 | T17 | M3 通知・状態 | commands/doctor（T16 と並行可） | T3, T9, T13 | 出力に秘密情報が含まれないことをテストで確認 | 未着手 |
 | T18 | M4 init | init の対話と設定の書き出し（プロンプト関数を差し替え可能にする） | T3 | 端末でなければ2、キャンセルなら130で何も書かない。書いた設定を読み戻せる。権限600、.gitignore | 未着手 |
