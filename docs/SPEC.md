@@ -211,7 +211,10 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   4. 候補は全件、実際に取得して解析できるか確かめる
 - **tavily.ts**
   - POST https://api.tavily.com/search に Bearer 認証で送る。条件は time_range: "week" と search_depth: "basic"
-  - TAVILY_API_KEY がなければ検索自体を行わない。401 は失敗とし、429 は1回だけ再試行する
+  - TAVILY_API_KEY がなければ検索自体を行わない（`tavilyApiKey()` で有無を確かめられる）。401 は「Tavily rejected TAVILY_API_KEY」の HttpError とし、429 は1回だけ再試行する。5xx は課金済みの可能性があるので再試行しない
+  - 本文は抽出済みの抜粋 `content` を使い、`include_raw_content` は使わない（ページ全体は雑音が多く大きい）
+  - 結果は Tavily の関連度順のまま、正規化 URL の重複と http(s) でない URL を除く。件数は maxResults で決まり、itemsPerFeed は適用しない。sourceName は検索語、日付は published_date（news のみ）
+  - JSON でない応答や形の違う応答は `FeedParseError` を投げる
 - **index.ts** `collectAll`
   - 同時実行は4件まで。ソースごとに try/catch し、失敗を記録して次に進む
   - id と正規化 URL で重複を除く
@@ -319,7 +322,7 @@ README に書く注意点：
 | T5 | M1 情報収集 | rss.ts（feedsmith）。最初に feedsmith の API をフィクスチャで確かめる | T2, T4 | RSS2、Atom、RDF、JSON Feed、BOM、壊れた XML のフィクスチャ | 完了 |
 | T6 | M1 情報収集 | github.ts | T5 | verifyRepo の4パターン、プレリリース判定を表形式でテスト | 完了 |
 | T7 | M1 情報収集 | discover.ts（T6・T8 と並行可） | T5 | 属性の順序、単引用符、大文字、base 要素、相対パス、代替パスを試す順序、URL 自体がフィードの場合 | 未着手 |
-| T8 | M1 情報収集 | tavily.ts（T6・T7 と並行可） | T2, T4 | リクエストの本文とヘッダーを検証。401 と 429 の扱い | 未着手 |
+| T8 | M1 情報収集 | tavily.ts（T6・T7 と並行可） | T2, T4 | リクエストの本文とヘッダーを検証。401 と 429 の扱い | 完了 |
 | T9 | M1 情報収集 | 収集の統合（sources/index） | T3, T5, T6, T8 | 3件中1件が失敗しても続行する、重複排除、キーがなければ Tavily を使わない、同時実行は4件まで | 未着手 |
 | T10 | M2 LLM | llm/schema と prompts | T3 | JSON Schema のスナップショット。記事に紛れ込ませた閉じタグで囲みを抜けられない | 未着手 |
 | T11 | M2 LLM | api.ts（T12 と並行可）。最初に zodOutputFormat が zod v4 で動くか確かめる | T10 | 偽クライアントで成功・null・refusal・max_tokens・エラー変換を確認。リクエストに temperature と tool_choice が含まれない | 未着手 |
