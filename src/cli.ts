@@ -1,14 +1,22 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
+import { runInit } from "./commands/init.js";
+import { DEFAULT_CONFIG_DIR } from "./config/load.js";
 import { ExitCode, PochiError, exitCodeOf } from "./errors.js";
 import { VERSION } from "./version.js";
 
 export function createProgram(): Command {
-  return new Command()
+  const program = new Command()
     .name("pochi")
     .description("Daily tech briefing for your project, delivered to Slack")
     .version(VERSION);
+  program
+    .command("init")
+    .description("Create config/context.yml and config/sources.yml interactively")
+    .option("--config-dir <dir>", "directory to write the config to", DEFAULT_CONFIG_DIR)
+    .action((opts: { configDir: string }) => runInit({ configDir: opts.configDir }));
+  return program;
 }
 
 export async function main(argv: readonly string[] = process.argv): Promise<number> {

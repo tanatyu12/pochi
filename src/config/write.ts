@@ -28,10 +28,7 @@ export async function writeConfig(
   const contextPath = join(dir, "context.yml");
   const sourcesPath = join(dir, "sources.yml");
   if (!options.overwrite) {
-    const existing = [];
-    for (const path of [contextPath, sourcesPath]) {
-      if (await exists(path)) existing.push(path);
-    }
+    const existing = await existingConfig(dir);
     if (existing.length > 0) {
       throw new ConfigError(`refusing to overwrite existing config: ${existing.join(", ")}`);
     }
@@ -63,6 +60,15 @@ export async function writeConfig(
     throw new ConfigError(`cannot write ${current}`, { cause: err });
   }
   return { contextPath, sourcesPath };
+}
+
+/** Paths of the config files already present in dir. */
+export async function existingConfig(dir: string): Promise<string[]> {
+  const existing = [];
+  for (const path of [join(dir, "context.yml"), join(dir, "sources.yml")]) {
+    if (await exists(path)) existing.push(path);
+  }
+  return existing;
 }
 
 async function exists(path: string): Promise<boolean> {
