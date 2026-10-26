@@ -234,8 +234,12 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - なければ `claude --version` が成功するとき CLIモード
   - どちらも使えなければ unavailable エラー（Windows は CLIモード非対応）
 - **api.ts**
-  - `messages.parse` と `zodOutputFormat` を使う。zod v4 で動かない場合は JSON Schema を直接渡す
-  - temperature、tool_choice、prefill は使わない。refusal / max_tokens / parsed_output が null / SDK の例外は、それぞれ LlmError の種類に変換する
+  - `createApiLlm({ models, client? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
+  - `messages.create` に `output_config.format`（`toJsonSchema` の JSON Schema。CLI と同じもの）を渡し、`stop_reason` を確かめてから text ブロックを JSON.parse して zod で検証する。`zodOutputFormat` は zod v4 で動くが、`messages.parse` は stop_reason を見る前に全 text ブロックを解析して汎用の例外を投げるため、refusal や途中で切れた応答を区別できず使わない
+  - max_tokens は 16000（思考トークンを含む）、タイムアウトは300秒、SDK の再試行（2回）は既定のまま。thinking は送らず既定の adaptive に任せ、effort は triage が low、analyze が medium
+  - temperature、tool_choice、prefill は使わない
+  - 応答の変換：refusal → refusal（stop_details.category をメッセージに入れる）、max_tokens / model_context_window_exceeded → max_tokens、text なし・JSON でない・スキーマ不一致 → invalid_output（失敗したパスだけを示し、値は出さない）
+  - 例外の変換：APIConnectionTimeoutError → timeout、APIConnectionError → transport、401 / 403 → auth、429 → rate_limit、5xx（529 を含む）→ transport、400 / 404 などその他 → unavailable。メッセージは SDK の文面を使わず、HTTP ステータス、モデル名、request-id で組み立てる。中断（APIUserAbortError）は LlmError にせず signal の reason を投げる
 - **cli.ts**
   - 引数：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --model <m> --system-prompt <s>`
   - プロンプトは stdin で渡し、shell: false、cwd は tmpdir（プロジェクトの .claude を読ませないため）
@@ -335,7 +339,7 @@ README に書く注意点：
 | T8 | M1 情報収集 | tavily.ts（T6・T7 と並行可） | T2, T4 | リクエストの本文とヘッダーを検証。401 と 429 の扱い | 完了 |
 | T9 | M1 情報収集 | 収集の統合（sources/index） | T3, T5, T6, T8 | 3件中1件が失敗しても続行する、重複排除、キーがなければ Tavily を使わない、同時実行は4件まで | 完了 |
 | T10 | M2 LLM | llm/schema と prompts | T3 | JSON Schema のスナップショット。記事に紛れ込ませた閉じタグで囲みを抜けられない | 完了 |
-| T11 | M2 LLM | api.ts（T12 と並行可）。最初に zodOutputFormat が zod v4 で動くか確かめる | T10 | 偽クライアントで成功・null・refusal・max_tokens・エラー変換を確認。リクエストに temperature と tool_choice が含まれない | 未着手 |
+| T11 | M2 LLM | api.ts（T12 と並行可）。最初に zodOutputFormat が zod v4 で動くか確かめる | T10 | 偽クライアントで成功・null・refusal・max_tokens・エラー変換を確認。リクエストに temperature と tool_choice が含まれない | 完了 |
 | T12 | M2 LLM | cli.ts と fakeSpawn（T11 と並行可） | T10 | 引数のスナップショット、stdin 経由、cwd が tmpdir、shell なし、出力形式ごとのフィクスチャ、タイムアウト、10MB 上限。手元の claude で実際に1回呼ぶ | 未着手 |
 | T13 | M2 LLM | adapter と pipeline/filter | T11, T12 | モード解決の全パターン、バッチ分割、短縮 ID の対応付け、一部失敗と全失敗、minImpact、並び順 | 未着手 |
 | T14 | M3 通知・状態 | state/store（M0 の直後から着手可） | T2 | 最終観測日を基準にした期限切れ削除、touch、壊れたファイルの退避、アトミックな書き込み、キーのソート | 未着手 |
@@ -375,6 +379,6 @@ README に書く注意点：
 | リスク | 対応 |
 | --- | --- |
 | feedsmith が返すデータの形が想定と違う | T5 で確認済み。tests/sources/rss.test.ts の特性テストで形を固定した |
-| zodOutputFormat が zod v4 に対応していない | T11 の最初に確かめる。対応していなければ JSON Schema を直接渡す |
+| zodOutputFormat が zod v4 に対応していない | T11 で確認済み。zod v4 で動くが、messages.parse が stop_reason より先に解析するため、JSON Schema を直接渡して自前で検証する |
 | CLIモードで structured_output が返らないことがある | T12 で実機確認し、result を解析する代替経路も用意する |
 | 状態ファイルの push が競合する | concurrency と pull --rebase で防ぐ |
