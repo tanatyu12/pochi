@@ -18,6 +18,7 @@ describe("htmlToText", () => {
     ["<div><span></span></div>", ""],
     ["  plain   text\t here  ", "plain text here"],
     ["<p>a</p>\n\n\n<p>  b  </p>", "a\nb"],
+    ["<pre>a<br># b</pre>", "a\n# b"],
   ])("converts %j", (html, expected) => {
     expect(htmlToText(html, 1000)).toBe(expected);
   });
@@ -94,6 +95,7 @@ describe("htmlToText", () => {
     ["&copy; 2026", "© 2026"],
     ["if a < b and c > d", "if a < b and c > d"],
     ["x &#1;y\u0002z", "x yz"],
+    ["x &#2;w", "x w"],
   ])("decodes %j", (html, expected) => {
     expect(htmlToText(html, 1000)).toBe(expected);
   });
@@ -195,6 +197,41 @@ describe("htmlToText", () => {
       expect(text).not.toContain("fix 19");
     });
 
+    const intro = `<p>${"long intro text here. ".repeat(10)}</p>`;
+
+    it.each([
+      ["<h2>\n  Breaking\n</h2><p>y</p>", "\nBreaking\ny\n…"],
+      ["<h2>Big<br>Change</h2><p>y</p>", "\nBig Change\ny\n…"],
+      ["<h2>unclosed<p>y</p>", "\nunclosed\ny\n…"],
+    ])("finds the heading in %j", (html, tail) => {
+      const text = htmlToText(intro + html, 60);
+      expect(length(text)).toBeLessThanOrEqual(60);
+      expect(text.endsWith(tail)).toBe(true);
+    });
+
+    it.each([
+      "<h2> </h2><p>body</p>",
+      "<pre><code># install\nnpm i</code></pre><p>tail</p>",
+    ])("finds no heading in %j", (html) => {
+      expect(htmlToText(intro + html, 60)).toBe(truncate(htmlToText(intro + html, 10_000), 60));
+    });
+
+    it("still finds real headings after code", () => {
+      const text = htmlToText(`${intro}<pre># a</pre><h2>Real</h2><p>z</p>`, 60);
+      expect(text.endsWith("\nReal\nz\n…")).toBe(true);
+      expect(text).not.toContain("# a");
+    });
+
+    it("marks truncation even when the last kept line ends with an ellipsis", () => {
+      const html = [
+        "<h2>Intro</h2><p>first line</p>",
+        `<p>${"second line of intro. ".repeat(3)}</p>`,
+        "<h2>Next</h2><p>Stay tuned…</p>",
+        `<p>${"omitted tail paragraph. ".repeat(3)}</p>`,
+      ].join("");
+      expect(htmlToText(html, 50)).toBe("Intro\nfirst line\nNext\nStay tuned…\n…");
+    });
+
     it("cuts from the start when there are no headings", () => {
       const html = Array.from({ length: 50 }, (_, i) => `<p>paragraph ${i}</p>`).join("");
       expect(htmlToText(html, 100)).toBe(truncate(htmlToText(html, 10_000), 100));
@@ -204,8 +241,12 @@ describe("htmlToText", () => {
       expect(htmlToText("<h2>A</h2><p>b</p>", 100)).toBe("A\nb");
     });
 
-    it.each([40, 41, 57, 100, 333])("stays within %d characters", (max) => {
-      expect(length(htmlToText(release, max))).toBeLessThanOrEqual(max);
+    it("stays within every limit and marks the cut", () => {
+      for (let max = 40; max < 600; max++) {
+        const text = htmlToText(release, max);
+        expect(length(text)).toBeLessThanOrEqual(max);
+        expect(text.endsWith("…")).toBe(true);
+      }
     });
   });
 

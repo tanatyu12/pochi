@@ -1,8 +1,11 @@
 import { decodeHTML } from "entities";
 
-// Marks the start of a heading line between passes. Input control characters are stripped
-// first, so it can only come from us.
+// Mark heading lines and lines from <pre> between passes. Input control characters are
+// stripped first, so they can only come from us.
 const HEADING = "\u0001";
+const CODE = "\u0002";
+const MARKERS = /([\u0001\u0002])/;
+const MARKER_CHARS = /[\u0001\u0002]/g;
 const CONTROL_CHARS = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
 
 // Comments and the start and end tags of dropped elements, found in one left-to-right pass.
@@ -18,7 +21,11 @@ const RAW_TEXT_END: Record<string, RegExp> = {
 const COMMENT_END = /-->/g;
 // "/>" closes the tag unless the "/" belongs to an unquoted value (src=https://x/).
 const SELF_CLOSING = /(?<!=\s*[^\s"']*)\/$/;
+// Stops at the next <h…> or </h…>, so many unclosed headings stay linear.
+const HEADING_ELEMENT = /<h[1-6]\b[^>]*>((?:(?!<\/?h[1-6]\b)[\s\S])*)<\/h[1-6]\s*>/gi;
+// Fallback for headings without an end tag.
 const HEADING_OPEN = /<h[1-6]\b[^>]*>/gi;
+const PRE_ELEMENT = /<pre\b[^>]*>((?:(?!<\/?pre\b)[\s\S])*)<\/pre\s*>/gi;
 const BLOCK_TAG =
   /<\/?(?:p|div|br|li|dt|dd|tr|blockquote|pre|ul|ol|dl|table|section|article|main|figcaption|hr|h[1-6])\b[^>]*>/gi;
 const CELL_TAG = /<\/?t[dh]\b[^>]*>/gi;
@@ -52,15 +59,22 @@ export function truncate(text: string, maxChars: number): string {
 
 function toText(html: string): string {
   const stripped = dropHidden(html)
+    // One line per heading, even when pretty-printed across several.
+    .replace(HEADING_ELEMENT, (_, inner: string) => `\n${HEADING}${inner.replace(BLOCK_TAG, " ").replace(/\s+/g, " ")}\n`)
+    // Code comments such as "# install" are not Markdown headings.
+    .replace(PRE_ELEMENT, (_, inner: string) => {
+      const lines = inner.replace(BLOCK_TAG, "\n").split("\n");
+      return `\n${lines.map((l) => CODE + l).join("\n")}\n`;
+    })
     .replace(HEADING_OPEN, `\n${HEADING}`)
     .replace(BLOCK_TAG, "\n")
     .replace(CELL_TAG, " ")
     .replace(TAG, "");
   // Decode around the markers so "&#1;" cannot forge one.
   return stripped
-    .split(HEADING)
-    .map((part) => decodeHTML(part).replace(CONTROL_CHARS, ""))
-    .join(HEADING);
+    .split(MARKERS)
+    .map((part, i) => (i % 2 ? part : decodeHTML(part).replace(CONTROL_CHARS, "")))
+    .join("");
 }
 
 // Drops comments and dropped elements, counting nested elements of the same name. An
@@ -123,8 +137,8 @@ function toLines(text: string): Line[] {
   const lines: Line[] = [];
   for (const raw of text.split("\n")) {
     const collapsed = raw.replace(/[^\S\n]+/g, " ").trim();
-    const heading = collapsed.startsWith(HEADING) || MARKDOWN_HEADING.test(collapsed);
-    const line = collapsed.replaceAll(HEADING, "").trim();
+    const line = collapsed.replace(MARKER_CHARS, "").trim();
+    const heading = collapsed.includes(HEADING) || (!collapsed.includes(CODE) && MARKDOWN_HEADING.test(line));
     if (line === "" || isBoilerplate(line)) continue;
     lines.push({ text: line, heading });
   }
@@ -139,6 +153,7 @@ interface Ranked {
   text: string;
   len: number;
   pos: number;
+  cut?: boolean;
 }
 
 // Over budget, keep every heading, then the first line of every section, then the second,
@@ -171,11 +186,10 @@ function fitLines(lines: Line[], maxChars: number): string {
     used += cost;
   }
 
-  const out = picked
-    .sort((a, b) => a.pos - b.pos)
-    .map((p) => p.text)
-    .join("\n");
-  return out.endsWith("…") ? out : `${out}\n…`;
+  picked.sort((a, b) => a.pos - b.pos);
+  const out = picked.map((p) => p.text).join("\n");
+  // Lines were dropped to get here, so mark it unless the last line already shows a cut.
+  return picked.at(-1)?.cut ? out : `${out}\n…`;
 }
 
 // Splits the room evenly across the round's lines (earliest first), letting short lines
@@ -188,7 +202,7 @@ function shareRoom(round: Ranked[], room: number): Ranked[] {
     const share = Math.min(line.len + 1, Math.floor(left / (taken.length - i)));
     const text = truncate(line.text, share - 1);
     left -= codePoints(text) + 1;
-    return { ...line, text };
+    return { ...line, text, cut: text !== line.text };
   });
 }
 
