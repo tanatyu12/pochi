@@ -1,0 +1,54 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildSlackMessages > matches the payload for two findings 1`] = `
+[
+  {
+    "itemIds": [
+      "id1",
+      "id2",
+    ],
+    "payload": {
+      "blocks": [
+        {
+          "text": {
+            "emoji": true,
+            "text": "Pochi · my-app · 2026-10-26",
+            "type": "plain_text",
+          },
+          "type": "header",
+        },
+        {
+          "text": {
+            "text": ":red_circle: *[High]* <https://example.com/posts/1|Next.js 17 drops the pages router>
+Breaking.
+Migrate now.
+*Action:* Action 1
+_Next.js releases_",
+            "type": "mrkdwn",
+          },
+          "type": "section",
+        },
+        {
+          "text": {
+            "text": ":large_blue_circle: *[Low]* <https://example.com/posts/2|Release notes>
+Summary 2
+_Next.js releases_",
+            "type": "mrkdwn",
+          },
+          "type": "section",
+        },
+        {
+          "elements": [
+            {
+              "text": "Collected 120 items from 8 sources",
+              "type": "mrkdwn",
+            },
+          ],
+          "type": "context",
+        },
+      ],
+      "text": "Pochi: 2 updates for my-app (1 High)",
+    },
+  },
+]
+`;

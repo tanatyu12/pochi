@@ -1,3 +1,5 @@
+import type { Impact } from "./config/schema.js";
+
 export type SourceKind = "rss" | "github" | "tavily";
 
 /** A collected article, normalized across sources. */
@@ -17,4 +19,13 @@ export interface Item {
   publishedAt?: string;
   /** Plain text, at most maxContentChars. */
   content: string;
+}
+
+/** An item that passed Analyze, with the model's write-up (in the configured language). */
+export interface Finding {
+  item: Item;
+  title: string;
+  summary: string;
+  impact: Impact;
+  action: string;
 }
