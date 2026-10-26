@@ -215,9 +215,13 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 本文は抽出済みの抜粋 `content` を使い、`include_raw_content` は使わない（ページ全体は雑音が多く大きい）
   - 結果は Tavily の関連度順のまま、URL のない結果、正規化 URL の重複、http(s) でない URL を除く（1件の欠けで応答全体を失わないよう、url はスキーマ上 null を許す）。件数は maxResults で決まり、itemsPerFeed は適用しない。sourceName は検索語、日付は published_date（news のみ）
   - JSON でない応答や形の違う応答は `FeedParseError` を投げる（github.ts と共通の `sources/api.ts` の `parseApi`）
-- **index.ts** `collectAll`
-  - 同時実行は4件まで。ソースごとに try/catch し、失敗を記録して次に進む
-  - id と正規化 URL で重複を除く
+- **index.ts** `collectAll(sources, { signal?, concurrency? })` は `{ items, attempted, failures, skipped }` を返す
+  - 同時実行は4件まで。ソースごとに try/catch し、失敗（sourceId・sourceName・kind・error）を記録して warn を出し、次に進む。例外は投げない
+  - TAVILY_API_KEY がなければ queries を取得せず、`skipped` に id を入れて info を1回出す。スキップした分は `attempted` に数えない
+  - 結果は完了順ではなく設定の順（feeds → queries）に並べ、id と正規化 URL で重複を除く。先に出た記事（フィードの記事と Tavily の同じ URL ならフィード側）を残す
+  - signal で中断されたら失敗として記録せず、その reason を投げる（「全ソースの失敗」と区別するため）
+  - 終了コードは決めない。全ソースの失敗（5）の判定は commands/run が `attempted` と `failures` から行う
+  - `fetchSource` は1ソースを kind に応じて rss / github / tavily に振り分ける（doctor --fetch 向け）
 
 ### LLM（llm/, pipeline/）
 
@@ -323,7 +327,7 @@ README に書く注意点：
 | T6 | M1 情報収集 | github.ts | T5 | verifyRepo の4パターン、プレリリース判定を表形式でテスト | 完了 |
 | T7 | M1 情報収集 | discover.ts（T6・T8 と並行可） | T5 | 属性の順序、単引用符、大文字、base 要素、相対パス、代替パスを試す順序、URL 自体がフィードの場合 | 完了 |
 | T8 | M1 情報収集 | tavily.ts（T6・T7 と並行可） | T2, T4 | リクエストの本文とヘッダーを検証。401 と 429 の扱い | 完了 |
-| T9 | M1 情報収集 | 収集の統合（sources/index） | T3, T5, T6, T8 | 3件中1件が失敗しても続行する、重複排除、キーがなければ Tavily を使わない、同時実行は4件まで | 未着手 |
+| T9 | M1 情報収集 | 収集の統合（sources/index） | T3, T5, T6, T8 | 3件中1件が失敗しても続行する、重複排除、キーがなければ Tavily を使わない、同時実行は4件まで | 完了 |
 | T10 | M2 LLM | llm/schema と prompts | T3 | JSON Schema のスナップショット。記事に紛れ込ませた閉じタグで囲みを抜けられない | 未着手 |
 | T11 | M2 LLM | api.ts（T12 と並行可）。最初に zodOutputFormat が zod v4 で動くか確かめる | T10 | 偽クライアントで成功・null・refusal・max_tokens・エラー変換を確認。リクエストに temperature と tool_choice が含まれない | 未着手 |
 | T12 | M2 LLM | cli.ts と fakeSpawn（T11 と並行可） | T10 | 引数のスナップショット、stdin 経由、cwd が tmpdir、shell なし、出力形式ごとのフィクスチャ、タイムアウト、10MB 上限。手元の claude で実際に1回呼ぶ | 未着手 |
