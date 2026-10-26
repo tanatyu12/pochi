@@ -20,7 +20,7 @@ export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
     .command("init")
     .description("Create config/context.yml and config/sources.yml interactively")
     .option("--config-dir <dir>", "directory to write the config to", DEFAULT_CONFIG_DIR)
-    .action((o: { configDir: string }) => runInit({ configDir: o.configDir }));
+    .action((o: { configDir: string }) => runInit({ configDir: o.configDir }, { signal: opts.signal }));
   program
     .command("run")
     .description("Collect, filter and post today's briefing")

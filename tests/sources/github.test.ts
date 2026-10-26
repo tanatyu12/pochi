@@ -90,12 +90,21 @@ describe("verifyRepo", () => {
   const repo = "acme/widget";
   const tags = feedUrl(repo, "tags");
   const repoInfo = reply.json({ full_name: repo });
+  const latest = (tag: string, at: string, r = repo) =>
+    expect.objectContaining({ title: tag, url: `https://github.com/${r}/releases/tag/${tag}`, publishedAt: at, content: "" });
 
   it.each<[string, Record<string, Route>, Awaited<ReturnType<typeof verifyRepo>>]>([
     [
       "has releases",
-      { [api(repo)]: repoInfo, [releasesApi(repo)]: reply.json([release({ tag: "v1.0.0" }, repo)]) },
-      { status: "found", feed: "releases" },
+      {
+        [api(repo)]: repoInfo,
+        [releasesApi(repo)]: reply.json([
+          release({ tag: "v1.1.0-rc.1", prerelease: true, published: "2026-10-22T00:00:00Z" }, repo),
+          release({ tag: "v1.0.0" }, repo),
+        ]),
+      },
+      // The newest stable release, as a run without includePrereleases shows it.
+      { status: "found", feed: "releases", latest: latest("v1.0.0", "2026-10-20T00:00:00.000Z") },
     ],
     [
       "has only prereleases",
@@ -103,7 +112,12 @@ describe("verifyRepo", () => {
         [api(repo)]: repoInfo,
         [releasesApi(repo)]: reply.json([release({ tag: "v1.0.0-beta.2", prerelease: true }, repo)]),
       },
-      { status: "found", feed: "releases", onlyPrereleases: true },
+      {
+        status: "found",
+        feed: "releases",
+        onlyPrereleases: true,
+        latest: latest("v1.0.0-beta.2", "2026-10-20T00:00:00.000Z"),
+      },
     ],
     [
       "has only drafts and tags",
@@ -112,7 +126,21 @@ describe("verifyRepo", () => {
         [releasesApi(repo)]: reply.json([release({ tag: "v1.0.0", draft: true }, repo)]),
         [tags]: atom("github-tags.atom"),
       },
-      { status: "found", feed: "tags" },
+      { status: "found", feed: "tags", latest: latest("v1.9.0", "2026-10-20T12:00:00.000Z") },
+    ],
+    [
+      "has only prerelease tags",
+      {
+        [api(repo)]: repoInfo,
+        [releasesApi(repo)]: reply.json([]),
+        [tags]: atom("github-tags-prerelease.atom"),
+      },
+      {
+        status: "found",
+        feed: "tags",
+        onlyPrereleases: true,
+        latest: latest("v2.0.0-rc.1", "2026-10-24T12:00:00.000Z"),
+      },
     ],
     [
       "has neither",
@@ -138,7 +166,12 @@ describe("verifyRepo", () => {
       [api(repo)]: reply.redirect("https://api.github.com/repositories/42", JSON.stringify({ full_name: moved })),
       [releasesApi(moved)]: reply.json([release({ tag: "v1.0.0" }, moved)]),
     });
-    expect(await verifyRepo(repo)).toEqual({ status: "found", feed: "releases", movedTo: moved });
+    expect(await verifyRepo(repo)).toEqual({
+      status: "found",
+      feed: "releases",
+      movedTo: moved,
+      latest: latest("v1.0.0", "2026-10-20T00:00:00.000Z", moved),
+    });
     expect(fm.calls.map((c) => c.url)).toEqual([api(repo), releasesApi(moved)]);
   });
 
@@ -147,7 +180,8 @@ describe("verifyRepo", () => {
       [api("Acme/Widget")]: repoInfo,
       [releasesApi(repo)]: reply.json([release({ tag: "v1.0.0" }, repo)]),
     });
-    expect(await verifyRepo("Acme/Widget")).toEqual({ status: "found", feed: "releases" });
+    expect(await verifyRepo("Acme/Widget")).toMatchObject({ status: "found", feed: "releases" });
+    expect(await verifyRepo("Acme/Widget")).not.toHaveProperty("movedTo");
   });
 
   it("throws when the check itself fails", async () => {

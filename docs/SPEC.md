@@ -313,16 +313,17 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 終了コード：全項目を表示してから、最初の fail の区分で終える（設定・取得するソースがない 2、LLM 3、状態ファイル 1、`--fetch` で全ソースが失敗 5、中断 130）。一部のソースの失敗と warn は 0。最後の行は問題の件数に加え、一部のソースの失敗を「non-fatal failure」、warn を「warning」として別々に数える。中断はどの確認の最中でも 130 とし、最後の行は出さない
 - **commands/init.ts**（端末での対話が必要。Ctrl-C で終了コード130とし、何も書かない）
   - stdin と stdout のどちらかが端末でなければ、質問を出す前に、端末が必要なことと config/*.example.yml を複製するよう案内するメッセージを出して終了コード2にする（パイプや CI で最初の質問のまま止まらないようにする）
-  - 対話は `util/prompter.ts` の `Prompter`（text / select / confirm と表示系）を通し、テストでは回答を順に返す偽物（`tests/helpers/scriptedPrompter.ts`）に差し替える。clack のキャンセルはこの層で `PromptCancelled`（130）にする
+  - 対話は `util/prompter.ts` の `Prompter`（text / select / multiselect / confirm、表示系と spinner の `spin`）を通し、テストでは回答を順に返す偽物（`tests/helpers/scriptedPrompter.ts`）に差し替える。clack のキャンセルはこの層で `PromptCancelled`（130）にする
   - 既存の context.yml か sources.yml があれば、質問の前に上書きを確認する（既定は No。断れば130）。書き出しは全部の回答がそろってからなので、途中のキャンセルでは既存のファイルも変わらない
   1. プロジェクト名、説明、課題（複数）、除外ルール、言語を対話で聞く。課題と除外ルールは1件ずつ聞き、空の入力で終える（課題は1件以上、上限はスキーマと同じ20件と30件）。言語は English / Japanese / その他（自由入力）
-  2. 技術名の入力（アプローチB）：owner/repo の形ならそのまま使う。それ以外は LLM に候補を最大3件出させ、verifyRepo で存在を確認できたものだけを選択肢にする
-  3. ブログ URL の入力（アプローチC）：discoverFeeds でフィードを探し、複数見つかれば選ばせる
-  4. Tavily：TAVILY_API_KEY があるときだけ、LLM がクエリを提案し、選択と追加入力を受け付ける
-  5. Trial Fetch：各ソースの最新記事を1件表示し、「毎朝ウォッチしますか？」と確認する
+  - 手順1の後で `resolveLlm` を呼ぶ。使えなければ warn を1回出し、LLM なしで続ける。ソースはメニュー（技術名か GitHub リポジトリ / ブログかフィードの URL / Done）から1件ずつ足し、手順4と5に進む。Trial Fetch で1件も残らなければメニューに戻る（sources.yml には1件以上が必要なため）。入力欄を空のまま確定するとメニューに戻る。同じソースは skip する（repo は大文字小文字を区別せず、フィード URL は `normalizeUrl` した形、クエリは小文字にして比べる）。id はリポジトリ名・ホスト名・クエリから作り、重複すれば `-2` などを付ける（`sourceIdFrom`）
+  2. 技術名の入力（アプローチB）：owner/repo の形なら LLM を通さずに `verifyRepo` だけで確かめる。not_found と empty なら戻り、確認できなければ「それでも追加するか」を聞く（既定は No）。movedTo なら新しい名前にし、tags しかなければ `feed: tags`、プレリリースしかなければ `includePrereleases: true` にする。それ以外の入力は LLM に候補を出させ、形の正しい候補の重複を除いて最大3件（`MAX_REPO_CANDIDATES`）に切り、`verifyRepo` で found になったものだけを選択肢にする（確認できなかった候補は件数だけを warn で出す）。LLM がなければ owner/repo の形しか受け付けない。auth と unavailable の後は、この実行では LLM を使わない
+  3. ブログ URL の入力（アプローチC）：discoverFeeds でフィードを探す。URL 自体がフィードならそれを使う。複数見つかれば選ばせ（title は制御文字を除いて表示する）、開けないページやフィードのないページは warn を出して戻る
+  4. Tavily：TAVILY_API_KEY があるときだけ。LLM があれば提案を1回だけ求め、空白を詰めて重複を除き、最大5件（`MAX_QUERY_SUGGESTIONS`）を multiselect で選ばせる。続けて手入力でも足せる（topic は news）。キーがなければ note を出して飛ばす
+  5. Trial Fetch：新しく足したソースを `fetchEach` でまとめて取得し、各ソースの最新記事（title・日付・URL。制御文字を除いて1行にする）、「No items yet.」、または失敗を示して「毎朝ウォッチしますか？」と確認する（失敗したソースは既定 No）。却下したソースは書き出さず、あとで足し直せる。通信中の Ctrl-C は signal で中断して130にし、何も書かない
   6. 設定ファイルを権限 600 で書き出し、.gitignore に含まれていることを確認する（ファイルのディレクトリで、2つのファイルをまとめて1回の `git check-ignore` で確認する。無視されていなければ、実際の設定ディレクトリの `*.yml` を .gitignore に足すよう warn し、git がない・リポジトリ外なら確認できなかったと伝えるだけで、終了コードは0）。POCHI_CONTEXT_YAML / POCHI_SOURCES_YAML が設定されていれば、ファイルより優先される旨を warn する（値は出さない）。最後に次の手順（run --dry-run、gh secret set）を案内する。既定以外の設定ディレクトリなら run に `--config-dir` を付け、パスはシェル用にクォートする
-  - T18 の時点ではソースを owner/repo とフィード URL の直接入力（形式の検証だけ）で受け付ける（`askSources`）。repo や URL の入力欄を空のまま確定すると、ソース種別の選択に戻る。同じソースは skip する（repo は大文字小文字を区別せず、フィード URL は `normalizeUrl` した形で比べる）。id はリポジトリ名やホスト名から作り、重複すれば `-2` などを付ける（`sourceIdFrom`）。T19 で手順2〜5に置き換える
   - LLM が使えない環境でも完了できるようにする（その場合、技術名は owner/repo の直接入力だけを受け付ける）
+  - 対話の間は、ログを warn 以上に絞る（取得処理の info で画面が崩れないようにする）
 
 ### 終了コード
 
@@ -382,7 +383,7 @@ README に書く注意点：
 | T16 | M3 通知・状態 | commands/run と各フラグ | T9, T13, T14, T15 | 正常系、dry-run、Slack 失敗で4、全ソース失敗で5、LLM なしなら取得前に3 | 完了 |
 | T17 | M3 通知・状態 | commands/doctor（T16 と並行可） | T3, T9, T13 | 出力に秘密情報が含まれないことをテストで確認 | 完了 |
 | T18 | M4 init | init の対話と設定の書き出し（プロンプト関数を差し替え可能にする） | T3 | 端末でなければ2、キャンセルなら130で何も書かない。書いた設定を読み戻せる。権限600、.gitignore | 完了 |
-| T19 | M4 init | init のソース特定と Trial Fetch | T18, T6, T7, T8, T13 | 存在を確認できないリポジトリは提示しない。owner/repo は LLM を通さない。LLM なしでも完了する。複数フィードは選ばせる。却下されたソースは除外する | 未着手 |
+| T19 | M4 init | init のソース特定と Trial Fetch | T18, T6, T7, T8, T13 | 存在を確認できないリポジトリは提示しない。owner/repo は LLM を通さない。LLM なしでも完了する。複数フィードは選ばせる。却下されたソースは除外する | 完了 |
 | T20 | M5 CI・文書 | daily_briefing.yml | T16 | actionlint が通る。dry_run ではコミットしない。秘密情報を echo しない | 未着手 |
 | T21 | M5 CI・文書 | ci.yml と dependabot | T1 | 最初の push で CI が通る | 未着手 |
 | T22 | M5 CI・文書 | README と SECURITY.md | T16, T19 | README だけを見て clone から最初の dry-run まで進める | 未着手 |

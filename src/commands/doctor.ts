@@ -8,7 +8,7 @@ import { fetchEach, type SourceConfig, sourceConfigs, sourceInfo } from "../sour
 import { tavilyApiKey } from "../sources/tavily.js";
 import { inspectState, pruneState, resolveStatePath, StateError } from "../state/store.js";
 import { configureLog, redact } from "../util/log.js";
-import { collapseWhitespace, plural, stripControlChars, truncate } from "../util/text.js";
+import { displayLine, plural } from "../util/text.js";
 import { toIsoDate } from "../util/time.js";
 import { VERSION } from "../version.js";
 
@@ -358,5 +358,5 @@ function errorText(error: unknown): string {
 
 // Titles and messages from remote sources could otherwise carry ANSI/OSC sequences to the terminal.
 function oneLine(s: string): string {
-  return truncate(collapseWhitespace(stripControlChars(s)), DETAIL_MAX_CHARS);
+  return displayLine(s, DETAIL_MAX_CHARS);
 }

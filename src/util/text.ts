@@ -38,6 +38,11 @@ export function stripControlChars(text: string): string {
   return text.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, "");
 }
 
+/** One line without control characters, for text from outside shown on a terminal. */
+export function displayLine(text: string, maxChars: number): string {
+  return truncate(collapseWhitespace(stripControlChars(text)), maxChars);
+}
+
 export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
