@@ -52,6 +52,10 @@ describe("toJsonSchema", () => {
       additionalProperties: false,
     });
   });
+
+  it("builds each schema once", () => {
+    expect(toJsonSchema(TriageOutputSchema)).toBe(toJsonSchema(TriageOutputSchema));
+  });
 });
 
 describe("output schemas", () => {

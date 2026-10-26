@@ -8,9 +8,13 @@ export const DEFAULT_API_MODELS: Record<LlmTier, string> = {
 
 // Thinking stays at the models' default (adaptive); effort keeps triage cheap across many batches.
 const EFFORT: Record<LlmTier, "low" | "medium"> = { triage: "low", analyze: "medium" };
+// Models that reject effort with a 400: it arrived with Opus 4.5 and is on every model from 4.6 on,
+// but Sonnet 4.5, Haiku 4.5 and older models do not take it. A configured model may be one of them.
+const NO_EFFORT = /^claude-(3|haiku-4-5|sonnet-4-5|sonnet-4-0|sonnet-4-\d{8}|opus-4-0|opus-4-1|opus-4-\d{8})/;
 // Includes thinking tokens. The largest non-streaming value that stays clear of the SDK's timeouts.
 const MAX_TOKENS = 16_000;
-// Matches the claude CLI's limit. The SDK still retries 408/409/429/5xx and connection errors twice.
+// Matches the claude CLI's limit. The SDK retries 408/409/429/5xx and connection errors twice, and
+// timeouts too, so the limit covers the whole call rather than each attempt.
 const TIMEOUT_MS = 300_000;
 
 /**
@@ -21,12 +25,19 @@ const TIMEOUT_MS = 300_000;
  * refusal or a reply cut off at max_tokens would look like invalid output. The schema is the same
  * one the CLI mode sends.
  */
-export function createApiLlm(opts: { models: Record<LlmTier, string>; client?: Anthropic }): LlmClient {
-  const client = opts.client ?? new Anthropic({ timeout: TIMEOUT_MS });
+export function createApiLlm(opts: {
+  models: Record<LlmTier, string>;
+  client?: Anthropic;
+  timeoutMs?: number;
+}): LlmClient {
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
+  const client = opts.client ?? new Anthropic({ timeout: timeoutMs });
   return {
     mode: "api",
     async generate<T>(req: GenerateRequest<T>, { signal }: { signal?: AbortSignal } = {}): Promise<T> {
       const model = opts.models[req.tier];
+      const format = { type: "json_schema" as const, schema: toJsonSchema(req.schema) };
+      const deadline = AbortSignal.timeout(timeoutMs);
       let message: Anthropic.Message;
       try {
         message = await client.messages.create(
@@ -35,12 +46,9 @@ export function createApiLlm(opts: { models: Record<LlmTier, string>; client?: A
             max_tokens: MAX_TOKENS,
             system: req.system,
             messages: [{ role: "user", content: req.prompt }],
-            output_config: {
-              effort: EFFORT[req.tier],
-              format: { type: "json_schema", schema: toJsonSchema(req.schema) },
-            },
+            output_config: NO_EFFORT.test(model) ? { format } : { effort: EFFORT[req.tier], format },
           },
-          { signal },
+          { signal: signal ? AbortSignal.any([deadline, signal]) : deadline },
         );
       } catch (err) {
         throw toLlmError(err, model, signal);
@@ -61,11 +69,11 @@ function parseReply<T>(message: Anthropic.Message, req: GenerateRequest<T>, mode
     case "model_context_window_exceeded":
       throw new LlmError("max_tokens", `Claude's reply was cut off: ${message.stop_reason} (${where})`);
   }
-  const text = message.content.find((b) => b.type === "text")?.text;
-  if (text === undefined) throw new LlmError("invalid_output", `Claude returned no text (${where})`);
+  const blocks = message.content.filter((b) => b.type === "text");
+  if (blocks.length === 0) throw new LlmError("invalid_output", `Claude returned no text (${where})`);
   let value: unknown;
   try {
-    value = JSON.parse(text);
+    value = JSON.parse(blocks.map((b) => b.text).join(""));
   } catch {
     // The SyntaxError quotes the reply, so it is not kept as the cause.
     throw new LlmError("invalid_output", `Claude returned malformed JSON (${where})`);
@@ -78,26 +86,43 @@ function parseReply<T>(message: Anthropic.Message, req: GenerateRequest<T>, mode
   return parsed.data;
 }
 
-// Messages are built here rather than taken from the SDK, whose API error text can echo request fields.
+// Messages are built here rather than taken from the SDK. Its API error text carries the response
+// body, which can echo request fields, so API errors are not kept as the cause either (the CLI
+// prints the cause). Connection errors are kept: their cause is the fetch error, not a body.
 function toLlmError(err: unknown, model: string, signal: AbortSignal | undefined): unknown {
-  if (err instanceof Anthropic.APIUserAbortError) return signal?.aborted ? signal.reason : err;
+  if (err instanceof Anthropic.APIUserAbortError) {
+    if (signal?.aborted) return signal.reason;
+    return new LlmError("timeout", `Anthropic API timed out (${model})`);
+  }
   if (err instanceof Anthropic.APIConnectionTimeoutError) {
     return new LlmError("timeout", `Anthropic API timed out (${model})`, { cause: err });
   }
   if (err instanceof Anthropic.APIConnectionError) {
     return new LlmError("transport", `Could not reach the Anthropic API (${model})`, { cause: err });
   }
-  if (!(err instanceof Anthropic.APIError)) return err;
-  const where = `HTTP ${err.status}, ${model}${err.requestID ? `, request ${err.requestID}` : ""}`;
+  if (!(err instanceof Anthropic.APIError)) {
+    // Thrown before any request is sent: no key found, or a request the SDK will not send as is.
+    if (err instanceof Error && err.message.startsWith("Could not resolve authentication method")) {
+      return new LlmError("auth", `No Anthropic credentials found; set ANTHROPIC_API_KEY (${model})`);
+    }
+    if (err instanceof Anthropic.AnthropicError) {
+      return new LlmError("unavailable", `Anthropic SDK rejected the request (${model})`);
+    }
+    return err;
+  }
+  const status = [err.status && `HTTP ${err.status}`, err.type].filter(Boolean).join(" ");
+  const where = [status, model, err.requestID && `request ${err.requestID}`].filter(Boolean).join(", ");
   if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
-    return new LlmError("auth", `Anthropic API rejected ANTHROPIC_API_KEY (${where})`, { cause: err });
+    return new LlmError("auth", `Anthropic API rejected ANTHROPIC_API_KEY (${where})`);
   }
   if (err instanceof Anthropic.RateLimitError) {
-    return new LlmError("rate_limit", `Anthropic API rate limit reached (${where})`, { cause: err });
+    return new LlmError("rate_limit", `Anthropic API rate limit reached (${where})`);
   }
-  if (err instanceof Anthropic.InternalServerError) {
-    return new LlmError("transport", `Anthropic API is unavailable (${where})`, { cause: err });
+  // 408 / 409 and 5xx are transient: the SDK has already retried them.
+  if (err.status === 408) return new LlmError("timeout", `Anthropic API timed out (${where})`);
+  if (err instanceof Anthropic.ConflictError || err instanceof Anthropic.InternalServerError) {
+    return new LlmError("transport", `Anthropic API is unavailable (${where})`);
   }
   // 400 / 404 and the rest: usually a model name the API does not know, which retrying will not fix.
-  return new LlmError("unavailable", `Anthropic API rejected the request (${where})`, { cause: err });
+  return new LlmError("unavailable", `Anthropic API rejected the request (${where})`);
 }
