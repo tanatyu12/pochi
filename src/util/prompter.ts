@@ -15,6 +15,12 @@ export interface SelectPrompt<T> {
   initialValue?: T;
 }
 
+export interface MultiselectPrompt<T> {
+  message: string;
+  options: { value: T; label: string; hint?: string }[];
+  initialValues?: T[];
+}
+
 export interface ConfirmPrompt {
   message: string;
   initialValue?: boolean;
@@ -27,11 +33,15 @@ export interface ConfirmPrompt {
 export interface Prompter {
   text(prompt: TextPrompt): Promise<string>;
   select<T extends string>(prompt: SelectPrompt<T>): Promise<T>;
+  /** May return an empty list: choosing nothing is an answer. */
+  multiselect<T extends string>(prompt: MultiselectPrompt<T>): Promise<T[]>;
   confirm(prompt: ConfirmPrompt): Promise<boolean>;
   intro(title: string): void;
   outro(message: string): void;
   note(message: string, title?: string): void;
   warn(message: string): void;
+  /** Shows a spinner with message while run settles, and passes on its result or error. */
+  spin<T>(message: string, run: () => Promise<T>, signal?: AbortSignal): Promise<T>;
 }
 
 export class PromptCancelled extends PochiError {
@@ -58,6 +68,9 @@ export function createClackPrompter(): Prompter {
       // clack's Option<T> is a conditional type, so it only resolves for a concrete T.
       return unwrap(await clack.select<string>(prompt)) as typeof prompt.options[number]["value"];
     },
+    async multiselect(prompt) {
+      return unwrap(await clack.multiselect<string>({ ...prompt, required: false })) as typeof prompt.options[number]["value"][];
+    },
     async confirm(prompt) {
       return unwrap(await clack.confirm(prompt));
     },
@@ -65,5 +78,18 @@ export function createClackPrompter(): Prompter {
     outro: (message) => clack.outro(message),
     note: (message, title) => clack.note(message, title),
     warn: (message) => clack.log.warn(message),
+    async spin(message, run, signal) {
+      // On an abort the spinner stops itself with a cancel message; stop is then a no-op.
+      const s = clack.spinner({ signal });
+      s.start(message);
+      try {
+        const result = await run();
+        s.stop(message);
+        return result;
+      } catch (err) {
+        s.error(message);
+        throw err;
+      }
+    },
   };
 }

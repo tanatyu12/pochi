@@ -2,13 +2,42 @@ import { execFile } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { ConfigError, DEFAULT_CONFIG_DIR } from "../config/load.js";
-import { type ContextInput, REPO_PATTERN, type SourcesInput } from "../config/schema.js";
+import {
+  type Context,
+  type ContextInput,
+  ContextSchema,
+  REPO_PATTERN,
+  type SourcesInput,
+  SourcesSchema,
+} from "../config/schema.js";
 import { existingConfig, writeConfig } from "../config/write.js";
+import { resolveLlm } from "../llm/adapter.js";
+import {
+  MAX_QUERY_SUGGESTIONS,
+  MAX_REPO_CANDIDATES,
+  queryId,
+  querySuggestionRequest,
+  repoInferenceRequest,
+} from "../llm/prompts.js";
+import { type LlmClient, LlmError } from "../llm/schema.js";
+import { type DiscoveredFeed, discoverFeeds } from "../sources/discover.js";
+import { type RepoCheck, verifyRepo } from "../sources/github.js";
+import { fetchEach, sourceConfigs, sourceInfo } from "../sources/index.js";
+import { tavilyApiKey } from "../sources/tavily.js";
 import { normalizeUrl, parseHttpUrl } from "../util/hash.js";
+import { HttpError } from "../util/http.js";
+import { configureLog } from "../util/log.js";
 import { type Prompter, PromptCancelled, createClackPrompter } from "../util/prompter.js";
+import { displayLine, plural } from "../util/text.js";
 
 const MAX_PROBLEMS = 20;
 const MAX_EXCLUDE = 30;
+const MAX_TYPED_QUERIES = 10;
+// Titles, notes and errors come from feeds, the model and the network; one line each is enough.
+const SHOWN_MAX_CHARS = 120;
+const HINT_MAX_CHARS = 60;
+// An option value no repo or feed URL can take.
+const NONE = "none";
 
 export interface InitDeps {
   prompter: Prompter;
@@ -19,9 +48,14 @@ export interface InitDeps {
    */
   checkIgnored: (paths: string[]) => Promise<(boolean | undefined)[]>;
   env: NodeJS.ProcessEnv;
+  resolveLlm: typeof resolveLlm;
+  /** Aborted by Ctrl-C while something is fetched; prompts handle their own Ctrl-C. */
+  signal?: AbortSignal;
 }
 
 type FeedInput = NonNullable<SourcesInput["feeds"]>[number];
+type QueryInput = NonNullable<SourcesInput["queries"]>[number];
+type FoundRepo = Extract<RepoCheck, { status: "found" }>;
 
 export async function runInit(opts: { configDir?: string } = {}, deps: Partial<InitDeps> = {}): Promise<void> {
   const isInteractive = deps.isInteractive ?? (() => Boolean(process.stdin.isTTY && process.stdout.isTTY));
@@ -29,10 +63,20 @@ export async function runInit(opts: { configDir?: string } = {}, deps: Partial<I
   if (!isInteractive()) {
     throw new ConfigError("pochi init needs an interactive terminal; copy config/*.example.yml instead");
   }
+  // The prompts show what matters; info lines from the fetchers would only break up the screen.
+  const restoreLog = configureLog({ level: "quiet" });
+  try {
+    await init(opts.configDir ?? DEFAULT_CONFIG_DIR, deps);
+  } finally {
+    restoreLog();
+  }
+}
+
+async function init(dir: string, deps: Partial<InitDeps>): Promise<void> {
   const p = deps.prompter ?? createClackPrompter();
   const checkIgnored = deps.checkIgnored ?? gitCheckIgnored;
   const env = deps.env ?? process.env;
-  const dir = opts.configDir ?? DEFAULT_CONFIG_DIR;
+  const { signal } = deps;
 
   p.intro("pochi init");
   // Asked first so nobody answers every question only to be refused at the end.
@@ -42,10 +86,13 @@ export async function runInit(opts: { configDir?: string } = {}, deps: Partial<I
     if (!overwrite) throw new PromptCancelled();
   }
 
-  const context = await askContext(p);
-  const sources = await askSources(p);
+  const contextInput = await askContext(p);
+  // The prompts read the defaults (language, llm) the parsed context fills in.
+  const context = ContextSchema.parse(contextInput);
+  const llm = await findLlm(p, context, deps.resolveLlm ?? resolveLlm, env, signal);
+  const sources = await askSources(newSession(p, context, llm, signal));
   // Nothing touches the disk until every answer is in, so a cancel above leaves no trace.
-  const { contextPath, sourcesPath } = await writeConfig(dir, { context, sources }, { overwrite: true });
+  const { contextPath, sourcesPath } = await writeConfig(dir, { context: contextInput, sources }, { overwrite: true });
 
   const paths = [contextPath, sourcesPath];
   const ignored = await checkIgnored(paths);
@@ -130,63 +177,418 @@ async function askList(
   return items;
 }
 
-/** Minimal source entry: the repo or feed URL is taken as typed, without checking it exists. */
-export async function askSources(p: Prompter): Promise<SourcesInput> {
-  const feeds: FeedInput[] = [];
-  const ids = new Set<string>();
-  const keys = new Set<string>();
+/** The LLM for suggestions, or undefined: init then takes repositories as owner/repo only. */
+async function findLlm(
+  p: Prompter,
+  context: Context,
+  resolve: typeof resolveLlm,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal | undefined,
+): Promise<LlmClient | undefined> {
+  try {
+    const { client } = await p.spin("Looking for Claude", () => resolve(context.llm, { env, signal }), signal);
+    return client;
+  } catch (err) {
+    throwIfCancelled(signal);
+    if (!(err instanceof LlmError)) throw err;
+    p.warn(`${err.message}. Continuing without Claude: enter repositories as owner/repo.`);
+    return undefined;
+  }
+}
+
+export interface SourceSession {
+  p: Prompter;
+  context: Context;
+  /** Cleared when Claude turns out to be unusable (auth, unavailable). */
+  llm: LlmClient | undefined;
+  signal?: AbortSignal;
+  /** Watched: added and accepted in a trial fetch. */
+  feeds: FeedInput[];
+  queries: QueryInput[];
+  /** Ids and dedupe keys of everything added, accepted or still to be tried. */
+  ids: Set<string>;
+  keys: Set<string>;
+  /** Asked once; later rounds offer what is left of them. */
+  suggestions?: string[];
+  tavilyNoted?: boolean;
+}
+
+export function newSession(
+  p: Prompter,
+  context: Context,
+  llm: LlmClient | undefined,
+  signal?: AbortSignal,
+): SourceSession {
+  return { p, context, llm, signal, feeds: [], queries: [], ids: new Set(), keys: new Set() };
+}
+
+/**
+ * Asks for feeds and queries, fetches the latest item of each and keeps the ones the user wants
+ * to watch. Repeats until at least one is kept, since sources.yml needs one.
+ */
+export async function askSources(s: SourceSession): Promise<SourcesInput> {
   for (;;) {
-    const kind = await p.select({
-      message: feeds.length === 0 ? "Add a source to watch" : `Add another source? (${feeds.length} so far)`,
+    const feeds = await askFeeds(s);
+    const queries = await askQueries(s);
+    if (feeds.length + queries.length > 0) {
+      const kept = await trialFetch(s, feeds, queries);
+      s.feeds.push(...kept.feeds);
+      s.queries.push(...kept.queries);
+    }
+    if (s.feeds.length + s.queries.length > 0) break;
+    s.p.warn("Nothing to watch yet; add a source.");
+  }
+  return { version: 1, feeds: s.feeds, ...(s.queries.length > 0 && { queries: s.queries }) };
+}
+
+async function askFeeds(s: SourceSession): Promise<FeedInput[]> {
+  const added: FeedInput[] = [];
+  for (;;) {
+    const count = s.feeds.length + added.length;
+    const kind = await s.p.select({
+      message: count === 0 ? "Add a source to watch" : `Add another source? (${count} so far)`,
       options: [
-        { value: "github", label: "GitHub repository", hint: "owner/repo" },
-        { value: "rss", label: "RSS / Atom feed", hint: "feed URL" },
-        // sources.yml needs at least one source.
-        ...(feeds.length > 0 ? [{ value: "done" as const, label: "Done" }] : []),
+        {
+          value: "repo",
+          label: "Technology or GitHub repository",
+          hint: s.llm ? "Next.js or vercel/next.js" : "owner/repo",
+        },
+        { value: "site", label: "Blog or feed URL", hint: "https://…" },
+        // sources.yml needs a source; queries, if any, are asked next.
+        ...(count > 0 || tavilyApiKey() ? [{ value: "done" as const, label: "Done" }] : []),
       ],
     });
-    if (kind === "done") break;
+    if (kind === "done") return added;
 
-    const feed = kind === "github" ? await askRepo(p, ids) : await askFeedUrl(p, ids);
-    // An empty answer backs out to the choice above.
+    const feed = kind === "repo" ? await askRepo(s) : await askSite(s);
+    // Nothing found, or backed out: back to the choice above.
     if (!feed) continue;
-    // GitHub treats owner/repo case-insensitively; feed URLs compare as the pipeline dedupes them.
-    const key = feed.type === "github" ? `github:${feed.repo.toLowerCase()}` : `rss:${normalizeUrl(feed.url)}`;
-    if (keys.has(key)) {
-      p.warn("Already added; skipped.");
+    if (!claim(s, keyOf(feed), feed.id)) {
+      s.p.warn("Already added; skipped.");
       continue;
     }
-    keys.add(key);
-    ids.add(feed.id);
-    feeds.push(feed);
+    added.push(feed);
   }
-  return { version: 1, feeds };
 }
 
-async function askRepo(p: Prompter, ids: ReadonlySet<string>): Promise<FeedInput | undefined> {
-  const repo = (
-    await p.text({
-      message: "GitHub repository (empty to go back)",
-      placeholder: "vercel/next.js",
-      validate: (v) => (v.trim() === "" || REPO_PATTERN.test(v.trim()) ? undefined : "Enter it as owner/repo"),
+async function askRepo(s: SourceSession): Promise<FeedInput | undefined> {
+  const answer = (
+    await s.p.text({
+      message: s.llm
+        ? "Technology name or GitHub repository (empty to go back)"
+        : "GitHub repository (empty to go back)",
+      placeholder: s.llm ? "Next.js" : "vercel/next.js",
+      validate: (v) => {
+        const t = v.trim();
+        if (t === "" || REPO_PATTERN.test(t)) return undefined;
+        // Without Claude there is nothing to look a name up with; a slash means a repo was meant.
+        return s.llm && !t.includes("/") ? undefined : "Enter it as owner/repo";
+      },
     })
   ).trim();
-  if (repo === "") return undefined;
-  return { id: sourceIdFrom(repo.split("/")[1]!, ids), type: "github", name: repo, repo };
+  if (answer === "") return undefined;
+  // Typed as owner/repo: used as is, never through the model.
+  if (REPO_PATTERN.test(answer)) return checkTypedRepo(s, answer);
+  return lookUpRepo(s, s.llm!, answer);
 }
 
-async function askFeedUrl(p: Prompter, ids: ReadonlySet<string>): Promise<FeedInput | undefined> {
+async function checkTypedRepo(s: SourceSession, repo: string): Promise<FeedInput | undefined> {
+  const { p, signal } = s;
+  let check: RepoCheck;
+  try {
+    check = await p.spin(`Checking ${repo} on GitHub`, () => verifyRepo(repo, signal), signal);
+  } catch (err) {
+    throwIfCancelled(signal);
+    // It may exist: the user typed it, so let them decide.
+    p.warn(`Could not check ${repo} on GitHub: ${errorLine(err)}`);
+    if (!(await p.confirm({ message: `Add ${repo} anyway?`, initialValue: false }))) return undefined;
+    return repoFeed(s, repo);
+  }
+  if (check.status === "not_found") {
+    p.warn(`${repo} was not found on GitHub.`);
+    return undefined;
+  }
+  const current = check.movedTo ?? repo;
+  if (check.movedTo) p.note(`${repo} moved to ${current}; watching that instead.`);
+  if (check.status === "empty") {
+    p.warn(`${current} has no releases or tags to watch.`);
+    return undefined;
+  }
+  return repoFeed(s, current, check);
+}
+
+// Only repositories GitHub confirms are offered: a model can name ones that do not exist.
+async function lookUpRepo(s: SourceSession, llm: LlmClient, name: string): Promise<FeedInput | undefined> {
+  const { p, signal } = s;
+  let candidates: { repo: string; note: string }[];
+  try {
+    const reply = await p.spin(
+      `Asking Claude where ${name} is developed`,
+      () => llm.generate(repoInferenceRequest(s.context, [name]), { signal }),
+      signal,
+    );
+    candidates = reply.results.find((r) => r.id === queryId(0))?.candidates ?? [];
+  } catch (err) {
+    throwIfCancelled(signal);
+    if (!(err instanceof LlmError)) throw err;
+    llmFailed(s, err);
+    p.warn(`Could not look up ${name}; enter it as owner/repo.`);
+    return undefined;
+  }
+
+  const seen = new Set<string>();
+  const valid = candidates
+    .map((c) => ({ repo: c.repo.trim(), note: c.note }))
+    .filter((c) => REPO_PATTERN.test(c.repo) && once(seen, c.repo.toLowerCase()))
+    .slice(0, MAX_REPO_CANDIDATES);
+  const checks =
+    valid.length === 0
+      ? []
+      : await p.spin(
+          `Checking ${plural(valid.length, "candidate")} on GitHub`,
+          () => Promise.allSettled(valid.map((c) => verifyRepo(c.repo, signal))),
+          signal,
+        );
+  throwIfCancelled(signal);
+
+  const found: { repo: string; note: string; check: FoundRepo }[] = [];
+  const current = new Set<string>();
+  checks.forEach((result, i) => {
+    if (result.status !== "fulfilled" || result.value.status !== "found") return;
+    // Two candidates can be one repository under its old and new name.
+    const repo = result.value.movedTo ?? valid[i]!.repo;
+    if (once(current, repo.toLowerCase())) found.push({ repo, note: valid[i]!.note, check: result.value });
+  });
+  const unchecked = checks.filter((r) => r.status === "rejected").length;
+  if (unchecked > 0) p.warn(`Could not check ${plural(unchecked, "candidate")} on GitHub; left out.`);
+  if (found.length === 0) {
+    p.warn(`No GitHub repository found for ${name}; enter it as owner/repo.`);
+    return undefined;
+  }
+
+  const choice = await p.select({
+    message: `Which repository is ${name}?`,
+    options: [
+      ...found.map((f) => ({ value: f.repo, label: f.repo, hint: displayLine(f.note, HINT_MAX_CHARS) || undefined })),
+      { value: NONE, label: "None of these" },
+    ],
+  });
+  const chosen = found.find((f) => f.repo === choice);
+  return chosen && repoFeed(s, chosen.repo, chosen.check);
+}
+
+function repoFeed(s: SourceSession, repo: string, check?: FoundRepo): FeedInput {
+  // Otherwise nothing would arrive until the first stable release.
+  if (check?.onlyPrereleases) s.p.note(`${repo} has only prereleases so far; following them.`);
+  return {
+    id: sourceIdFrom(repo.split("/")[1]!, s.ids),
+    type: "github",
+    name: repo,
+    repo,
+    ...(check?.feed === "tags" && { feed: "tags" as const }),
+    ...(check?.onlyPrereleases && { includePrereleases: true }),
+  };
+}
+
+async function askSite(s: SourceSession): Promise<FeedInput | undefined> {
+  const { p, signal } = s;
   const raw = (
     await p.text({
-      message: "Feed URL (empty to go back)",
-      placeholder: "https://simonwillison.net/atom/everything/",
+      message: "Blog or feed URL (empty to go back)",
+      placeholder: "https://simonwillison.net/",
       validate: (v) => (v.trim() === "" || parseHttpUrl(v.trim()) ? undefined : "Enter an absolute http(s) URL"),
     })
   ).trim();
   if (raw === "") return undefined;
-  const url = parseHttpUrl(raw)!;
-  const host = url.hostname.replace(/^www\./, "");
-  return { id: sourceIdFrom(host, ids), type: "rss", name: host, url: url.href };
+  const url = parseHttpUrl(raw)!.href;
+
+  let feeds: DiscoveredFeed[];
+  try {
+    feeds = await p.spin(`Looking for feeds on ${url}`, () => discoverFeeds(url, signal), signal);
+  } catch (err) {
+    throwIfCancelled(signal);
+    if (!(err instanceof HttpError)) throw err;
+    p.warn(`Could not open ${url}: ${errorLine(err)}`);
+    return undefined;
+  }
+  if (feeds.length === 0) {
+    p.warn(`No feed found on ${url}.`);
+    return undefined;
+  }
+  let chosen = feeds[0]!.url;
+  if (feeds.length > 1) {
+    chosen = await p.select({
+      message: `${url} has ${feeds.length} feeds; which one?`,
+      options: [
+        // The titles come from the page.
+        ...feeds.map((f) => ({
+          value: f.url,
+          label: (f.title && displayLine(f.title, SHOWN_MAX_CHARS)) || f.url,
+          ...(f.title && { hint: f.url }),
+        })),
+        { value: NONE, label: "None of these" },
+      ],
+    });
+    if (chosen === NONE) return undefined;
+  }
+  const host = new URL(chosen).hostname.replace(/^www\./, "");
+  return { id: sourceIdFrom(host, s.ids), type: "rss", name: host, url: chosen };
+}
+
+async function askQueries(s: SourceSession): Promise<QueryInput[]> {
+  const { p, signal } = s;
+  // fetchTavilyItems reads the same key, so a query asked for here is one a run can fetch.
+  if (!tavilyApiKey()) {
+    if (!s.tavilyNoted) p.note("TAVILY_API_KEY is not set, so web search queries are skipped.");
+    s.tavilyNoted = true;
+    return [];
+  }
+  if (!s.tavilyNoted) p.note("Web search queries use Tavily: each costs one credit a run, and one now to try it.");
+  s.tavilyNoted = true;
+
+  if (s.llm && s.suggestions === undefined) {
+    const llm = s.llm;
+    try {
+      const reply = await p.spin(
+        "Asking Claude for search queries",
+        () => llm.generate(querySuggestionRequest(s.context), { signal }),
+        signal,
+      );
+      const seen = new Set<string>();
+      s.suggestions = reply.queries
+        .map((q) => displayLine(q, SHOWN_MAX_CHARS))
+        .filter((q) => q !== "" && once(seen, q.toLowerCase()))
+        .slice(0, MAX_QUERY_SUGGESTIONS);
+    } catch (err) {
+      throwIfCancelled(signal);
+      if (!(err instanceof LlmError)) throw err;
+      llmFailed(s, err);
+      s.suggestions = [];
+    }
+  }
+
+  const candidates: string[] = [];
+  const offered = (s.suggestions ?? []).filter((q) => !s.keys.has(queryKey(q)));
+  if (offered.length > 0) {
+    candidates.push(
+      ...(await p.multiselect({
+        message: "Search queries to run every morning (space to select)",
+        options: offered.map((q) => ({ value: q, label: q })),
+      })),
+    );
+  }
+  candidates.push(
+    ...(await askList(p, {
+      message: "Add a search query",
+      placeholder: "Qwen model release",
+      min: 0,
+      max: MAX_TYPED_QUERIES,
+    })),
+  );
+
+  const added: QueryInput[] = [];
+  for (const query of candidates) {
+    const id = sourceIdFrom(query, s.ids);
+    if (!claim(s, queryKey(query), id)) {
+      p.warn(`Already added: ${query}; skipped.`);
+      continue;
+    }
+    added.push({ id, query, topic: "news" });
+  }
+  return added;
+}
+
+/** Shows the latest item of each source and keeps those the user wants to watch. */
+async function trialFetch(
+  s: SourceSession,
+  feeds: FeedInput[],
+  queries: QueryInput[],
+): Promise<{ feeds: FeedInput[]; queries: QueryInput[] }> {
+  const { p, signal } = s;
+  const sources = SourcesSchema.parse({ version: 1, feeds, queries });
+  // Queries only get here with a Tavily key.
+  const configs = sourceConfigs(sources, true);
+  const outcomes = await p.spin(
+    `Fetching the latest from ${plural(configs.length, "source")}`,
+    () => fetchEach(configs, sources.defaults, { signal }),
+    signal,
+  );
+  if (signal?.aborted || outcomes.some((o) => "aborted" in o)) throw new PromptCancelled();
+
+  const rejected = new Set<string>();
+  for (const outcome of outcomes) {
+    const { id, name, kind } = sourceInfo(outcome.source);
+    const label = displayLine(name, SHOWN_MAX_CHARS);
+    let ok = true;
+    if ("error" in outcome) {
+      ok = false;
+      p.warn(`${label} (${kind}) failed: ${errorLine(outcome.error)}`);
+    } else if ("items" in outcome) {
+      const item = outcome.items[0];
+      p.note(
+        item
+          ? [
+              displayLine(item.title, SHOWN_MAX_CHARS),
+              ...(item.publishedAt ? [item.publishedAt.slice(0, 10)] : []),
+              displayLine(item.url, SHOWN_MAX_CHARS),
+            ].join("\n")
+          : "No items yet.",
+        `${label} (${kind})`,
+      );
+    }
+    if (!(await p.confirm({ message: `Watch ${label} every morning?`, initialValue: ok }))) rejected.add(id);
+  }
+
+  // A rejected source may be added again later, perhaps another way.
+  for (const source of [...feeds, ...queries]) {
+    if (!rejected.has(source.id)) continue;
+    s.ids.delete(source.id);
+    s.keys.delete(keyOf(source));
+  }
+  return { feeds: feeds.filter((f) => !rejected.has(f.id)), queries: queries.filter((q) => !rejected.has(q.id)) };
+}
+
+// GitHub treats owner/repo case-insensitively; feed URLs compare as the pipeline dedupes them.
+function keyOf(source: FeedInput | QueryInput): string {
+  if ("query" in source) return queryKey(source.query);
+  return source.type === "github" ? `github:${source.repo.toLowerCase()}` : `rss:${normalizeUrl(source.url)}`;
+}
+
+function queryKey(query: string): string {
+  return `query:${query.toLowerCase()}`;
+}
+
+/** Records the source as added; false when it already was. */
+function claim(s: SourceSession, key: string, id: string): boolean {
+  if (s.keys.has(key)) return false;
+  s.keys.add(key);
+  s.ids.add(id);
+  return true;
+}
+
+function once(seen: Set<string>, key: string): boolean {
+  if (seen.has(key)) return false;
+  seen.add(key);
+  return true;
+}
+
+// Auth and unavailable will not pass on the next call; anything else may.
+function llmFailed(s: SourceSession, err: LlmError): void {
+  if (err.kind === "auth" || err.kind === "unavailable") {
+    s.llm = undefined;
+    s.p.warn(`Claude is not usable (${err.kind}); continuing without it.`);
+  } else {
+    s.p.warn(`Claude could not answer (${err.kind}).`);
+  }
+}
+
+// A fetch cut short by Ctrl-C fails like any other; the signal tells them apart.
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new PromptCancelled();
+}
+
+function errorLine(err: unknown): string {
+  return displayLine(err instanceof Error ? err.message : String(err), SHOWN_MAX_CHARS);
 }
 
 /** Turns a repo or host name into a source id that is not in taken. */
