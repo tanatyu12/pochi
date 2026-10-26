@@ -241,11 +241,13 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 応答の変換：refusal → refusal（stop_details.category をメッセージに入れる）、max_tokens / model_context_window_exceeded → max_tokens、text なし・JSON でない・スキーマ不一致 → invalid_output（失敗したパスだけを示し、値は出さない）
   - 例外の変換：APIConnectionTimeoutError → timeout、APIConnectionError → transport、401 / 403 → auth、429 → rate_limit、5xx（529 を含む）→ transport、400 / 404 などその他 → unavailable。メッセージは SDK の文面を使わず、HTTP ステータス、モデル名、request-id で組み立てる。中断（APIUserAbortError）は LlmError にせず signal の reason を投げる
 - **cli.ts**
-  - 引数：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --model <m> --system-prompt <s>`
-  - プロンプトは stdin で渡し、shell: false、cwd は tmpdir（プロジェクトの .claude を読ませないため）
-  - stdout は 10MB を上限とし、300秒でタイムアウトさせる（SIGINT のあと SIGKILL）
-  - 出力の解析は type==="result" を確認し、is_error と api_error_status で auth / rate_limit / transport に分類する。structured_output があればそれを返す
-  - 代替経路：result から ANSI を除去し、最初の {} を取り出す
+  - `createCliLlm({ models, spawn?, command?, timeoutMs?, maxBytes? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_CLI_MODELS`（haiku / sonnet）。spawn は差し替えられ、テストは `tests/helpers/fakeSpawn.ts` を使う
+  - 引数（`buildCliArgs`）：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --strict-mcp-config --model <m> --system-prompt <s>`。`--strict-mcp-config` は利用者の MCP サーバーを起動させないため
+  - プロンプトは stdin で渡し、shell: false、cwd は tmpdir（プロジェクトの .claude を読ませないため）。`node:child_process` だけを使うので Bun でも動く
+  - stdout は 10MB を上限とし（超えたら停止して invalid_output）、300秒でタイムアウトさせる（SIGINT、5秒後に SIGKILL）。中断されたら同じ手順で止め、signal の reason を投げる。stderr は末尾 8KB を debug ログにだけ出す
+  - 出力の解析：stdout の JSON の封筒で type==="result" を確認する。エラーでも終了コード1で封筒が返り、is_error が true、subtype は "success" のまま、api_error_status に HTTP ステータスが入る（実機で確認）。401 / 403 → auth、429 → rate_limit、5xx → transport、400 / 404 など → unavailable（存在しないモデル名は 404）。ステータスがなければ、subtype が error_max_structured_output_retries なら invalid_output、それ以外は transport。structured_output があれば zod で検証して返す
+  - 代替経路：structured_output がなければ、result から ANSI を除去し、JSON として解析できる最初の釣り合った `{}` を取り出す（`findFirstJsonObject`）。見つからなければ stop_reason が max_tokens なら max_tokens、それ以外は invalid_output。stop_reason が refusal なら refusal
+  - 封筒として読めない出力は、終了コードが0以外なら transport、0なら invalid_output。claude が見つからなければ（ENOENT）unavailable。メッセージには result や stderr を含めず、ステータス、モデル名、終了コードだけで組み立てる
 - **prompts.ts**
   - system プロンプトには、プロジェクト、課題、除外ルール、言語を入れる
   - `triageRequest` / `analyzeRequest` / `repoInferenceRequest` / `querySuggestionRequest` は system・prompt・schema・tier をまとめた `GenerateRequest` を返す。init 向けの2つは tier が triage
@@ -340,7 +342,7 @@ README に書く注意点：
 | T9 | M1 情報収集 | 収集の統合（sources/index） | T3, T5, T6, T8 | 3件中1件が失敗しても続行する、重複排除、キーがなければ Tavily を使わない、同時実行は4件まで | 完了 |
 | T10 | M2 LLM | llm/schema と prompts | T3 | JSON Schema のスナップショット。記事に紛れ込ませた閉じタグで囲みを抜けられない | 完了 |
 | T11 | M2 LLM | api.ts（T12 と並行可）。最初に zodOutputFormat が zod v4 で動くか確かめる | T10 | 偽クライアントで成功・null・refusal・max_tokens・エラー変換を確認。リクエストに temperature と tool_choice が含まれない | 完了 |
-| T12 | M2 LLM | cli.ts と fakeSpawn（T11 と並行可） | T10 | 引数のスナップショット、stdin 経由、cwd が tmpdir、shell なし、出力形式ごとのフィクスチャ、タイムアウト、10MB 上限。手元の claude で実際に1回呼ぶ | 未着手 |
+| T12 | M2 LLM | cli.ts と fakeSpawn（T11 と並行可） | T10 | 引数のスナップショット、stdin 経由、cwd が tmpdir、shell なし、出力形式ごとのフィクスチャ、タイムアウト、10MB 上限。手元の claude で実際に1回呼ぶ | 完了 |
 | T13 | M2 LLM | adapter と pipeline/filter | T11, T12 | モード解決の全パターン、バッチ分割、短縮 ID の対応付け、一部失敗と全失敗、minImpact、並び順 | 未着手 |
 | T14 | M3 通知・状態 | state/store（M0 の直後から着手可） | T2 | 最終観測日を基準にした期限切れ削除、touch、壊れたファイルの退避、アトミックな書き込み、キーのソート | 未着手 |
 | T15 | M3 通知・状態 | notifiers/slack（M0 の直後から着手可） | T2 | エスケープ、100件を3メッセージに分割、ブロック数の上限、429 と 400 の扱い、一部成功時は届いた記事の ID だけを返す | 未着手 |
@@ -380,5 +382,5 @@ README に書く注意点：
 | --- | --- |
 | feedsmith が返すデータの形が想定と違う | T5 で確認済み。tests/sources/rss.test.ts の特性テストで形を固定した |
 | zodOutputFormat が zod v4 に対応していない | T11 で確認済み。zod v4 で動くが、messages.parse が stop_reason より先に解析するため、JSON Schema を直接渡して自前で検証する |
-| CLIモードで structured_output が返らないことがある | T12 で実機確認し、result を解析する代替経路も用意する |
+| CLIモードで structured_output が返らないことがある | T12 で確認済み。claude 2.1.310 と haiku で structured_output が返った（stop_reason は tool_use）。返らない場合に備えて result を解析する代替経路も残した |
 | 状態ファイルの push が競合する | concurrency と pull --rebase で防ぐ |
