@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FeedParseError, fetchRssItems, parseFeedText, toItems, type RawEntry } from "../../src/sources/rss.js";
+import { FEED_MAX_BYTES, FeedParseError, fetchRssItems, parseFeedText, toItems, type RawEntry } from "../../src/sources/rss.js";
 import { itemId } from "../../src/util/hash.js";
 import { HttpError } from "../../src/util/http.js";
 import { mockFetch, reply } from "../helpers/mockFetch.js";
@@ -296,6 +296,17 @@ describe("fetchRssItems", () => {
     expect(items).toHaveLength(3);
     expect(items[0]?.url).toBe("https://cdn.example.net/posts/newest?utm_source=rss");
     expect(items[0]?.sourceName).toBe("Example Blog");
+  });
+
+  it("reads a full-content feed larger than the 2MB request default, up to FEED_MAX_BYTES", async () => {
+    const item = `<item><title>Post</title><link>https://blog.example.com/p</link><description>${"x".repeat(1000)}</description></item>`;
+    const big = `<?xml version="1.0"?><rss version="2.0"><channel><title>Big</title>${item.repeat(3000)}</channel></rss>`;
+    mockFetch({ [feed.url]: reply.text(big) });
+    // Every entry shares one link, so they collapse to one item.
+    expect(await fetchRssItems(feed, defaults)).toHaveLength(1);
+
+    mockFetch({ [feed.url]: reply.text(" ".repeat(FEED_MAX_BYTES + 1)) });
+    await expect(fetchRssItems(feed, defaults)).rejects.toMatchObject({ name: "HttpError", kind: "too_large" });
   });
 
   it("passes HTTP errors through", async () => {

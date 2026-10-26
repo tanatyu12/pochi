@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { discoverFeeds, findFeedLinks } from "../../src/sources/discover.js";
 import { HttpError } from "../../src/util/http.js";
-import { resetLog } from "../../src/util/log.js";
+import { configureLog, resetLog } from "../../src/util/log.js";
 import { mockFetch, reply, type Route } from "../helpers/mockFetch.js";
 
 function fixture(name: string): string {
@@ -15,9 +15,10 @@ const notFound = reply.status(404);
 const page = (head: string) => `<!doctype html><html><head>${head}</head><body><p>Hi</p></body></html>`;
 
 const PAGE = "https://blog.example/posts/";
-const FALLBACKS = ["/feed", "/feed/", "/rss", "/rss.xml", "/atom.xml", "/feed.xml", "/index.xml"].map(
-  (p) => `https://blog.example${p}`,
-);
+const FALLBACK_PATHS = ["feed", "feed/", "rss", "rss.xml", "atom.xml", "feed.xml", "index.xml"];
+const FALLBACKS = FALLBACK_PATHS.map((p) => `${PAGE}${p}`);
+// Answers at once and is not retried after the one 429 retry, so tests stay fast.
+const busy = [reply.status(429, { "retry-after": "0" }), reply.status(429, { "retry-after": "0" })];
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -43,6 +44,10 @@ describe("findFeedLinks", () => {
   it.each([
     ["application/atom+xml", "https://blog.example/f"],
     ["application/feed+json", "https://blog.example/f"],
+    ["application/rdf+xml", "https://blog.example/f"],
+    ["application/x-rss+xml", "https://blog.example/f"],
+    ["application/x-atom+xml", "https://blog.example/f"],
+    ["text/xml", "https://blog.example/f"],
   ])("accepts %s", (type, url) => {
     expect(findFeedLinks(page(`<link rel="alternate" type="${type}" href="/f">`), PAGE)).toEqual([{ url }]);
   });
@@ -109,6 +114,21 @@ describe("findFeedLinks", () => {
     const link = `<link rel="alternate" type="application/rss+xml" href="/feed.xml">`;
     expect(findFeedLinks(`<title>x</title><body>${link}`, PAGE)).toEqual([]);
     expect(findFeedLinks(`<title>x</title>${link}`, PAGE)).toEqual([{ url: "https://blog.example/feed.xml" }]);
+  });
+
+  it.each([
+    ["</head>", `<script>const s = "</head>";</script>`],
+    ["<body>", `<script type="module">document.write('<body>')</script>`],
+    ["a <link>", `<script>x = '<link rel="alternate" type="application/rss+xml" href="/fake.xml">'</script>`],
+    ["</head> in a style", `<style>/* </head> */</style>`],
+  ])("ignores %s inside a script or style in the head", (_name, before) => {
+    const link = `<link rel="alternate" type="application/rss+xml" href="/feed.xml">`;
+    expect(findFeedLinks(page(before + link), PAGE)).toEqual([{ url: "https://blog.example/feed.xml" }]);
+  });
+
+  it("keeps reading a tag past a > inside a quoted attribute", () => {
+    const head = `<base href="/a>b/"><link rel="alternate" type="application/rss+xml" title="News > Tech" href="feed.xml">`;
+    expect(findFeedLinks(page(head), PAGE)).toEqual([{ url: "https://blog.example/a%3Eb/feed.xml", title: "News > Tech" }]);
   });
 });
 
@@ -202,13 +222,70 @@ describe("discoverFeeds", () => {
     expect(mock.calls.map((c) => c.url)).toEqual([PAGE, ...FALLBACKS]);
   });
 
-  it("resolves the common paths against the origin after redirects", async () => {
+  it("resolves the common paths under the page path after redirects", async () => {
     const mock = mockFetch({
       "http://old.example/blog/": reply.redirect("https://new.example/blog/", page("")),
-      "https://new.example/feed": rss,
+      "https://new.example/blog/feed": rss,
     });
-    await expect(discoverFeeds("http://old.example/blog/")).resolves.toEqual([{ url: "https://new.example/feed" }]);
-    expect(mock.calls.map((c) => c.url)).toEqual(["http://old.example/blog/", "https://new.example/feed"]);
+    await expect(discoverFeeds("http://old.example/blog/")).resolves.toEqual([{ url: "https://new.example/blog/feed" }]);
+    expect(mock.calls.map((c) => c.url)).toEqual(["http://old.example/blog/", "https://new.example/blog/feed"]);
+  });
+
+  it("does not probe the site root for a page under a path on a shared host", async () => {
+    const user = "https://dev.example/someuser?tab=posts";
+    const routes: Record<string, Route> = { [user]: html(page("")) };
+    for (const p of FALLBACK_PATHS) routes[`https://dev.example/someuser/${p}`] = notFound;
+    const mock = mockFetch(routes);
+    await expect(discoverFeeds(user)).resolves.toEqual([]);
+    expect(mock.calls.map((c) => c.url)).not.toContain("https://dev.example/feed");
+    expect(mock.calls[1]!.url).toBe("https://dev.example/someuser/feed");
+  });
+
+  it("probes the root for a page at the root", async () => {
+    mockFetch({ "https://blog.example/": html(page("")), "https://blog.example/feed": rss });
+    await expect(discoverFeeds("https://blog.example/")).resolves.toEqual([{ url: "https://blog.example/feed" }]);
+  });
+
+  it("throws instead of probing the common paths when an advertised feed fails for a passing reason", async () => {
+    const head = [
+      `<link rel="alternate" type="application/rss+xml" href="/feed.xml">`,
+      `<link rel="alternate" type="application/rss+xml" href="/gone.xml">`,
+    ].join("");
+    const mock = mockFetch({
+      [PAGE]: html(page(head)),
+      "https://blog.example/feed.xml": busy,
+      "https://blog.example/gone.xml": notFound,
+    });
+    await expect(discoverFeeds(PAGE)).rejects.toMatchObject({ name: "HttpError", status: 429 });
+    expect(mock.calls.map((c) => c.url)).not.toContain(FALLBACKS[0]);
+  });
+
+  it("returns the feeds that worked and warns about one that failed for a passing reason", async () => {
+    const head = [
+      `<link rel="alternate" type="application/rss+xml" href="/feed.xml">`,
+      `<link rel="alternate" type="application/rss+xml" href="/busy.xml">`,
+    ].join("");
+    const out: string[] = [];
+    configureLog({ write: (s) => out.push(s) });
+    mockFetch({ [PAGE]: html(page(head)), "https://blog.example/feed.xml": rss, "https://blog.example/busy.xml": busy });
+    await expect(discoverFeeds(PAGE)).resolves.toEqual([{ url: "https://blog.example/feed.xml" }]);
+    expect(out.join("")).toContain("could not check an advertised feed: https://blog.example/busy.xml");
+  });
+
+  it("throws when a common path failed for a passing reason and none worked", async () => {
+    const routes: Record<string, Route> = { [PAGE]: html(page("")) };
+    for (const url of FALLBACKS) routes[url] = notFound;
+    routes[FALLBACKS[3]!] = busy;
+    mockFetch(routes);
+    await expect(discoverFeeds(PAGE)).rejects.toMatchObject({ status: 429 });
+  });
+
+  it("reads a feed larger than the 2MB request default", async () => {
+    const item = `<item><title>Post</title><link>https://blog.example/p</link><description>${"x".repeat(1000)}</description></item>`;
+    const big = `<?xml version="1.0"?><rss version="2.0"><channel><title>Big</title>${item.repeat(3000)}</channel></rss>`;
+    const head = `<link rel="alternate" type="application/rss+xml" href="/feed.xml">`;
+    mockFetch({ [PAGE]: html(page(head)), "https://blog.example/feed.xml": reply.text(big) });
+    await expect(discoverFeeds(PAGE)).resolves.toEqual([{ url: "https://blog.example/feed.xml" }]);
   });
 
   it("throws when the page itself cannot be fetched", async () => {
