@@ -93,12 +93,12 @@ exports[`toJsonSchema > matches the snapshot for RepoInferenceOutput > RepoInfer
             },
             "type": "array",
           },
-          "query": {
+          "id": {
             "type": "string",
           },
         },
         "required": [
-          "query",
+          "id",
           "candidates",
         ],
         "type": "object",

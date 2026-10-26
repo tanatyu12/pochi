@@ -46,7 +46,7 @@ describe("output schemas", () => {
     const insight = { id: "i1", title: "t", summary: "s", impact: "High", action: "a" };
     expect(AnalysisOutputSchema.parse({ insights: [insight] })).toEqual({ insights: [insight] });
     expect(TriageOutputSchema.parse({ decisions: [{ id: "i1", relevant: false, reason: "r" }] }).decisions).toHaveLength(1);
-    expect(RepoInferenceOutputSchema.parse({ results: [{ query: "Next.js", candidates: [] }] }).results).toHaveLength(1);
+    expect(RepoInferenceOutputSchema.parse({ results: [{ id: "q1", candidates: [] }] }).results).toHaveLength(1);
     expect(QuerySuggestionOutputSchema.parse({ queries: ["q"] })).toEqual({ queries: ["q"] });
   });
 

@@ -3,7 +3,8 @@ import { ImpactSchema } from "../config/schema.js";
 import { ExitCode, PochiError } from "../errors.js";
 
 // No length or count limits: models break them now and then, and one overlong summary should
-// not fail a whole batch. Business rules are checked in code (pipeline/filter).
+// not fail a whole batch. Business rules are checked in code (pipeline/filter, init), with the
+// limits exported from prompts.ts.
 
 export const TriageOutputSchema = z.object({
   decisions: z.array(z.object({ id: z.string(), relevant: z.boolean(), reason: z.string() })),
@@ -19,7 +20,7 @@ export type AnalysisOutput = z.output<typeof AnalysisOutputSchema>;
 
 export const RepoInferenceOutputSchema = z.object({
   results: z.array(
-    z.object({ query: z.string(), candidates: z.array(z.object({ repo: z.string(), note: z.string() })) }),
+    z.object({ id: z.string(), candidates: z.array(z.object({ repo: z.string(), note: z.string() })) }),
   ),
 });
 export type RepoInferenceOutput = z.output<typeof RepoInferenceOutputSchema>;
