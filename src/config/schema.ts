@@ -125,6 +125,16 @@ const RssFeedSchema = z.strictObject({
   url: z.string().refine((u) => parseHttpUrl(u) !== undefined, { error: "must be an absolute http(s) URL" }),
 });
 
+// A bare host name such as prtimes.jp, the form Tavily's domain filters take.
+const domain = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/, {
+    error: "must be a domain name such as example.com",
+  });
+const domains = z.array(domain).min(1).max(20).optional();
+
 const QuerySchema = z.strictObject({
   id: sourceId,
   query: text,
@@ -132,6 +142,9 @@ const QuerySchema = z.strictObject({
   maxResults: positiveInt.max(20).default(10),
   /** Drop results Tavily cannot date, rather than leave their age to the LLM. */
   requireDate: z.boolean().default(false),
+  /** Search only these sites, such as a press release wire for news no feed carries. */
+  includeDomains: domains,
+  excludeDomains: domains,
 });
 
 export const SourcesSchema = z

@@ -1148,7 +1148,7 @@ describe("runInit --print-prompt", () => {
 });
 
 describe("runInit: ideas from Claude", () => {
-  const ASK = "Ask Claude for ideas from technology, design and marketing angles you may have missed?";
+  const ASK = "Ask Claude for ideas from technology, design, marketing and industry angles you may have missed?";
   const IDEAS = "Ideas to add to what you want to hear about (space to select, enter to confirm)";
   const QUERIES = "Search queries to run every morning (space to select)";
   // CONTEXT_ANSWERS up to the channels, without its "no ideas".
