@@ -852,3 +852,248 @@ describe("gitCheckIgnored", () => {
     expect(await gitCheckIgnored([join(dir, "context.yml"), join(dir, "sources.yml")])).toEqual([undefined, undefined]);
   });
 });
+
+describe("runInit --from", () => {
+  const PROPOSAL = {
+    pochi: "proposal/v1",
+    project: { name: "pecolab", description: "Pet photos to illustrations" },
+    language: "Japanese",
+    problems: [
+      { text: "Next.js breaking changes", axis: "tech", evidence: "package.json" },
+      { text: "Competing pet illustration apps", axis: "market", evidence: "knowledge" },
+    ],
+    exclude: [{ text: "Funding news" }],
+    repos: [{ repo: "vercel/next.js", evidence: "package.json: next" }, { repo: "ghost/missing" }, { repo: "Vercel/Next.js" }],
+    sites: [{ url: SIMON, evidence: "README" }],
+    queries: [{ query: "pet AI illustration app", intent: "competitor", topic: "general", evidence: "README" }],
+  };
+  // name, description, problems picked, none typed, exclude picked, none typed, language.
+  const PROPOSAL_CONTEXT: Answer[] = [
+    "pecolab",
+    "Pet photos to illustrations",
+    ["Next.js breaking changes", "Competing pet illustration apps"],
+    "",
+    [],
+    "",
+    "Japanese",
+  ];
+  const PROBLEMS = "What do you want to hear about? (proposed; space to toggle)";
+  const REPOS = "Proposed repositories to watch (space to toggle)";
+  const SITES = "Proposed sites to watch (space to toggle)";
+
+  async function writeProposal(value: unknown, name = "proposal.json"): Promise<string> {
+    const path = join(dir, name);
+    await writeFile(path, typeof value === "string" ? value : JSON.stringify(value));
+    return path;
+  }
+
+  beforeEach(() => {
+    mockFetch({ ...BASE_ROUTES, [`${API}/ghost/missing`]: reply.status(404) });
+  });
+
+  it("offers the proposal as the defaults and checks every source before writing", async () => {
+    const from = await writeProposal(PROPOSAL);
+    const configDir = join(dir, "config");
+    const { prompter, deps: d } = deps([
+      ...PROPOSAL_CONTEXT,
+      ["vercel/next.js", "ghost/missing"],
+      [SIMON],
+      "done",
+      true,
+      true,
+    ]);
+    await runInit({ configDir, from }, d);
+    expect(prompter.remaining).toEqual([]);
+
+    expect(prompter.shown).toContain(
+      "note: Proposal: 2 problems, 1 exclusion, 3 repositories, 1 site, 1 query.\nEach is offered to pick, and checked before anything is written.",
+    );
+    expect(prompter.initial).toMatchObject({
+      "Project name": "pecolab",
+      "Describe the project in a sentence or two (optional)": "Pet photos to illustrations",
+      [PROBLEMS]: ["Next.js breaking changes", "Competing pet illustration apps"],
+      "What should be dropped even if it looks related? (proposed; space to toggle)": ["Funding news"],
+      "Language for the summaries": "Japanese",
+      // Repositories differing only in case are offered once.
+      [REPOS]: ["vercel/next.js", "ghost/missing"],
+      [SITES]: [SIMON],
+    });
+    // The proposed problems leave room for more, and none is required once one is picked.
+    expect(prompter.asked).toContain("What do you want to hear about? (1/18, empty to finish)");
+    expect(prompter.shown).toContain("warn: ghost/missing was not found on GitHub; left out.");
+    expect(prompter.asked).toContain("Add another source? (2 so far)");
+
+    const loaded = await loadConfig({ configDir, env: {} });
+    expect(loaded.context).toMatchObject({
+      project: { name: "pecolab", description: "Pet photos to illustrations" },
+      problems: ["Next.js breaking changes", "Competing pet illustration apps"],
+      exclude: [],
+      language: "Japanese",
+    });
+    expect(loaded.sources.feeds.map((f) => f.id)).toEqual(["next-js", "simonwillison-net"]);
+  });
+
+  it("offers the proposed queries in place of Claude's, keeping their topic", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
+    mockFetch({
+      ...BASE_ROUTES,
+      [TAVILY]: reply.text(await readFile(join(import.meta.dirname, "../fixtures/tavily/search.json"), "utf8")),
+    });
+    const llm = fakeLlm({ queries: () => ["from Claude"] });
+    const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [] });
+    const configDir = join(dir, "config");
+    const { prompter, deps: d } = deps(
+      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["pet AI illustration app"], "", true, true],
+      // The fetch reads process.env; init reads the env it is given.
+      { resolveLlm: llm.resolve, env: { TAVILY_API_KEY: "tvly-test" } },
+    );
+    await runInit({ configDir, from }, d);
+    expect(llm.calls).toEqual([]);
+    const message = "Search queries to run every morning (space to select)";
+    expect(prompter.options[message]).toEqual(["pet AI illustration app"]);
+    // Each costs a credit every morning, so none is picked for the user.
+    expect(prompter.initial[message]).toBeUndefined();
+    expect((await loadConfig({ configDir, env: {} })).sources.queries).toEqual([
+      { id: "pet-ai-illustration-app", query: "pet AI illustration app", topic: "general", maxResults: 5 },
+    ]);
+  });
+
+  it("leaves a language it does not list to Other, filled in", async () => {
+    const from = await writeProposal({ pochi: "proposal/v1", language: "German", problems: [{ text: "News" }] });
+    const configDir = join(dir, "config");
+    const { prompter, deps: d } = deps(["app", "", ["News"], "", "", "other", "German", ...SOURCE_ANSWERS]);
+    await runInit({ configDir, from }, d);
+    expect(prompter.initial["Language for the summaries"]).toBe("other");
+    expect(prompter.initial.Language).toBe("German");
+    // Nothing proposed for exclude, so it is asked as before.
+    expect(prompter.asked).toContain("What should be dropped even if it looks related? (1/30, empty to finish)");
+    expect((await loadConfig({ configDir, env: {} })).context.language).toBe("German");
+  });
+
+  it("still requires a problem when every proposed one is dropped", async () => {
+    const from = await writeProposal(PROPOSAL);
+    const { deps: d } = deps(["app", "", [], ""]);
+    expect(await rejection(runInit({ configDir: join(dir, "config"), from }, d))).toMatchObject({
+      message: expect.stringMatching(/rejected .* Required/),
+    });
+  });
+
+  it("warns about the entries it left out", async () => {
+    const from = await writeProposal({ pochi: "proposal/v1", problems: [{ text: "News" }], repos: [{ repo: "nope" }, "x"] });
+    const { prompter, deps: d } = deps(["app", "", ["News"], "", "", "English", ...SOURCE_ANSWERS]);
+    await runInit({ configDir: join(dir, "config"), from }, d);
+    expect(prompter.shown).toContain("warn: Left out 2 proposed entries: malformed or past the limits.");
+  });
+
+  it("does not wait for Claude when the proposal answers every step that needs it", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
+    let lookup: AbortSignal | undefined;
+    const from = await writeProposal(PROPOSAL);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [SIMON], "done", [], "", true, true], {
+      env: { TAVILY_API_KEY: "tvly-test" },
+      // Never settles, like a CLI probe that hangs.
+      resolveLlm: (_, opts) => {
+        lookup = opts?.signal;
+        return new Promise(() => {});
+      },
+    });
+    await runInit({ configDir: join(dir, "config"), from }, d);
+    expect(prompter.asked).toContain("Search queries to run every morning (space to select)");
+    expect(prompter.shown.some((s) => s.includes("Looking for Claude"))).toBe(false);
+    expect(lookup?.aborted).toBe(true);
+  });
+
+  it("drops proposed queries that clean to nothing or repeat, and names non-ASCII ones by a hash", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
+    mockFetch({
+      ...BASE_ROUTES,
+      [TAVILY]: reply.text(await readFile(join(import.meta.dirname, "../fixtures/tavily/search.json"), "utf8")),
+    });
+    const from = await writeProposal({
+      ...PROPOSAL,
+      repos: [],
+      sites: [],
+      queries: [{ query: "\u0007" }, { query: "Pet  AI" }, { query: "pet ai" }, { query: "ペット イラスト" }],
+    });
+    const configDir = join(dir, "config");
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, "done", ["Pet AI", "ペット イラスト"], "", true, true], {
+      env: { TAVILY_API_KEY: "tvly-test" },
+    });
+    await runInit({ configDir, from }, d);
+    expect(prompter.options["Search queries to run every morning (space to select)"]).toEqual(["Pet AI", "ペット イラスト"]);
+    const ids = (await loadConfig({ configDir, env: {} })).sources.queries.map((q) => q.id);
+    expect(ids).toEqual(["pet-ai", expect.stringMatching(/^query-[0-9a-f]{8}$/)]);
+  });
+
+  it("says which proposed site was skipped when two lead to one feed", async () => {
+    const blog = "https://blog.example.com/";
+    mockFetch({
+      ...BASE_ROUTES,
+      [blog]: reply.text(`<html><head><link rel="alternate" type="application/atom+xml" href="${SIMON}"></head></html>`),
+    });
+    const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: blog }, { url: SIMON }] });
+    const configDir = join(dir, "config");
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done", true]);
+    await runInit({ configDir, from }, d);
+    expect(prompter.shown).toContain("spin: Looking for feeds on 2 sites");
+    expect(prompter.shown).toContain("warn: Already added: simonwillison.net/atom/everything; skipped.");
+    expect((await loadConfig({ configDir, env: {} })).sources.feeds).toEqual([expect.objectContaining({ url: SIMON })]);
+  });
+
+  it("leaves out a proposed site it could not check instead of offering to add it anyway", async () => {
+    const down = "https://down.example.com/";
+    mockFetch({ ...BASE_ROUTES, [down]: reply.status(503) });
+    const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: down }, { url: SIMON }] });
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done", true]);
+    await runInit({ configDir: join(dir, "config"), from }, d);
+    expect(prompter.shown.some((s) => s.startsWith(`warn: Could not open ${down}`) && s.endsWith("; left out"))).toBe(true);
+    expect(prompter.asked.some((m) => m.includes("anyway"))).toBe(false);
+  });
+
+  it("says the proposed queries are left out without a Tavily key", async () => {
+    const from = await writeProposal(PROPOSAL);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done", true]);
+    await runInit({ configDir: join(dir, "config"), from }, d);
+    expect(prompter.shown).toContain(
+      "note: TAVILY_API_KEY is not set, so web search queries are skipped (1 proposed query left out).",
+    );
+  });
+
+  it("offers proposed entries once whatever their case, and refuses typing one again", async () => {
+    const from = await writeProposal({
+      pochi: "proposal/v1",
+      problems: [{ text: "Next.js breaking changes" }, { text: "next.js Breaking Changes" }],
+    });
+    const { prompter, deps: d } = deps(["app", "", ["Next.js breaking changes"], "NEXT.JS BREAKING CHANGES"]);
+    expect(await rejection(runInit({ configDir: join(dir, "config"), from }, d))).toMatchObject({
+      message: expect.stringMatching(/Already in the list/),
+    });
+    expect(prompter.options[PROBLEMS]).toEqual(["Next.js breaking changes"]);
+  });
+
+  it("fails with 2 before asking anything when the file cannot be used", async () => {
+    for (const from of [join(dir, "missing.json"), await writeProposal("I could not finish.", "bad.md")]) {
+      const { prompter, deps: d } = deps([]);
+      const err = await rejection(runInit({ configDir: join(dir, "config"), from }, d));
+      expect(err).toBeInstanceOf(ConfigError);
+      expect(prompter.asked).toEqual([]);
+      expect(prompter.shown).toEqual([]);
+    }
+  });
+});
+
+describe("runInit --print-prompt", () => {
+  it("prints the prompt and asks nothing, even off a terminal", async () => {
+    let out = "";
+    const { prompter, deps: d } = deps([], { isInteractive: () => false, stdout: (s) => (out += s) });
+    await runInit({ configDir: dir, printPrompt: true }, d);
+    expect(out).toContain('"pochi": "proposal/v1"');
+    expect(prompter.asked).toEqual([]);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("cannot be combined with --from", async () => {
+    const { deps: d } = deps([], { stdout: () => undefined });
+    expect(await rejection(runInit({ printPrompt: true, from: "x.json" }, d))).toBeInstanceOf(ConfigError);
+  });
+});
