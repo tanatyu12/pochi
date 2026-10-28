@@ -6,6 +6,8 @@ import {
   AnalysisOutputSchema,
   type AnalysisOutput,
   type GenerateRequest,
+  IdeaSuggestionOutputSchema,
+  type IdeaSuggestionOutput,
   QuerySuggestionOutputSchema,
   type QuerySuggestionOutput,
   RepoInferenceOutputSchema,
@@ -19,6 +21,9 @@ const TRIAGE_CONTENT_CHARS = 300;
 // The schemas carry no count limits, so callers enforce these on the parsed output.
 export const MAX_REPO_CANDIDATES = 3;
 export const MAX_QUERY_SUGGESTIONS = 5;
+export const MAX_IDEAS = 9;
+export const MAX_IDEA_SITES = 2;
+export const MAX_IDEA_QUERIES = 2;
 
 /** Items go to the model as i1..iN by their position in the batch; map answers back with this. */
 export function shortId(index: number): string {
@@ -166,5 +171,29 @@ export function querySuggestionRequest(context: Context): GenerateRequest<QueryS
     prompt: "Suggest the search queries.",
     schema: QuerySuggestionOutputSchema,
     tier: "triage",
+  };
+}
+
+export function ideaSuggestionRequest(context: Context): GenerateRequest<IdeaSuggestionOutput> {
+  const task = [
+    "Task: suggest interests the team has not listed but would likely want to hear about, to cover their blind spots.",
+    `- Suggest up to ${MAX_IDEAS} ideas, each from one perspective, favouring tech, design and marketing:`,
+    "  - tech: the stack, the platforms it runs on, its tooling and the AI models it could use.",
+    "  - design: UI and UX patterns, design systems, accessibility.",
+    "  - marketing: SEO, acquisition channels, social media, competitors.",
+    "  - business: pricing, regulation, platform policies.",
+    "  - ops: cost, reliability, CI.",
+    "- Skip anything the interests above already cover, and anything matching the exclusions.",
+    "- problem: one short sentence specific to this project, written like the interests above.",
+    "- why: a few words on why it matters to this project.",
+    `- sites: up to ${MAX_IDEA_SITES} official blogs or changelogs with an RSS or Atom feed, as page URLs. Every one is checked, so leave the list empty rather than guess.`,
+    `- queries: up to ${MAX_IDEA_QUERIES} web searches for news no feed covers, 2-6 words each, in the language that gives the best results for the market.`,
+  ].join("\n");
+  return {
+    system: buildSystem(context, task, ["problem", "why"]),
+    prompt: "Suggest the ideas.",
+    schema: IdeaSuggestionOutputSchema,
+    // Finding what the team missed takes more judgement than naming a repository.
+    tier: "analyze",
   };
 }

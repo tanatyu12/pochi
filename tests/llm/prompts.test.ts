@@ -5,6 +5,7 @@ import {
   escapeUntrusted,
   MAX_QUERY_SUGGESTIONS,
   MAX_REPO_CANDIDATES,
+  ideaSuggestionRequest,
   queryId,
   querySuggestionRequest,
   repoInferenceRequest,
@@ -13,6 +14,7 @@ import {
 } from "../../src/llm/prompts.js";
 import {
   AnalysisOutputSchema,
+  IdeaSuggestionOutputSchema,
   QuerySuggestionOutputSchema,
   RepoInferenceOutputSchema,
   TriageOutputSchema,
@@ -154,6 +156,7 @@ describe("system prompt", () => {
     expect(analyzeRequest(context, [item(1)]).system).toContain("Write the title, summary, action fields in Japanese.");
     expect(repoInferenceRequest(context, ["Next.js"]).system).toContain("Write the note field in Japanese.");
     expect(querySuggestionRequest(context).system).not.toContain("in Japanese");
+    expect(ideaSuggestionRequest(context).system).toContain("Write the problem, why fields in Japanese.");
   });
 
   it("tells the model not to follow instructions inside the wrapper", () => {
@@ -187,6 +190,7 @@ describe("request builders", () => {
       [analyzeRequest(context, [item(1)]), "analyze", AnalysisOutputSchema],
       [repoInferenceRequest(context, ["Next.js"]), "triage", RepoInferenceOutputSchema],
       [querySuggestionRequest(context), "triage", QuerySuggestionOutputSchema],
+      [ideaSuggestionRequest(context), "analyze", IdeaSuggestionOutputSchema],
     ] as const;
     for (const [req, tier, schema] of reqs) {
       expect(req.tier).toBe(tier);
