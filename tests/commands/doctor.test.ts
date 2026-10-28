@@ -129,6 +129,7 @@ describe("doctor: secrets", () => {
     expect(result.exitCode).toBe(ExitCode.OK);
     expect(line("TAVILY_API_KEY")).toMatch(/ok\s+TAVILY_API_KEY\s+set$/);
     expect(line("SLACK_WEBHOOK_URL")).toMatch(/ok\s+SLACK_WEBHOOK_URL\s+set$/);
+    expect(line("slack")).toMatch(/ok\s+slack\s+posts to SLACK_WEBHOOK_URL$/);
     expectNoSecrets();
   });
 
@@ -257,14 +258,42 @@ describe("doctor: environment", () => {
     expect(line("GITHUB_TOKEN")).toMatch(/ok\s+GITHUB_TOKEN\s+set$/);
     expect(line("TAVILY_API_KEY")).toMatch(/warn\s+TAVILY_API_KEY\s+blank \(treated as unset\)/);
     expect(line("ANTHROPIC_BASE_URL")).toMatch(/-\s+ANTHROPIC_BASE_URL\s+not set/);
-    expect(line("SLACK_WEBHOOK_URL")).toMatch(/warn\s+SLACK_WEBHOOK_URL\s+not set/);
+    expect(line("SLACK_WEBHOOK_URL")).toMatch(/-\s+SLACK_WEBHOOK_URL\s+not set/);
+  });
+});
+
+describe("doctor: notify", () => {
+  const withChannels = (channels: string) => writeFile(join(dir, "context.yml"), `${CONTEXT}notify: { channels: ${channels} }\n`);
+
+  it("warns about the webhook only when Slack is a channel", async () => {
+    await check();
+    expect(line("slack")).toMatch(/warn\s+slack\s+SLACK_WEBHOOK_URL is not set/);
+
+    out = [];
+    vi.stubEnv("SLACK_WEBHOOK_URL", "https://example.com/hook");
+    expect((await check()).exitCode).toBe(ExitCode.OK);
+    expect(line("slack")).toMatch(/warn\s+slack\s+SLACK_WEBHOOK_URL is not a https:\/\/hooks\.slack\.com\/ URL/);
+
+    out = [];
+    vi.stubEnv("SLACK_WEBHOOK_URL", undefined);
+    await withChannels(`[{ type: file, dir: "${join(dir, "reports")}" }]`);
+    await check();
+    expect(line("slack")).toBeUndefined();
+    expect(out.filter((l) => l.includes("warn") && l.includes("SLACK"))).toEqual([]);
   });
 
-  it("warns when SLACK_WEBHOOK_URL is not a Slack webhook", async () => {
-    vi.stubEnv("SLACK_WEBHOOK_URL", "https://example.com/hook");
+  it("accepts a report directory that exists or can be created", async () => {
+    await withChannels(`[{ type: file, dir: "${join(dir, "a", "b")}" }]`);
+    expect((await check()).exitCode).toBe(ExitCode.OK);
+    expect(line("file")).toMatch(/ok\s+file\s+writes .*\/a\/b\/<date>\.md/);
+  });
+
+  it("fails with 4 when the report directory is a file", async () => {
+    await writeFile(join(dir, "taken"), "");
+    await withChannels(`[{ type: file, dir: "${join(dir, "taken")}" }]`);
     const result = await check();
-    expect(result.exitCode).toBe(ExitCode.OK);
-    expect(line("SLACK_WEBHOOK_URL")).toMatch(/warn\s+SLACK_WEBHOOK_URL\s+set, but not a https:\/\/hooks\.slack\.com\/ URL/);
+    expect(result.exitCode).toBe(ExitCode.DELIVERY);
+    expect(line("file")).toMatch(/fail\s+file\s+.*taken: not a directory/);
   });
 });
 

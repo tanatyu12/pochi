@@ -30,7 +30,7 @@ export interface FilterResult {
   /** To notify: by impact (High first), then newest first. */
   insights: Insight[];
   /**
-   * Recorded as state i: not relevant, below notify.slack.minImpact, or the one item a batch kept
+   * Recorded as state i: not relevant, below notify.minImpact, or the one item a batch kept
    * failing on (refused, say), found by splitting the batch and confirmed by sending it again.
    */
   irrelevant: Item[];
@@ -134,7 +134,7 @@ export async function filterAndAnalyze(
     },
   );
 
-  const threshold = IMPACT_RANK[context.notify.slack.minImpact];
+  const threshold = IMPACT_RANK[context.notify.minImpact];
   const analyze = await runStage(
     run,
     "analyze",

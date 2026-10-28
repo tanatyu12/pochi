@@ -161,13 +161,20 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
     if (env[name]?.trim()) p.warn(`${name} is set and takes precedence over the files just written.`);
   }
 
+  const configDir = dir === DEFAULT_CONFIG_DIR ? "" : ` --config-dir ${shellQuote(dir)}`;
+  const types = new Set(context.notify.channels.map((c) => c.type));
   p.note(
     [
-      `node dist/pochi.mjs run --dry-run${dir === DEFAULT_CONFIG_DIR ? "" : ` --config-dir ${shellQuote(dir)}`}`,
-      `gh secret set POCHI_CONTEXT_YAML < ${shellQuote(contextPath)}`,
-      `gh secret set POCHI_SOURCES_YAML < ${shellQuote(sourcesPath)}`,
-      `gh secret set SLACK_WEBHOOK_URL`,
-      `gh secret set ANTHROPIC_API_KEY`,
+      `node dist/pochi.mjs run --dry-run${configDir}`,
+      // Files stay on the machine that runs pochi, so a file-only setup is run locally, not in Actions.
+      ...(types.has("slack")
+        ? [
+            `gh secret set POCHI_CONTEXT_YAML < ${shellQuote(contextPath)}`,
+            `gh secret set POCHI_SOURCES_YAML < ${shellQuote(sourcesPath)}`,
+            `gh secret set SLACK_WEBHOOK_URL`,
+            `gh secret set ANTHROPIC_API_KEY`,
+          ]
+        : [`node dist/pochi.mjs run${configDir}`]),
     ].join("\n"),
     "Next steps",
   );
@@ -231,16 +238,39 @@ async function askContext(p: Prompter, proposal?: Proposal): Promise<ContextInpu
         ).trim()
       : choice;
 
+  const channels = await askChannels(p);
+
   return {
     version: 1,
     project: { name: name.trim(), description: description.trim() },
     problems,
     ...(exclude.length > 0 && { exclude }),
     language,
+    notify: { channels },
   };
 }
 
 const LANGUAGES = ["English", "Japanese"] as const;
+
+type ChannelInput = NonNullable<NonNullable<ContextInput["notify"]>["channels"]>[number];
+
+const CHANNELS = [
+  { value: "slack", label: "Slack", hint: "an incoming webhook in SLACK_WEBHOOK_URL" },
+  { value: "file", label: "Markdown files", hint: "reports/<date>.md" },
+] as const;
+
+// Asked again until one is picked: a run has to deliver somewhere.
+async function askChannels(p: Prompter): Promise<ChannelInput[]> {
+  for (;;) {
+    const picked = await p.multiselect({
+      message: "Where should the briefing go? (space to toggle)",
+      options: CHANNELS.map((c) => ({ ...c })),
+      initialValues: ["slack"],
+    });
+    if (picked.length > 0) return picked.map((type) => ({ type }));
+    p.warn("Pick at least one.");
+  }
+}
 
 // The proposed entries come first, all picked, so accepting the proposal is one keypress;
 // more can be typed after them.
