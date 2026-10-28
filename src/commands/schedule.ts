@@ -248,9 +248,16 @@ function missing(needed: string[], vars: Record<string, string | undefined>): st
 }
 
 function checkGithub(config: LoadedConfig): string[] {
-  return config.context.notify.channels.some((c) => c.type === "file")
-    ? ["the file channel writes on the Actions runner, where the files are lost after the run"]
-    : [];
+  const { provider } = config.context.llm;
+  return [
+    ...(config.context.notify.channels.some((c) => c.type === "file")
+      ? ["the file channel writes on the Actions runner, where the files are lost after the run"]
+      : []),
+    // The workflow sets ANTHROPIC_API_KEY; no CLI is installed or logged in on the runner.
+    ...(provider !== "auto" && provider !== "api"
+      ? [`llm.provider is ${provider}, but the Actions runner has no CLI to run; use auto or api there`]
+      : []),
+  ];
 }
 
 /** "Mon 2026-11-02 06:17", on the machine's clock. */

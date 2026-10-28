@@ -90,6 +90,7 @@ export function createCliLlm(opts: {
   };
   return {
     mode: "cli",
+    backend: "claude",
     async generate<T>(req: GenerateRequest<T>, { signal }: { signal?: AbortSignal } = {}): Promise<T> {
       const model = opts.models[req.tier];
       const started = Date.now();
@@ -130,29 +131,40 @@ export interface Exit {
  * Resolves once claude has exited, also when it was stopped, so no process outlives the call.
  * label (the model, or what the run is for) goes in error messages.
  */
-export async function runClaude(
+export function runClaude(
   run: RunOptions,
   args: string[],
   input: string,
   label: string,
   signal: AbortSignal | undefined,
 ): Promise<Exit> {
+  return withPrivateDir("pochi-claude-", run.command, signal, (cwd) => runIn(cwd, run, args, input, label, signal));
+}
+
+/**
+ * Runs fn in a private directory, removed afterwards: outside the project and not the shared temp
+ * directory, where anyone could leave a .claude, CLAUDE.md or AGENTS.md for the CLI to pick up.
+ */
+export async function withPrivateDir<T>(
+  prefix: string,
+  command: string,
+  signal: AbortSignal | undefined,
+  fn: (cwd: string) => Promise<T>,
+): Promise<T> {
   if (signal?.aborted) throw abortReason(signal);
-  // A private cwd, outside the project and not the shared temp directory, where anyone could
-  // leave a .claude or CLAUDE.md for claude to pick up.
-  const cwd = await mkdtemp(join(tmpdir(), "pochi-claude-")).catch((err: NodeJS.ErrnoException) => {
-    throw new LlmError("unavailable", `could not create a directory to run claude in: ${err.code ?? err.message}`, {
+  const cwd = await mkdtemp(join(tmpdir(), prefix)).catch((err: NodeJS.ErrnoException) => {
+    throw new LlmError("unavailable", `could not create a directory to run ${command} in: ${err.code ?? err.message}`, {
       cause: err,
     });
   });
   try {
-    return await runIn(cwd, run, args, input, label, signal);
+    return await fn(cwd);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
 }
 
-function runIn(
+export function runIn(
   cwd: string,
   run: RunOptions,
   args: string[],
@@ -192,7 +204,7 @@ function runIn(
       killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
     };
     const timer = setTimeout(
-      () => stop(new LlmError("timeout", `claude did not answer within ${run.timeoutMs}ms (${label})`)),
+      () => stop(new LlmError("timeout", `${run.command} did not answer within ${run.timeoutMs}ms (${label})`)),
       run.timeoutMs,
     );
     const onAbort = () => stop(abortReason(signal!));
@@ -225,7 +237,7 @@ function runIn(
       if (stopping) return;
       stdoutBytes += chunk.byteLength;
       if (stdoutBytes > run.maxBytes) {
-        stop(new LlmError("invalid_output", `claude output exceeds ${run.maxBytes} bytes (${label})`));
+        stop(new LlmError("invalid_output", `${run.command} output exceeds ${run.maxBytes} bytes (${label})`));
         return;
       }
       stdout.push(chunk);

@@ -102,6 +102,10 @@ describe("ContextSchema", () => {
     ]);
   });
 
+  it.each(["auto", "api", "cli", "claude", "codex"])("accepts llm.provider %s", (provider) => {
+    expect(contextErrors({ ...minimalContext, llm: { provider } })).toEqual([]);
+  });
+
   it("describes wrong types, enums and numeric bounds", () => {
     expect(
       contextErrors({

@@ -140,9 +140,10 @@ async function checkLlm(report: Report, config: LoadedConfig | undefined, deps: 
       command: deps.command,
       signal: deps.signal,
     });
-    const tiers = `triage ${models.triage} · analyze ${models.analyze}`;
+    // Without a configured model, codex uses the one its login defaults to.
+    const tiers = `triage ${models.triage ?? "codex default"} · analyze ${models.analyze ?? "codex default"}`;
     if (client.mode === "cli") {
-      report.ok("LLM", "cli mode", `${cliVersion} · ${tiers}`);
+      report.ok("LLM", `cli mode (${client.backend})`, `${cliVersion} · ${tiers}`);
     } else {
       // A key is only known to be valid once a request is billed, which doctor does not do.
       report.ok("LLM", "api mode", `${tiers} (the key is not checked against the API)`);
