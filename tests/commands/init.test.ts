@@ -1025,7 +1025,7 @@ describe("runInit --from", () => {
     expect(ids).toEqual(["pet-ai", expect.stringMatching(/^query-[0-9a-f]{8}$/)]);
   });
 
-  it("skips a proposed site that is a feed already added, before fetching it", async () => {
+  it("says which proposed site was skipped when two lead to one feed", async () => {
     const blog = "https://blog.example.com/";
     mockFetch({
       ...BASE_ROUTES,
@@ -1035,9 +1035,40 @@ describe("runInit --from", () => {
     const configDir = join(dir, "config");
     const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done", true]);
     await runInit({ configDir, from }, d);
-    expect(prompter.shown).toContain("warn: Already added; skipped.");
-    expect(prompter.shown.some((s) => s.includes(`Looking for feeds on ${SIMON}`))).toBe(false);
+    expect(prompter.shown).toContain("spin: Looking for feeds on 2 sites");
+    expect(prompter.shown).toContain("warn: Already added: simonwillison.net/atom/everything; skipped.");
     expect((await loadConfig({ configDir, env: {} })).sources.feeds).toEqual([expect.objectContaining({ url: SIMON })]);
+  });
+
+  it("leaves out a proposed site it could not check instead of offering to add it anyway", async () => {
+    const down = "https://down.example.com/";
+    mockFetch({ ...BASE_ROUTES, [down]: reply.status(503) });
+    const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: down }, { url: SIMON }] });
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done", true]);
+    await runInit({ configDir: join(dir, "config"), from }, d);
+    expect(prompter.shown.some((s) => s.startsWith(`warn: Could not open ${down}`) && s.endsWith("; left out"))).toBe(true);
+    expect(prompter.asked.some((m) => m.includes("anyway"))).toBe(false);
+  });
+
+  it("says the proposed queries are left out without a Tavily key", async () => {
+    const from = await writeProposal(PROPOSAL);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done", true]);
+    await runInit({ configDir: join(dir, "config"), from }, d);
+    expect(prompter.shown).toContain(
+      "note: TAVILY_API_KEY is not set, so web search queries are skipped (1 proposed query left out).",
+    );
+  });
+
+  it("offers proposed entries once whatever their case, and refuses typing one again", async () => {
+    const from = await writeProposal({
+      pochi: "proposal/v1",
+      problems: [{ text: "Next.js breaking changes" }, { text: "next.js Breaking Changes" }],
+    });
+    const { prompter, deps: d } = deps(["app", "", ["Next.js breaking changes"], "NEXT.JS BREAKING CHANGES"]);
+    expect(await rejection(runInit({ configDir: join(dir, "config"), from }, d))).toMatchObject({
+      message: expect.stringMatching(/Already in the list/),
+    });
+    expect(prompter.options[PROBLEMS]).toEqual(["Next.js breaking changes"]);
   });
 
   it("fails with 2 before asking anything when the file cannot be used", async () => {
