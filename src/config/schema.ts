@@ -129,7 +129,7 @@ const QuerySchema = z.strictObject({
   id: sourceId,
   query: text,
   topic: z.enum(["news", "general"]).default("general"),
-  maxResults: positiveInt.max(20).default(5),
+  maxResults: positiveInt.max(20).default(10),
   /** Drop results Tavily cannot date, rather than leave their age to the LLM. */
   requireDate: z.boolean().default(false),
 });
@@ -140,6 +140,8 @@ export const SourcesSchema = z
     defaults: z
       .strictObject({
         itemsPerFeed: positiveInt.default(3),
+        /** Entries published since the last run are taken beyond itemsPerFeed, up to this many. */
+        maxItemsPerFeed: positiveInt.default(20),
         maxContentChars: positiveInt.default(2000),
       })
       .prefault({}),

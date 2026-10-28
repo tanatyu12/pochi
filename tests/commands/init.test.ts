@@ -986,7 +986,7 @@ describe("runInit --from", () => {
     // Each costs a credit every morning, so none is picked for the user.
     expect(prompter.initial[message]).toBeUndefined();
     expect((await loadConfig({ configDir, env: {} })).sources.queries).toEqual([
-      { id: "pet-ai-illustration-app", query: "pet AI illustration app", topic: "general", maxResults: 5, requireDate: false },
+      { id: "pet-ai-illustration-app", query: "pet AI illustration app", topic: "general", maxResults: 10, requireDate: false },
     ]);
   });
 

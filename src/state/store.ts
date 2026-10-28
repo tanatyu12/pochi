@@ -27,6 +27,8 @@ export interface StateEntry {
 
 export interface State {
   entries: Map<string, StateEntry>;
+  /** When the file was last saved, which is when the last run that saved it ran. */
+  updatedAt?: Date;
 }
 
 export class StateError extends PochiError {
@@ -36,7 +38,12 @@ export class StateError extends PochiError {
 }
 
 // Entries are checked one by one, so only the envelope has to be intact.
-const FileSchema = z.object({ version: z.literal(1), entries: z.record(z.string(), z.unknown()) });
+const FileSchema = z.object({
+  version: z.literal(1),
+  // Only tells sources how far back to look, so a bad value is ignored rather than failing the file.
+  updatedAt: z.iso.datetime().optional().catch(undefined),
+  entries: z.record(z.string(), z.unknown()),
+});
 const KEY = /^[0-9a-f]{32}$/;
 // A calendar check, not just the shape: "2026-13-01" would make pruneState throw.
 const day = z.iso.date();
@@ -72,6 +79,7 @@ export async function inspectState(path: string): Promise<StateInspection> {
   if (!file.success) return { kind: "invalid" };
 
   const state = emptyState();
+  if (file.data.updatedAt !== undefined) state.updatedAt = new Date(file.data.updatedAt);
   let dropped = 0;
   for (const [key, value] of Object.entries(file.data.entries)) {
     const entry = EntrySchema.safeParse(value);

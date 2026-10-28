@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { GithubFeed, Sources } from "../config/schema.js";
-import type { Item } from "../types.js";
+import type { GithubFeed } from "../config/schema.js";
+import type { FetchDefaults, Item } from "../types.js";
 import { fetchText, HttpError } from "../util/http.js";
 import { log } from "../util/log.js";
 import { parseApi } from "./api.js";
@@ -118,7 +118,7 @@ function found(
 
 export async function fetchGithubItems(
   feed: GithubFeed,
-  defaults: Sources["defaults"],
+  defaults: FetchDefaults,
   signal?: AbortSignal,
 ): Promise<Item[]> {
   const source = { ...feed, kind: "github" as const };

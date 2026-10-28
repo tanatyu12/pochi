@@ -8,7 +8,7 @@ import { mockFetch, reply, type Reply } from "../helpers/mockFetch.js";
 
 const SEARCH = "https://api.tavily.com/search";
 const KEY = "tvly-test-0123456789abcdef";
-const defaults = { itemsPerFeed: 3, maxContentChars: 2000 };
+const defaults = { itemsPerFeed: 3, maxItemsPerFeed: 20, maxContentChars: 2000 };
 
 const feedUrl = (id: string) => `https://${id}.example.com/feed.xml`;
 

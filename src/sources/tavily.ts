@@ -1,9 +1,9 @@
 import { z } from "zod";
-import type { QueryConfig, Sources } from "../config/schema.js";
-import type { Item } from "../types.js";
+import type { QueryConfig } from "../config/schema.js";
+import type { FetchDefaults, Item } from "../types.js";
 import { itemId, normalizeUrl, parseHttpUrl, urlKey } from "../util/hash.js";
 import { HttpError, postJson } from "../util/http.js";
-import { parseDate } from "../util/time.js";
+import { parseDate, toIsoDate } from "../util/time.js";
 import { parseApi } from "./api.js";
 import { collapseWhitespace, truncate } from "../util/text.js";
 import { plainTextToText } from "./html.js";
@@ -32,7 +32,7 @@ export function tavilyApiKey(env: NodeJS.ProcessEnv = process.env): string | und
 
 export async function fetchTavilyItems(
   query: QueryConfig,
-  defaults: Sources["defaults"],
+  defaults: FetchDefaults,
   signal?: AbortSignal,
 ): Promise<Item[]> {
   const key = tavilyApiKey();
@@ -41,8 +41,9 @@ export async function fetchTavilyItems(
     query: query.query,
     topic: query.topic,
     search_depth: "basic",
-    // Replaces the deprecated `days`.
-    time_range: "week",
+    // From the last run, so a daily run is not handed the same week's top results again and a
+    // weekly one misses nothing; the first run looks back a week. Replaces the deprecated `days`.
+    ...(defaults.since ? { start_date: toIsoDate(defaults.since) } : { time_range: "week" }),
     // Only news results carry a date otherwise, and an undated result passes the maxItemAgeDays check.
     include_published_date: true,
     // Also drops results without a detectable date, which the window alone keeps.
@@ -68,7 +69,7 @@ export async function fetchTavilyItems(
 
 // Keeps Tavily's relevance order. The id leaves out the query, so the same page found by two
 // queries is one item.
-function toTavilyItems(results: SearchResult[], query: QueryConfig, defaults: Sources["defaults"]): Item[] {
+function toTavilyItems(results: SearchResult[], query: QueryConfig, defaults: FetchDefaults): Item[] {
   const seen = new Set<string>();
   return results.flatMap((r) => {
     const url = r.url ? parseHttpUrl(r.url.trim())?.toString() : undefined;

@@ -1,6 +1,6 @@
 import { parseFeed, DetectError } from "feedsmith";
-import type { RssFeed, Sources } from "../config/schema.js";
-import type { Item, SourceKind } from "../types.js";
+import type { RssFeed } from "../config/schema.js";
+import type { FetchDefaults, Item, SourceKind } from "../types.js";
 import { itemId, normalizeUrl, parseHttpUrl, urlKey } from "../util/hash.js";
 import { fetchText } from "../util/http.js";
 import { collapseWhitespace, truncate } from "../util/text.js";
@@ -158,12 +158,16 @@ export interface ToItemsOptions {
   /** Relative links resolve against this: the feed URL after redirects. */
   baseUrl: string;
   itemsPerFeed: number;
+  /** With since: dated entries published since then are kept beyond itemsPerFeed, up to this many. */
+  maxItemsPerFeed?: number;
+  since?: Date;
   maxContentChars: number;
 }
 
 /**
- * Keeps the newest `itemsPerFeed` entries that have a usable link, one per guid or URL.
- * Undated entries go last.
+ * Keeps the newest `itemsPerFeed` entries that have a usable link, one per guid or URL, and with
+ * `since` also every newer dated one up to `maxItemsPerFeed`, so a feed that posted more than
+ * itemsPerFeed since the last run loses none. Undated entries go last.
  */
 export function toItems(entries: RawEntry[], source: ItemSource, opts: ToItemsOptions): Item[] {
   const linked = entries.flatMap((entry, pos) => {
@@ -184,7 +188,11 @@ export function toItems(entries: RawEntry[], source: ItemSource, opts: ToItemsOp
     seen.add(key).add(normalized);
     return true;
   });
-  return unique.slice(0, Math.max(0, opts.itemsPerFeed)).map(({ entry, url, normalized, key, date }) => ({
+  // Dated entries come first, newest first, so those since the last run are a prefix.
+  const since = opts.since?.getTime();
+  const recent = since === undefined ? 0 : unique.findIndex(({ date }) => !date || date.getTime() < since);
+  const extra = Math.min(recent === -1 ? unique.length : recent, opts.maxItemsPerFeed ?? 0);
+  return unique.slice(0, Math.max(0, opts.itemsPerFeed, extra)).map(({ entry, url, normalized, key, date }) => ({
     id: itemId(source.id, key),
     sourceId: source.id,
     sourceName: source.name,
@@ -223,7 +231,7 @@ export async function fetchFeedEntries(
 export async function fetchFeedItems(
   url: string,
   source: ItemSource,
-  defaults: Sources["defaults"],
+  defaults: FetchDefaults,
   signal?: AbortSignal,
   filter: (entries: RawEntry[]) => RawEntry[] = (entries) => entries,
 ): Promise<Item[]> {
@@ -231,6 +239,6 @@ export async function fetchFeedItems(
   return toItems(filter(feed.entries), source, { baseUrl: feed.url, ...defaults });
 }
 
-export function fetchRssItems(feed: RssFeed, defaults: Sources["defaults"], signal?: AbortSignal): Promise<Item[]> {
+export function fetchRssItems(feed: RssFeed, defaults: FetchDefaults, signal?: AbortSignal): Promise<Item[]> {
   return fetchFeedItems(feed.url, feed, defaults, signal);
 }

@@ -1,4 +1,4 @@
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
 
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
