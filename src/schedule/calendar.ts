@@ -1,0 +1,296 @@
+import type { Schedule } from "../config/schema.js";
+
+/** "*" or the values it matches, sorted and without duplicates. */
+export type Field = "*" | readonly number[];
+
+/**
+ * When a job runs, in one time zone, with cron's meaning: a run happens at every minute that
+ * matches all fields, except that when both dayOfMonth and weekday are restricted a day matches
+ * either of them. Every backend is rendered from this.
+ */
+export interface Calendar {
+  minute: Field;
+  hour: Field;
+  dayOfMonth: Field;
+  month: Field;
+  /** 0 is Sunday. */
+  weekday: Field;
+}
+
+type FieldName = keyof Calendar;
+
+export const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+export type Weekday = (typeof WEEKDAYS)[number];
+export const DEFAULT_TIME = "06:17";
+
+const BOUNDS: Record<FieldName, readonly [number, number]> = {
+  minute: [0, 59],
+  hour: [0, 23],
+  dayOfMonth: [1, 31],
+  month: [1, 12],
+  weekday: [0, 6],
+};
+const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const DAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const FIELD_ORDER: readonly FieldName[] = ["minute", "hour", "dayOfMonth", "month", "weekday"];
+const MINUTES_PER_DAY = 24 * 60;
+
+/** A schedule that cannot be parsed or moved; commands turn it into a ConfigError. */
+export class CalendarError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CalendarError";
+  }
+}
+
+export function calendarOf(schedule: Schedule): Calendar {
+  if (schedule.interval === "cron") return parseCron(schedule.cronjob ?? "");
+  const { hour, minute } = parseTime(schedule.time ?? DEFAULT_TIME);
+  const days = schedule.day === undefined ? ["monday" as const] : [schedule.day].flat();
+  return {
+    minute: [minute],
+    hour: [hour],
+    // Like dependabot, monthly runs on the 1st.
+    dayOfMonth: schedule.interval === "monthly" ? [1] : "*",
+    month: "*",
+    weekday: schedule.interval === "weekly" ? sorted(days.map((d) => WEEKDAYS.indexOf(d))) : "*",
+  };
+}
+
+export function parseTime(time: string): { hour: number; minute: number } {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time);
+  if (!m) throw new CalendarError(`"${time}" is not a time (use HH:MM, 24-hour)`);
+  return { hour: Number(m[1]), minute: Number(m[2]) };
+}
+
+/**
+ * The five-field cron syntax: numbers, *, ranges, lists and steps, with month and weekday names.
+ * Shorthands (@daily) and the L, W and # extensions are rejected rather than half supported.
+ */
+export function parseCron(expr: string): Calendar {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    throw new CalendarError(`"${expr}" must have 5 fields (minute hour day-of-month month day-of-week)`);
+  }
+  const fields = FIELD_ORDER.map((name, i) => parseField(parts[i]!, name));
+  const [minute, hour, dayOfMonth, month, weekday] = fields as [Field, Field, Field, Field, Field];
+  return { minute, hour, dayOfMonth, month, weekday };
+}
+
+function parseField(text: string, name: FieldName): Field {
+  if (text === "*") return "*";
+  const [min, max] = BOUNDS[name];
+  const values = new Set<number>();
+  for (const item of text.split(",")) {
+    const m = /^(\*|[a-z0-9]+)(?:-([a-z0-9]+))?(?:\/(\d+))?$/i.exec(item);
+    if (!m) throw new CalendarError(`"${item}" in the ${label(name)} field is not valid cron syntax`);
+    const [, from, to, stepText] = m;
+    if (from === "*" && to !== undefined) throw new CalendarError(`"${item}" in the ${label(name)} field is not valid`);
+    const start = from === "*" ? min : value(from!, name);
+    // "5/10" means from 5 to the end, as in most crons.
+    const end = from === "*" ? max : to !== undefined ? value(to, name) : stepText !== undefined ? max : start;
+    const step = stepText === undefined ? 1 : Number(stepText);
+    if (step < 1) throw new CalendarError(`"${item}" in the ${label(name)} field has a zero step`);
+    if (start > end) throw new CalendarError(`"${item}" in the ${label(name)} field is a backwards range`);
+    // 7 is Sunday as well as 0.
+    for (let v = start; v <= end; v += step) values.add(name === "weekday" && v === 7 ? 0 : v);
+  }
+  return sorted([...values]);
+}
+
+function value(token: string, name: FieldName): number {
+  const names = name === "month" ? MONTH_NAMES : name === "weekday" ? DAY_NAMES : [];
+  const named = names.indexOf(token.toLowerCase());
+  if (named >= 0) return name === "month" ? named + 1 : named;
+  const [min, max] = BOUNDS[name];
+  // 7 is accepted as Sunday only where it is written; * stops at 6.
+  const top = name === "weekday" ? 7 : max;
+  const n = /^\d+$/.test(token) ? Number(token) : Number.NaN;
+  if (!(n >= min && n <= top)) {
+    throw new CalendarError(`"${token}" is out of range for the ${label(name)} field (${min}-${top})`);
+  }
+  return n;
+}
+
+function label(name: FieldName): string {
+  return { minute: "minute", hour: "hour", dayOfMonth: "day-of-month", month: "month", weekday: "day-of-week" }[name];
+}
+
+/** Back to five cron fields, writing runs of consecutive values as ranges. */
+export function toCron(cal: Calendar): string {
+  return FIELD_ORDER.map((name) => {
+    const field = cal[name];
+    if (field === "*") return "*";
+    const parts: string[] = [];
+    for (let i = 0; i < field.length; ) {
+      let j = i;
+      while (j + 1 < field.length && field[j + 1] === field[j]! + 1) j++;
+      parts.push(j - i >= 2 ? `${field[i]}-${field[j]}` : field.slice(i, j + 1).join(","));
+      i = j + 1;
+    }
+    return parts.join(",");
+  }).join(" ");
+}
+
+/** The offset of timeZone from UTC at the given instant, in minutes (Asia/Tokyo is 540). */
+export function offsetMinutes(timeZone: string, at: Date): number {
+  const name =
+    new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "longOffset" })
+      .formatToParts(at)
+      .find((p) => p.type === "timeZoneName")?.value ?? "GMT";
+  const m = /^GMT([+-])(\d{2}):(\d{2})$/.exec(name);
+  if (!m) return 0;
+  return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+}
+
+export function isTimeZone(name: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: name });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The same runs on another clock: launchd and cron read the machine's, Actions reads UTC. Moves
+ * the minutes and hours, and the weekdays when the runs cross midnight. Throws a CalendarError
+ * when the result is not expressible as one calendar, and warns when daylight saving time makes
+ * the offset between the zones change during the year (the backends cannot follow it).
+ */
+export function convertZone(
+  cal: Calendar,
+  from: string,
+  to: string,
+  now: Date,
+): { calendar: Calendar; warnings: string[] } {
+  if (from === to) return { calendar: cal, warnings: [] };
+  const warnings: string[] = [];
+  const deltaAt = (at: Date) => offsetMinutes(to, at) - offsetMinutes(from, at);
+  const year = now.getUTCFullYear();
+  const [winter, summer] = [0, 6].map((month) => deltaAt(new Date(Date.UTC(year, month, 15))));
+  if (winter !== summer) {
+    warnings.push(
+      `the offset between ${from} and ${to} changes with daylight saving time, so runs move by ${hours(Math.abs(winter! - summer!))} for part of the year; install again after the change, or set schedule.timezone to ${to}`,
+    );
+  }
+  const delta = deltaAt(now);
+  if (delta === 0) return { calendar: cal, warnings };
+
+  const cannot = (why: string) =>
+    new CalendarError(`the schedule cannot be moved from ${from} to ${to} (${why}); set schedule.timezone to ${to}`);
+  const shifted = expand(cal.hour, "hour").flatMap((h) =>
+    expand(cal.minute, "minute").map((m) => {
+      const t = h * 60 + m + delta;
+      const inDay = mod(t, MINUTES_PER_DAY);
+      return { day: Math.floor(t / MINUTES_PER_DAY), hour: Math.floor(inDay / 60), minute: inDay % 60 };
+    }),
+  );
+  const newHours = sorted(shifted.map((s) => s.hour));
+  const newMinutes = sorted(shifted.map((s) => s.minute));
+  // The moved times are distinct, so they form a grid exactly when the counts multiply out.
+  if (newHours.length * newMinutes.length !== shifted.length) {
+    throw cannot("its times do not stay one set of hours and minutes");
+  }
+  const days = sorted(shifted.map((s) => s.day));
+  const restricted = cal.dayOfMonth !== "*" || cal.month !== "*" || cal.weekday !== "*";
+  if (restricted && days.length > 1) throw cannot("some runs would move to another day and some would not");
+  const dayShift = restricted ? days[0]! : 0;
+  if (dayShift !== 0 && (cal.dayOfMonth !== "*" || cal.month !== "*")) {
+    throw cannot("the runs would move to another day of the month");
+  }
+  return {
+    calendar: {
+      ...cal,
+      minute: collapse(newMinutes, "minute"),
+      hour: collapse(newHours, "hour"),
+      weekday: cal.weekday === "*" ? "*" : sorted(cal.weekday.map((w) => mod(w + dayShift, 7))),
+    },
+    warnings,
+  };
+}
+
+/** The next n runs after from, reading the calendar on timeZone's clock. Looks up to 5 years ahead. */
+export function nextRuns(cal: Calendar, timeZone: string, from: Date, n: number): Date[] {
+  const runs: Date[] = [];
+  const start = from.getTime();
+  const today = wallDate(timeZone, from);
+  for (let i = 0; i < 366 * 5 && runs.length < n; i++) {
+    const day = new Date(Date.UTC(today.year, today.month - 1, today.day + i));
+    const [year, month, date] = [day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate()];
+    if (!dayMatches(cal, month, date, day.getUTCDay())) continue;
+    for (const h of expand(cal.hour, "hour")) {
+      for (const m of expand(cal.minute, "minute")) {
+        const at = zonedInstant(timeZone, year, month, date, h, m);
+        if (at.getTime() > start && runs.length < n) runs.push(at);
+      }
+    }
+  }
+  return runs;
+}
+
+function dayMatches(cal: Calendar, month: number, date: number, weekday: number): boolean {
+  const has = (field: Field, v: number) => field === "*" || field.includes(v);
+  if (!has(cal.month, month)) return false;
+  // cron's rule: with both restricted, either one is enough.
+  if (cal.dayOfMonth !== "*" && cal.weekday !== "*") return has(cal.dayOfMonth, date) || has(cal.weekday, weekday);
+  return has(cal.dayOfMonth, date) && has(cal.weekday, weekday);
+}
+
+function wallDate(timeZone: string, at: Date): { year: number; month: number; day: number } {
+  const local = new Date(at.getTime() + offsetMinutes(timeZone, at) * 60_000);
+  return { year: local.getUTCFullYear(), month: local.getUTCMonth() + 1, day: local.getUTCDate() };
+}
+
+function zonedInstant(timeZone: string, year: number, month: number, day: number, h: number, m: number): Date {
+  const wall = Date.UTC(year, month - 1, day, h, m);
+  // Twice, so a guess on the other side of a DST change is corrected by the offset where it lands.
+  const first = wall - offsetMinutes(timeZone, new Date(wall)) * 60_000;
+  return new Date(wall - offsetMinutes(timeZone, new Date(first)) * 60_000);
+}
+
+/** "weekly on Monday and Thursday at 06:17 (Asia/Tokyo)" */
+export function describeSchedule(schedule: Schedule, timeZone: string): string {
+  const at = `at ${schedule.time ?? DEFAULT_TIME}`;
+  const what = (() => {
+    switch (schedule.interval) {
+      case "daily":
+        return `daily ${at}`;
+      case "weekly": {
+        const days = (schedule.day === undefined ? ["monday"] : [schedule.day].flat()).map(
+          (d) => d[0]!.toUpperCase() + d.slice(1),
+        );
+        const list = days.length > 1 ? `${days.slice(0, -1).join(", ")} and ${days.at(-1)}` : days[0];
+        return `weekly on ${list} ${at}`;
+      }
+      case "monthly":
+        return `monthly on the 1st ${at}`;
+      case "cron":
+        return `cron "${schedule.cronjob}"`;
+    }
+  })();
+  return `${what} (${timeZone})`;
+}
+
+function expand(field: Field, name: FieldName): readonly number[] {
+  if (field !== "*") return field;
+  const [min, max] = BOUNDS[name];
+  return Array.from({ length: max - min + 1 }, (_, i) => min + i);
+}
+
+function collapse(values: readonly number[], name: FieldName): Field {
+  const [min, max] = BOUNDS[name];
+  return values.length === max - min + 1 ? "*" : values;
+}
+
+function sorted(values: readonly number[]): number[] {
+  return [...new Set(values)].sort((a, b) => a - b);
+}
+
+function mod(n: number, m: number): number {
+  return ((n % m) + m) % m;
+}
+
+function hours(minutes: number): string {
+  return minutes % 60 === 0 ? `${minutes / 60} hour${minutes === 60 ? "" : "s"}` : `${minutes} minutes`;
+}

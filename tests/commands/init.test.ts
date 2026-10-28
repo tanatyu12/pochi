@@ -300,6 +300,7 @@ describe("runInit", () => {
     ]);
     const steps = prompter.shown.find((s) => s.startsWith("note: Next steps: "))!;
     expect(steps).toContain(`node dist/pochi.mjs run --config-dir`);
+    expect(steps).toContain(`node dist/pochi.mjs schedule install --config-dir`);
     expect(steps).not.toContain("gh secret set");
   });
 
@@ -369,6 +370,7 @@ describe("runInit", () => {
         "gh secret set POCHI_SOURCES_YAML < config/sources.yml",
         "gh secret set SLACK_WEBHOOK_URL",
         "gh secret set ANTHROPIC_API_KEY",
+        "node dist/pochi.mjs schedule install --backend github",
       ].join("\n"),
     );
   });
