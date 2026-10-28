@@ -114,6 +114,18 @@ function startSpinner(message: string): () => void {
   };
 }
 
+/**
+ * Makes a full-width space (U+3000), which Space types while a Japanese IME is on, toggle like a
+ * space: clack goes by key names, and that keypress has none. Returns the function that undoes it.
+ */
+function fullWidthSpaceAsSpace(input: NodeJS.ReadStream): () => void {
+  const onKeypress = (str: string | undefined) => {
+    if (str === "\u3000") input.emit("keypress", " ", { name: "space", sequence: " " });
+  };
+  input.on("keypress", onKeypress);
+  return () => void input.off("keypress", onKeypress);
+}
+
 export function createClackPrompter(): Prompter {
   return {
     async text({ validate, ...rest }) {
@@ -125,7 +137,14 @@ export function createClackPrompter(): Prompter {
       return unwrap(await clack.select<string>(prompt)) as typeof prompt.options[number]["value"];
     },
     async multiselect(prompt) {
-      return unwrap(await clack.multiselect<string>({ ...prompt, required: false })) as typeof prompt.options[number]["value"][];
+      // Listened to after clack, which subscribes as the prompt starts, so clack sees the space it emits.
+      const answer = clack.multiselect<string>({ ...prompt, required: false });
+      const restore = fullWidthSpaceAsSpace(process.stdin);
+      try {
+        return unwrap(await answer) as typeof prompt.options[number]["value"][];
+      } finally {
+        restore();
+      }
     },
     async confirm(prompt) {
       return unwrap(await clack.confirm(prompt));
