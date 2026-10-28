@@ -1,3 +1,5 @@
+import { emitKeypressEvents } from "node:readline";
+import { styleText } from "node:util";
 import * as clack from "@clack/prompts";
 import { ExitCode, PochiError } from "../errors.js";
 import { configureLog } from "./log.js";
@@ -59,24 +61,57 @@ function unwrap<T>(value: T): Exclude<T, symbol> {
   return value as Exclude<T, symbol>;
 }
 
+const FRAMES = clack.unicode ? ["◒", "◐", "◓", "◑"] : ["•", "o", "O", "0"];
+const FRAME_MS = 80;
+
 /**
- * Runs start (a clack spinner's) and takes Ctrl-C back from it. The spinner puts stdin in raw
- * mode and its keypress handler (@clack/core block) exits with 0 on Ctrl-C, so no SIGINT would
- * reach the abort path and a cancelled fetch would look like a success. Its handler is swapped
- * for one that raises SIGINT, as Ctrl-C does outside raw mode. Esc does nothing while it spins.
+ * Shows message beside a spinner until the returned function is called. Not clack's spinner:
+ * its keypress handler (@clack/core block) exits with 0 on Ctrl-C, so a cancelled fetch would
+ * look like a success. Here Ctrl-C emits SIGINT in the process, as Ctrl-C does outside raw
+ * mode; emitting rather than signalling also reaches the handler on Windows. Other keys do nothing.
  */
-function startOwningCtrlC(start: () => void): () => void {
+function startSpinner(message: string): () => void {
   const input = process.stdin;
-  const before = new Set(input.listeners("keypress"));
-  start();
-  for (const listener of input.listeners("keypress")) {
-    if (!before.has(listener)) input.off("keypress", listener as (...args: unknown[]) => void);
-  }
+  const output = process.stdout;
   const onKeypress = (str: string | undefined, key: { name?: string; ctrl?: boolean } | undefined) => {
-    if (str === "\x03" || (key?.ctrl && key.name === "c")) process.kill(process.pid, "SIGINT");
+    if (str === "\x03" || (key?.ctrl && key.name === "c")) process.emit("SIGINT");
   };
   input.on("keypress", onKeypress);
-  return () => void input.off("keypress", onKeypress);
+  // Raw mode keeps typed keys off the spinner line and turns Ctrl-C into a key. A prompt that
+  // finished left the input paused.
+  if (input.isTTY) {
+    emitKeypressEvents(input);
+    input.setRawMode(true);
+    input.resume();
+  }
+
+  let timer: NodeJS.Timeout | undefined;
+  if (output.isTTY) {
+    // One line, so a carriage return redraws it. A terminal that reports no size gets it whole.
+    const width = output.columns || Infinity;
+    const shown = message.length + 3 > width ? `${message.slice(0, Math.max(0, width - 4))}…` : message;
+    let frame = 0;
+    const draw = () => output.write(`\r\x1b[2K${styleText("magenta", FRAMES[frame++ % FRAMES.length]!)}  ${shown}`);
+    output.write("\x1b[?25l");
+    draw();
+    timer = setInterval(draw, FRAME_MS);
+  }
+
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    input.off("keypress", onKeypress);
+    // Paused so the process can exit; the next prompt resumes it.
+    if (input.isTTY) {
+      input.setRawMode(false);
+      input.pause();
+    }
+    if (timer) {
+      clearInterval(timer);
+      output.write("\r\x1b[2K\x1b[?25h");
+    }
+  };
 }
 
 export function createClackPrompter(): Prompter {
@@ -103,18 +138,18 @@ export function createClackPrompter(): Prompter {
       // Log lines written over the spinner would be redrawn into a mess; they are shown after it.
       const held: string[] = [];
       const restoreLog = configureLog({ write: (line) => void held.push(line) });
-      // On an abort the spinner stops itself with a cancel message; stop is then a no-op.
-      const s = clack.spinner({ signal });
-      const releaseCtrlC = startOwningCtrlC(() => s.start(message));
+      const stop = startSpinner(message);
       try {
         const result = await run();
-        s.stop(message);
+        stop();
+        clack.log.step(message);
         return result;
       } catch (err) {
-        s.error(message);
+        stop();
+        clack.log.error(signal?.aborted ? `${message}: cancelled` : message);
         throw err;
       } finally {
-        releaseCtrlC();
+        stop();
         restoreLog();
         for (const line of held) clack.log.warn(line.trimEnd().replace(/^pochi: \w+: /, ""));
       }
