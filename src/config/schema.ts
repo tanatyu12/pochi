@@ -12,6 +12,15 @@ export const REPO_PATTERN = /^[\w-]+\/(?!\.\.?$)[\w.-]+$/;
 export const ImpactSchema = z.enum(["High", "Medium", "Low"]);
 export type Impact = z.output<typeof ImpactSchema>;
 
+// The webhook is a secret, so it is read from SLACK_WEBHOOK_URL only and never written here.
+const SlackChannelSchema = z.strictObject({ type: z.literal("slack") });
+
+const FileChannelSchema = z.strictObject({
+  type: z.literal("file"),
+  /** Relative paths are taken from the working directory, like config/ and state/. */
+  dir: text.default("reports"),
+});
+
 export const ContextSchema = z
   .strictObject({
     version: z.literal(1),
@@ -31,12 +40,20 @@ export const ContextSchema = z
       .prefault({}),
     notify: z
       .strictObject({
-        slack: z
-          .strictObject({
-            postWhenEmpty: z.boolean().default(false),
-            minImpact: ImpactSchema.default("Low"),
-          })
-          .prefault({}),
+        minImpact: ImpactSchema.default("Low"),
+        postWhenEmpty: z.boolean().default(false),
+        channels: z
+          .array(z.discriminatedUnion("type", [SlackChannelSchema, FileChannelSchema]))
+          .min(1)
+          .default([{ type: "slack" }])
+          .superRefine((channels, ctx) => {
+            // Each type takes its settings from one place (Slack from SLACK_WEBHOOK_URL), so a second is a mistake.
+            const seen = new Set<string>();
+            for (const [i, c] of channels.entries()) {
+              if (seen.has(c.type)) ctx.addIssue({ code: "custom", message: "duplicate type", path: [i, "type"] });
+              seen.add(c.type);
+            }
+          }),
       })
       .prefault({}),
     state: z
@@ -111,6 +128,7 @@ export type FeedConfig = Sources["feeds"][number];
 export type GithubFeed = Extract<FeedConfig, { type: "github" }>;
 export type RssFeed = Extract<FeedConfig, { type: "rss" }>;
 export type QueryConfig = Sources["queries"][number];
+export type ChannelConfig = Context["notify"]["channels"][number];
 
 // Config may hold secrets pasted in the wrong place, so messages are rebuilt from the issue
 // code: zod's own messages and the input never reach the output, not even unknown key names.

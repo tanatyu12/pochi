@@ -2,7 +2,10 @@ import { ConfigError, loadConfig } from "../config/load.js";
 import type { Context } from "../config/schema.js";
 import { ExitCode, PochiError } from "../errors.js";
 import { resolveLlm as defaultResolveLlm } from "../llm/adapter.js";
-import { type Briefing, buildSlackMessages, type SlackMessage, type SlackResult, sendSlack } from "../notifiers/slack.js";
+import { createNotifiers } from "../notifiers/index.js";
+import { buildSlackMessages, type SlackMessage } from "../notifiers/slack.js";
+import { toText } from "../notifiers/text.js";
+import type { Briefing, Delivery, Notifier } from "../notifiers/types.js";
 import { type FilterResult, filterAndAnalyze } from "../pipeline/filter.js";
 import { collectAll, stateKeys } from "../sources/index.js";
 import { tavilyApiKey } from "../sources/tavily.js";
@@ -43,7 +46,7 @@ export interface RunDeps {
 }
 
 /**
- * Config → collect → drop known items → triage → analyze → Slack → save state. Returns on success
+ * Config → collect → drop known items → triage → analyze → notify → save state. Returns on success
  * and throws a PochiError carrying the exit code otherwise. Everything that can fail without
  * fetching or billing (config, webhook, LLM) is checked first.
  */
@@ -67,9 +70,8 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   const dryRun = opts.dryRun ?? false;
 
   const { context, sources } = await loadConfig({ configDir: opts.configDir });
-  // Actions expands an unset secret to "", so blank counts as unset.
-  const webhookUrl = process.env.SLACK_WEBHOOK_URL?.trim() || undefined;
-  if (!dryRun && !webhookUrl) throw new ConfigError("SLACK_WEBHOOK_URL is not set (use --dry-run to print instead)");
+  // A dry run delivers nothing, so it needs no webhook.
+  const notifiers = dryRun ? [] : createNotifiers(context, { slackIntervalMs: deps.slackIntervalMs });
   if (sources.feeds.length === 0 && !tavilyApiKey()) {
     throw new ConfigError("sources.yml has only queries and TAVILY_API_KEY is not set, so there is nothing to fetch");
   }
@@ -113,40 +115,67 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
     attempted: collected.attempted,
     failedSources: collected.failures.map((f) => f.sourceName),
   };
-  const messages = buildSlackMessages(briefing, { postWhenEmpty: context.notify.slack.postWhenEmpty });
 
   if (dryRun) {
-    stdout(opts.json ? toJson(briefing, filtered, { messages }) : toText(briefing));
+    const hasSlack = context.notify.channels.some((c) => c.type === "slack");
+    const messages = hasSlack ? buildSlackMessages(briefing, { postWhenEmpty: context.notify.postWhenEmpty }) : undefined;
+    stdout(opts.json ? toJson(briefing, filtered, { dryRun, messages }) : toText(briefing));
     if (filtered.error) throw filtered.error;
     return;
   }
 
-  const sent = await sendSlack(webhookUrl!, messages, { signal, intervalMs: deps.slackIntervalMs });
-  const delivered = new Set(sent.deliveredIds);
+  const sent = await deliverAll(notifiers, briefing, signal);
+  // Marked notified only once every channel has it, so a channel that failed gets it tomorrow.
+  const delivered = new Set(
+    briefing.insights.map((f) => f.item.id).filter((id) => sent.every(({ result }) => result.deliveredIds.includes(id))),
+  );
+  if (sent.length < notifiers.length) delivered.clear();
   recordFiltered(state, filtered, delivered, today);
   // A failed save after a delivery means tomorrow repeats it, so it wins over everything else (1).
   await save();
-  if (opts.json) stdout(toJson(briefing, filtered, { sent }));
+  if (opts.json) stdout(toJson(briefing, filtered, { dryRun, sent }));
 
-  if (sent.aborted) throw interrupted();
-  // The LLM failed first and is likely to fail again tomorrow, so it is reported over Slack.
+  if (sent.some(({ result }) => result.aborted)) throw interrupted();
+  // The LLM failed first and is likely to fail again tomorrow, so it is reported over the delivery.
   if (filtered.error) throw filtered.error;
-  if (sent.failures.length > 0) {
-    const missed = sent.failures.reduce((n, f) => n + f.itemIds.length, 0);
-    throw new PochiError(
-      `Slack delivery failed for ${sent.failures.length} of ${messages.length} messages (${missed} updates not delivered)`,
-      ExitCode.SLACK,
-      { cause: sent.failures[0]!.error },
-    );
+  const failed = sent.filter(({ result }) => result.failures.length > 0);
+  if (failed.length > 0) {
+    const parts = failed.map(({ name, result }) => {
+      const missed = new Set(result.failures.flatMap((f) => f.itemIds)).size;
+      return `${name} (${missed} updates not delivered)`;
+    });
+    throw new PochiError(`delivery failed: ${parts.join(", ")}`, ExitCode.DELIVERY, {
+      cause: failed[0]!.result.failures[0]!.error,
+    });
   }
-  log.info(`delivered ${delivered.size} updates to Slack`);
+  log.info(`delivered ${delivered.size} updates to ${notifiers.map((n) => n.name).join(", ")}`);
+}
+
+/**
+ * Delivers to each channel in turn; after an abort the rest are not tried. Checked before each,
+ * since a channel that cannot be interrupted (a file) would otherwise still run after Ctrl-C.
+ */
+async function deliverAll(
+  notifiers: readonly Notifier[],
+  briefing: Briefing,
+  signal: AbortSignal | undefined,
+): Promise<{ name: string; result: Delivery }[]> {
+  const sent: { name: string; result: Delivery }[] = [];
+  for (const notifier of notifiers) {
+    const result: Delivery = signal?.aborted
+      ? { deliveredIds: [], failures: [], aborted: true }
+      : await notifier.deliver(briefing, { signal });
+    sent.push({ name: notifier.name, result });
+    if (result.aborted) break;
+  }
+  return sent;
 }
 
 /**
  * Touches every known item. Those awaiting analysis (r) go to Analyze directly; the rest of the
  * known ones are dropped. New items older than maxItemAgeDays are recorded as irrelevant unseen.
  * Items still awaiting analysis maxItemAgeDays after they were first seen are given up on (i):
- * touch keeps them from expiring, so an item Slack keeps rejecting would otherwise be analyzed forever.
+ * touch keeps them from expiring, so an item a channel keeps rejecting would otherwise be analyzed forever.
  */
 function sortKnown(
   state: State,
@@ -198,41 +227,22 @@ function interrupted(): PochiError {
   return new PochiError("interrupted", ExitCode.INTERRUPTED);
 }
 
-function toText(b: Briefing): string {
-  const head = `Pochi · ${b.project} · ${b.date}\n`;
-  const foot =
-    `\n${b.collected} items from ${b.attempted} sources` +
-    (b.failedSources.length > 0 ? `; failed: ${b.failedSources.join(", ")}` : "") +
-    "\n";
-  if (b.insights.length === 0) return `${head}\nNo relevant updates.\n${foot}`;
-  const body = b.insights.map((f) =>
-    [
-      `[${f.impact}] ${f.title}`,
-      `  ${f.item.url}`,
-      ...(f.summary ? [`  ${f.summary}`] : []),
-      ...(f.action ? [`  Action: ${f.action}`] : []),
-      `  Source: ${f.item.sourceName}`,
-    ].join("\n"),
-  );
-  return `${head}\n${body.join("\n\n")}\n${foot}`;
-}
-
 function toJson(
   b: Briefing,
   filtered: FilterResult,
-  out: { messages?: SlackMessage[]; sent?: SlackResult },
+  out: { dryRun: boolean; messages?: SlackMessage[]; sent?: { name: string; result: Delivery }[] },
 ): string {
   return `${JSON.stringify(
     {
       date: b.date,
-      dryRun: out.messages !== undefined,
+      dryRun: out.dryRun,
       collected: b.collected,
       attempted: b.attempted,
       failedSources: b.failedSources,
       stats: filtered.stats,
       insights: b.insights.map(insightJson),
       ...(out.messages && { messages: out.messages.map((m) => m.payload) }),
-      ...(out.sent && { delivered: out.sent.deliveredIds }),
+      ...(out.sent && { delivered: Object.fromEntries(out.sent.map(({ name, result }) => [name, result.deliveredIds])) }),
       ...(filtered.error && { error: { kind: filtered.error.kind, message: filtered.error.message } }),
     },
     null,

@@ -19,7 +19,7 @@ function makeContext(over: { llm?: Record<string, unknown>; minImpact?: Impact }
     project: { name: "my-app", description: "" },
     problems: ["anything"],
     llm: over.llm ?? {},
-    notify: { slack: { minImpact: over.minImpact ?? "Low" } },
+    notify: { minImpact: over.minImpact ?? "Low" },
   });
 }
 

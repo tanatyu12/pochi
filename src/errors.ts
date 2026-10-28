@@ -3,7 +3,7 @@ export const ExitCode = {
   INTERNAL: 1,
   CONFIG: 2,
   LLM: 3,
-  SLACK: 4,
+  DELIVERY: 4,
   SOURCES: 5,
   INTERRUPTED: 130,
 } as const;

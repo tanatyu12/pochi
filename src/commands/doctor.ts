@@ -1,3 +1,6 @@
+import { constants } from "node:fs";
+import { access, stat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { ConfigError, type LoadedConfig, loadConfig } from "../config/load.js";
 import { ExitCode, type ExitCodeValue, PochiError } from "../errors.js";
@@ -29,7 +32,7 @@ const ENV_NAMES = [
 const SLACK_WEBHOOK_PREFIX = "https://hooks.slack.com/";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip" | "-";
-export type Section = "Config" | "LLM" | "Environment" | "State" | "Sources";
+export type Section = "Config" | "LLM" | "Environment" | "Notify" | "State" | "Sources";
 
 export interface Check {
   section: Section;
@@ -65,8 +68,8 @@ export interface DoctorResult {
 }
 
 /**
- * Checks what a run needs without fetching (unless opts.fetch), calling the LLM or posting to
- * Slack. Environment variables are reported as set or not; their values are never printed.
+ * Checks what a run needs without fetching (unless opts.fetch), calling the LLM or delivering
+ * anything. Environment variables are reported as set or not; their values are never printed.
  */
 export async function doctor(opts: DoctorOptions = {}, deps: DoctorDeps = {}): Promise<DoctorResult> {
   const write = deps.write ?? ((line: string) => void process.stdout.write(`${line}\n`));
@@ -83,6 +86,7 @@ export async function doctor(opts: DoctorOptions = {}, deps: DoctorDeps = {}): P
     await checkLlm(report, config, deps);
     signal?.throwIfAborted();
     checkEnv(report);
+    await checkNotify(report, config);
     await checkState(report, config, statePath, stateRead, deps.now ?? new Date());
     signal?.throwIfAborted();
     if (opts.fetch) await checkSources(report, config, signal);
@@ -153,16 +157,57 @@ function checkEnv(report: Report): void {
   for (const name of ENV_NAMES) {
     const raw = process.env[name];
     const value = raw?.trim();
+    // Whether SLACK_WEBHOOK_URL is needed depends on the channels, so Notify judges it.
     if (raw === undefined) {
-      if (name === "SLACK_WEBHOOK_URL") report.warn("Environment", name, "not set (run needs it unless --dry-run)");
-      else report.neutral("Environment", name, "not set");
+      report.neutral("Environment", name, "not set");
     } else if (!value) {
       // Actions expands an unset secret to "".
       report.warn("Environment", name, "blank (treated as unset)");
-    } else if (name === "SLACK_WEBHOOK_URL" && !value.startsWith(SLACK_WEBHOOK_PREFIX)) {
-      report.warn("Environment", name, `set, but not a ${SLACK_WEBHOOK_PREFIX} URL`);
     } else {
       report.ok("Environment", name, "set");
+    }
+  }
+}
+
+async function checkNotify(report: Report, config: LoadedConfig | undefined): Promise<void> {
+  if (!config) {
+    report.skip("Notify", "channels", "config is invalid");
+    return;
+  }
+  for (const channel of config.context.notify.channels) {
+    switch (channel.type) {
+      case "slack": {
+        const webhook = process.env.SLACK_WEBHOOK_URL?.trim();
+        if (!webhook) report.warn("Notify", "slack", "SLACK_WEBHOOK_URL is not set (run needs it unless --dry-run)");
+        else if (!webhook.startsWith(SLACK_WEBHOOK_PREFIX)) {
+          report.warn("Notify", "slack", `SLACK_WEBHOOK_URL is not a ${SLACK_WEBHOOK_PREFIX} URL`);
+        } else report.ok("Notify", "slack", "posts to SLACK_WEBHOOK_URL");
+        break;
+      }
+      case "file": {
+        const problem = await unwritableDir(channel.dir);
+        if (problem) report.fail("Notify", "file", `${channel.dir}: ${problem}`, ExitCode.DELIVERY);
+        else report.ok("Notify", "file", `writes ${channel.dir}/<date>.md`);
+        break;
+      }
+    }
+  }
+}
+
+/** Why a report could not be written to dir, or undefined. A missing dir is fine if it can be created. */
+async function unwritableDir(dir: string): Promise<string | undefined> {
+  for (let path = resolve(dir); ; path = dirname(path)) {
+    try {
+      if (!(await stat(path)).isDirectory()) return path === resolve(dir) ? "not a directory" : "cannot be created";
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT" && dirname(path) !== path) continue;
+      return "cannot be read";
+    }
+    try {
+      await access(path, constants.W_OK);
+      return undefined;
+    } catch {
+      return path === resolve(dir) ? "not writable" : "cannot be created";
     }
   }
 }
