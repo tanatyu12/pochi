@@ -130,6 +130,8 @@ const QuerySchema = z.strictObject({
   query: text,
   topic: z.enum(["news", "general"]).default("general"),
   maxResults: positiveInt.max(20).default(5),
+  /** Drop results Tavily cannot date, rather than leave their age to the LLM. */
+  requireDate: z.boolean().default(false),
 });
 
 export const SourcesSchema = z

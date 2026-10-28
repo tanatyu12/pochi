@@ -130,7 +130,7 @@ describe("SourcesSchema", () => {
       version: 1,
       defaults: { itemsPerFeed: 3, maxContentChars: 2000 },
       feeds: [{ ...gh, feed: "releases", includePrereleases: false }],
-      queries: [{ id: "q", query: "x", topic: "general", maxResults: 5 }],
+      queries: [{ id: "q", query: "x", topic: "general", maxResults: 5, requireDate: false }],
     });
   });
 

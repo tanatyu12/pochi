@@ -30,7 +30,7 @@ function config(feedIds: string[], queryIds: string[] = []): Sources {
     version: 1,
     defaults,
     feeds: feedIds.map(rssFeed),
-    queries: queryIds.map((id) => ({ id, query: `query ${id}`, topic: "general" as const, maxResults: 5 })),
+    queries: queryIds.map((id) => ({ id, query: `query ${id}`, topic: "general" as const, maxResults: 5, requireDate: false })),
   };
 }
 

@@ -122,6 +122,19 @@ describe("content length", () => {
   });
 });
 
+describe("today", () => {
+  it("tells triage the date and the age limit, and analyze the date", () => {
+    const triage = triageRequest(context, [item(1)], { today: "2026-10-28" }).system;
+    expect(triage).toContain("Today is 2026-10-28. The team only wants news from the last 14 days");
+    expect(analyzeRequest(context, [item(1)], { today: "2026-10-28" }).system).toContain("Today is 2026-10-28;");
+  });
+
+  it("says nothing about the date without one", () => {
+    expect(triageRequest(context, [item(1)]).system).not.toContain("Today is");
+    expect(analyzeRequest(context, [item(1)]).system).not.toContain("Today is");
+  });
+});
+
 describe("system prompt", () => {
   const { system } = triageRequest(context, [item(1)]);
 

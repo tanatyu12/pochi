@@ -12,7 +12,13 @@ const SEARCH = "https://api.tavily.com/search";
 const KEY = "tvly-test-0123456789abcdef";
 const fixture = JSON.parse(readFileSync(new URL("../fixtures/tavily/search.json", import.meta.url), "utf8"));
 
-const query: QueryConfig = { id: "qwen-news", query: "Qwen model release", topic: "news", maxResults: 5 };
+const query: QueryConfig = {
+  id: "qwen-news",
+  query: "Qwen model release",
+  topic: "news",
+  maxResults: 5,
+  requireDate: false,
+};
 const defaults = { itemsPerFeed: 3, maxContentChars: 2000 };
 
 beforeEach(() => {
@@ -53,6 +59,7 @@ describe("fetchTavilyItems", () => {
       topic: "news",
       search_depth: "basic",
       time_range: "week",
+      include_published_date: true,
       max_results: 5,
       include_answer: false,
       include_raw_content: false,
@@ -66,6 +73,14 @@ describe("fetchTavilyItems", () => {
     const body = JSON.parse(mock.calls[0]!.body!);
     expect(body).toMatchObject({ topic: "general", max_results: 12 });
     expect(body).not.toHaveProperty("days");
+  });
+
+  it("asks Tavily to drop undated results only with requireDate", async () => {
+    const mock = mockFetch({ [SEARCH]: reply.json({ results: [] }) });
+    await fetchTavilyItems(query, defaults);
+    await fetchTavilyItems({ ...query, requireDate: true }, defaults);
+    expect(JSON.parse(mock.calls[0]!.body!)).not.toHaveProperty("filter_by_published_date");
+    expect(JSON.parse(mock.calls[1]!.body!)).toMatchObject({ include_published_date: true, filter_by_published_date: true });
   });
 
   it.each([undefined, "", "   "])("does not search without a key (%j)", async (value) => {

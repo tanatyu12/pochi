@@ -99,6 +99,7 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
     signal,
     pretriaged,
     retryDelayMs: deps.retryDelayMs,
+    today,
   });
   if (filtered.aborted) {
     // The answers so far are paid for; insights not sent are analyzed again next time.

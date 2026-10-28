@@ -43,6 +43,10 @@ export async function fetchTavilyItems(
     search_depth: "basic",
     // Replaces the deprecated `days`.
     time_range: "week",
+    // Only news results carry a date otherwise, and an undated result passes the maxItemAgeDays check.
+    include_published_date: true,
+    // Also drops results without a detectable date, which the window alone keeps.
+    ...(query.requireDate && { filter_by_published_date: true }),
     max_results: query.maxResults,
     include_answer: false,
     // The extracted snippet in `content` is enough; raw pages carry navigation and can be large.
