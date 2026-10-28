@@ -10,7 +10,7 @@ export interface Job {
   cwd: string;
   /** node, its flags, the bundle, then the run arguments. */
   argv: string[];
-  /** launchd and cron start with a minimal PATH; the CLI mode needs the one claude is on. */
+  /** launchd and cron start with a minimal PATH; the CLI mode needs the one claude or codex is on. */
   path: string;
   /** stdout and stderr of every run are appended here. */
   logPath: string;

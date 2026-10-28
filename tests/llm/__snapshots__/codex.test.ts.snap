@@ -1,0 +1,31 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildCodexArgs > builds the arguments in this exact order 1`] = `
+[
+  "exec",
+  "--json",
+  "--output-schema",
+  "/tmp/pochi-codex-x/schema.json",
+  "--output-last-message",
+  "/tmp/pochi-codex-x/out.json",
+  "--sandbox",
+  "read-only",
+  "--ephemeral",
+  "--skip-git-repo-check",
+  "--ignore-user-config",
+  "--ignore-rules",
+  "--color",
+  "never",
+  "-c",
+  "model_instructions_file="/tmp/pochi-codex-x/system.md"",
+  "-c",
+  "features.shell_tool=false",
+  "-c",
+  "web_search="disabled"",
+  "-c",
+  "project_doc_max_bytes=0",
+  "--model",
+  "gpt-mini",
+  "-",
+]
+`;

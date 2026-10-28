@@ -221,7 +221,7 @@ describe("doctor: LLM", () => {
 
   it("reports the CLI mode with what claude --version printed", async () => {
     await check();
-    expect(line("cli")).toMatch(new RegExp(`ok\\s+cli mode\\s+${CLAUDE_VERSION.replace(/[()]/g, "\\$&")} · triage haiku · analyze sonnet`));
+    expect(line("cli")).toMatch(new RegExp(`ok\\s+cli mode \\(claude\\)\\s+${CLAUDE_VERSION.replace(/[()]/g, "\\$&")} · triage haiku · analyze sonnet`));
   });
 
   it("reads the state file while claude --version runs, and still reports it after the LLM", async () => {

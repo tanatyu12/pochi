@@ -19,9 +19,9 @@ exclude:
 language: English
 
 llm:
-  provider: auto        # auto | api | cli (auto uses ANTHROPIC_API_KEY if set, else the claude CLI)
-  triageModel: ~        # default: claude-haiku-5-5 (api) / haiku (cli)
-  analyzeModel: ~       # default: claude-sonnet-5-5 (api) / sonnet (cli)
+  provider: auto        # auto | api | claude | codex (auto uses ANTHROPIC_API_KEY if set, else the claude CLI, else codex)
+  triageModel: ~        # default: claude-haiku-5-5 (api) / haiku (claude) / codex's own model (codex)
+  analyzeModel: ~       # default: claude-sonnet-5-5 (api) / sonnet (claude) / codex's own model (codex)
   maxItemsPerCall: 40
   maxItemsPerRun: 150
 

@@ -2,18 +2,29 @@ import { spawn as nodeSpawn } from "node:child_process";
 import type { Context } from "../config/schema.js";
 import { log } from "../util/log.js";
 import { createApiLlm, DEFAULT_API_MODELS } from "./api.js";
-import { cliEnv, createCliLlm, DEFAULT_CLI_MODELS, type Exit, type RunOptions, runClaude, type SpawnFn } from "./cli.js";
-import { type LlmClient, LlmError, type LlmTier } from "./schema.js";
+import {
+  cliEnv,
+  createCliLlm,
+  DEFAULT_CLI_MODELS,
+  type Exit,
+  type RunOptions,
+  runIn,
+  type SpawnFn,
+  withPrivateDir,
+} from "./cli.js";
+import { createCodexLlm } from "./codex.js";
+import { type CliBackend, type LlmClient, LlmError, type LlmTier } from "./schema.js";
 
-// claude --version only prints and exits; anything slower is a broken install.
+// --version only prints and exits; anything slower is a broken install.
 const PROBE_TIMEOUT_MS = 10_000;
 const MAX_VERSION_CHARS = 200;
 const MAX_VERSION_BYTES = 4096;
 
 export interface ResolvedLlm {
   client: LlmClient;
-  models: Record<LlmTier, string>;
-  /** What claude --version printed (first line), when the CLI mode was chosen. */
+  /** undefined: the CLI's own default model (codex). */
+  models: Record<LlmTier, string | undefined>;
+  /** What claude --version or codex --version printed (first line), when the CLI mode was chosen. */
   cliVersion?: string;
 }
 
@@ -21,13 +32,15 @@ export interface ResolveOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   spawn?: SpawnFn;
+  /** The claude command. */
   command?: string;
+  codexCommand?: string;
   signal?: AbortSignal;
 }
 
 /**
- * API mode when ANTHROPIC_API_KEY is set, else CLI mode when claude runs, as provider allows.
- * Throws LlmError (exit 3) when neither is usable, before anything is fetched or billed.
+ * API mode when ANTHROPIC_API_KEY is set, else CLI mode with claude, else with codex, as provider
+ * allows. Throws LlmError (exit 3) when none is usable, before anything is fetched or billed.
  */
 export async function resolveLlm(llm: Context["llm"], opts: ResolveOptions = {}): Promise<ResolvedLlm> {
   const env = opts.env ?? process.env;
@@ -45,31 +58,43 @@ export async function resolveLlm(llm: Context["llm"], opts: ResolveOptions = {})
   if (platform === "win32") {
     throw new LlmError(
       "unavailable",
-      llm.provider === "cli"
-        ? "the CLI mode is not supported on Windows; set ANTHROPIC_API_KEY and use the API mode"
-        : "no LLM available: set ANTHROPIC_API_KEY (the CLI mode is not supported on Windows)",
+      llm.provider === "auto"
+        ? "no LLM available: set ANTHROPIC_API_KEY (the CLI mode is not supported on Windows)"
+        : "the CLI mode is not supported on Windows; set ANTHROPIC_API_KEY and use the API mode",
     );
   }
-  const run: RunOptions = {
-    spawn: opts.spawn ?? nodeSpawn,
-    command: opts.command ?? "claude",
-    env: cliEnv(env),
-    timeoutMs: PROBE_TIMEOUT_MS,
-    maxBytes: MAX_VERSION_BYTES,
-  };
-  const { command } = run;
-  const cliVersion = await probeClaude(run, opts.signal);
-  if (cliVersion === undefined) {
-    throw new LlmError(
-      "unavailable",
-      llm.provider === "cli"
-        ? `llm.provider is cli but ${command} --version did not succeed`
-        : `no LLM available: set ANTHROPIC_API_KEY or install ${command} (${command} --version did not succeed)`,
-    );
+  const spawn = opts.spawn ?? nodeSpawn;
+  const backends: CliBackend[] =
+    llm.provider === "auto" ? ["claude", "codex"] : llm.provider === "codex" ? ["codex"] : ["claude"];
+  const tried: string[] = [];
+  for (const backend of backends) {
+    const run: RunOptions = {
+      spawn,
+      command: backend === "claude" ? (opts.command ?? "claude") : (opts.codexCommand ?? "codex"),
+      env: backend === "claude" ? cliEnv(env) : env,
+      timeoutMs: PROBE_TIMEOUT_MS,
+      maxBytes: MAX_VERSION_BYTES,
+    };
+    const { command } = run;
+    tried.push(command);
+    const cliVersion = await probeVersion(run, `pochi-${backend}-`, opts.signal);
+    if (cliVersion === undefined) continue;
+    if (backend === "claude") {
+      const models = resolveModels(llm, DEFAULT_CLI_MODELS);
+      log.info(`LLM: cli mode, ${cliVersion} (${models.triage} / ${models.analyze})`);
+      return { client: createCliLlm({ models, spawn, command, env: run.env }), models, cliVersion };
+    }
+    const models = { triage: llm.triageModel ?? undefined, analyze: llm.analyzeModel ?? undefined };
+    log.info(`LLM: cli mode, ${cliVersion} (${models.triage ?? "codex default"} / ${models.analyze ?? "codex default"})`);
+    return { client: createCodexLlm({ models, spawn, command, env: run.env }), models, cliVersion };
   }
-  const models = resolveModels(llm, DEFAULT_CLI_MODELS);
-  log.info(`LLM: cli mode, ${cliVersion} (${models.triage} / ${models.analyze})`);
-  return { client: createCliLlm({ models, spawn: run.spawn, command, env: run.env }), models, cliVersion };
+  const probes = tried.map((c) => `${c} --version`).join(" and ");
+  throw new LlmError(
+    "unavailable",
+    llm.provider === "auto"
+      ? `no LLM available: set ANTHROPIC_API_KEY or install ${tried.join(" or ")} (${probes} did not succeed)`
+      : `llm.provider is ${llm.provider} but ${probes} did not succeed`,
+  );
 }
 
 function resolveModels(llm: Context["llm"], defaults: Record<LlmTier, string>): Record<LlmTier, string> {
@@ -77,13 +102,13 @@ function resolveModels(llm: Context["llm"], defaults: Record<LlmTier, string>): 
 }
 
 /**
- * The first line claude --version printed, or undefined when it did not run cleanly. Runs the way
- * the CLI mode does (private cwd, no API key, SIGINT then SIGKILL); only an abort is thrown.
+ * The first line --version printed, or undefined when it did not run cleanly. Runs the way the
+ * CLI mode does (private cwd, the same environment, SIGINT then SIGKILL); only an abort is thrown.
  */
-async function probeClaude(run: RunOptions, signal: AbortSignal | undefined): Promise<string | undefined> {
+async function probeVersion(run: RunOptions, prefix: string, signal: AbortSignal | undefined): Promise<string | undefined> {
   let exit: Exit;
   try {
-    exit = await runClaude(run, ["--version"], "", "version", signal);
+    exit = await withPrivateDir(prefix, run.command, signal, (cwd) => runIn(cwd, run, ["--version"], "", "version", signal));
   } catch (err) {
     if (!(err instanceof LlmError)) throw err;
     log.debug(`${run.command} --version did not run: ${err.message}`);
