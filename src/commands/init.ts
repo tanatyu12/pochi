@@ -20,11 +20,14 @@ import {
   repoInferenceRequest,
 } from "../llm/prompts.js";
 import { type LlmClient, LlmError } from "../llm/schema.js";
+import { type Proposal, type ProposedText, readProposal } from "../proposal/parse.js";
+import { DISCOVERY_PROMPT } from "../proposal/prompt.js";
 import { type DiscoveredFeed, discoverFeeds, isTransient } from "../sources/discover.js";
 import { type RepoCheck, verifyRepo } from "../sources/github.js";
 import { type SourceOutcome, fetchEach, sourceConfigs, sourceInfo } from "../sources/index.js";
 import { FeedParseError } from "../sources/rss.js";
 import { tavilyApiKey } from "../sources/tavily.js";
+import { pLimit } from "../util/concurrency.js";
 import { normalizeUrl, parseHttpUrl } from "../util/hash.js";
 import { HttpError } from "../util/http.js";
 import { configureLog } from "../util/log.js";
@@ -35,6 +38,8 @@ import { collapseWhitespace, displayLine, plural, stripControlChars } from "../u
 const MAX_PROBLEMS = 20;
 const MAX_EXCLUDE = 30;
 const MAX_TYPED_QUERIES = 10;
+// Each check is one or two GitHub API calls; a proposal can name 15 repositories at once.
+const GITHUB_CONCURRENCY = 4;
 // Titles, notes and errors come from feeds, the model and the network; one line each is enough.
 const SHOWN_MAX_CHARS = 120;
 const HINT_MAX_CHARS = 60;
@@ -53,28 +58,47 @@ export interface InitDeps {
   resolveLlm: typeof resolveLlm;
   /** Aborted by Ctrl-C while something is fetched; prompts handle their own Ctrl-C. */
   signal?: AbortSignal;
+  /** Receives the prompt for --print-prompt. Defaults to stdout. */
+  stdout?: (s: string) => void;
 }
 
 type FeedInput = NonNullable<SourcesInput["feeds"]>[number];
 type QueryInput = NonNullable<SourcesInput["queries"]>[number];
 type FoundRepo = Extract<RepoCheck, { status: "found" }>;
+type QuerySuggestion = { query: string; topic: NonNullable<QueryInput["topic"]>; hint?: string };
 
-export async function runInit(opts: { configDir?: string } = {}, deps: Partial<InitDeps> = {}): Promise<void> {
+export interface InitOptions {
+  configDir?: string;
+  /** A proposal an agent wrote from the project (see --print-prompt), used as the defaults. */
+  from?: string;
+  /** Print the prompt that asks an agent for a proposal, and ask nothing. */
+  printPrompt?: boolean;
+}
+
+export async function runInit(opts: InitOptions = {}, deps: Partial<InitDeps> = {}): Promise<void> {
+  if (opts.printPrompt) {
+    if (opts.from !== undefined) throw new ConfigError("--print-prompt and --from cannot be used together");
+    // Asks nothing, so it works in a pipe: init --print-prompt | claude -p ...
+    (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(DISCOVERY_PROMPT);
+    return;
+  }
   const isInteractive = deps.isInteractive ?? (() => Boolean(process.stdin.isTTY && process.stdout.isTTY));
   // Checked before anything is shown: a piped or CI run would otherwise hang on the first question.
   if (!isInteractive()) {
     throw new ConfigError("pochi init needs an interactive terminal; copy config/*.example.yml instead");
   }
+  // Read before the first question, so a file that cannot be used is reported before any is asked.
+  const proposal = opts.from === undefined ? undefined : await readProposal(opts.from);
   // The prompts show what matters; info lines from the fetchers would only break up the screen.
   const restoreLog = configureLog({ level: "quiet" });
   try {
-    await init(opts.configDir ?? DEFAULT_CONFIG_DIR, deps);
+    await init(opts.configDir ?? DEFAULT_CONFIG_DIR, deps, proposal);
   } finally {
     restoreLog();
   }
 }
 
-async function init(dir: string, deps: Partial<InitDeps>): Promise<void> {
+async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | undefined): Promise<void> {
   const p = deps.prompter ?? createClackPrompter();
   const checkIgnored = deps.checkIgnored ?? gitCheckIgnored;
   const env = deps.env ?? process.env;
@@ -87,12 +111,26 @@ async function init(dir: string, deps: Partial<InitDeps>): Promise<void> {
     const overwrite = await p.confirm({ message: `Overwrite ${existing.join(" and ")}?`, initialValue: false });
     if (!overwrite) throw new PromptCancelled();
   }
+  if (proposal) noteProposal(p, proposal);
 
-  const contextInput = await askContext(p);
+  const contextInput = await askContext(p, proposal);
   // The prompts read the defaults (language, llm) the parsed context fills in.
   const context = ContextSchema.parse(contextInput);
   const llm = await findLlm(p, context, deps.resolveLlm ?? resolveLlm, env, signal);
-  const sources = await askSources(newSession(p, context, llm, signal));
+  const session = newSession(p, context, llm, signal);
+  let proposed: FeedInput[] = [];
+  if (proposal) {
+    // Offered in place of Claude's suggestions; with none proposed, Claude is still asked.
+    if (proposal.queries.length > 0) {
+      session.suggestions = proposal.queries.map((q) => ({
+        query: cleanQuery(q.query),
+        topic: q.topic,
+        hint: q.evidence || undefined,
+      }));
+    }
+    proposed = await addProposedFeeds(session, proposal);
+  }
+  const sources = await askSources(session, proposed);
   // Nothing touches the disk until every answer is in, so a cancel above leaves no trace.
   const { contextPath, sourcesPath } = await writeConfig(dir, { context: contextInput, sources }, { overwrite: true });
 
@@ -121,35 +159,62 @@ async function init(dir: string, deps: Partial<InitDeps>): Promise<void> {
   p.outro(`Wrote ${contextPath} and ${sourcesPath}`);
 }
 
-async function askContext(p: Prompter): Promise<ContextInput> {
-  const name = await p.text({ message: "Project name", placeholder: "my-app", validate: required });
+function noteProposal(p: Prompter, proposal: Proposal): void {
+  const counts = [
+    plural(proposal.problems.length, "problem"),
+    plural(proposal.exclude.length, "exclusion"),
+    plural(proposal.repos.length, "repository", "repositories"),
+    plural(proposal.sites.length, "site"),
+    plural(proposal.queries.length, "query", "queries"),
+  ];
+  p.note(`${counts.join(", ")}.\nEach is offered to pick, and checked before anything is written.`, "Proposal");
+  if (proposal.dropped > 0) {
+    p.warn(`Left out ${plural(proposal.dropped, "proposed entry", "proposed entries")}: malformed or past the limits.`);
+  }
+}
+
+async function askContext(p: Prompter, proposal?: Proposal): Promise<ContextInput> {
+  const name = await p.text({
+    message: "Project name",
+    placeholder: "my-app",
+    initialValue: proposal?.project.name || undefined,
+    validate: required,
+  });
   const description = await p.text({
     message: "Describe the project in a sentence or two (optional)",
     placeholder: "A Next.js SaaS app with a Postgres backend",
+    initialValue: proposal?.project.description || undefined,
   });
-  const problems = await askList(p, {
+  const problems = await askListWithProposals(p, proposal?.problems ?? [], {
     message: "What do you want to hear about?",
     placeholder: "Breaking changes in Next.js",
     min: 1,
     max: MAX_PROBLEMS,
   });
-  const exclude = await askList(p, {
+  const exclude = await askListWithProposals(p, proposal?.exclude ?? [], {
     message: "What should be dropped even if it looks related?",
     placeholder: "Funding news",
     min: 0,
     max: MAX_EXCLUDE,
   });
+  const proposed = proposal?.language;
+  const known = LANGUAGES.find((l) => l.toLowerCase() === proposed?.toLowerCase());
   const choice = await p.select({
     message: "Language for the summaries",
-    options: [
-      { value: "English", label: "English" },
-      { value: "Japanese", label: "Japanese" },
-      { value: "other", label: "Other" },
-    ],
-    initialValue: "English",
+    options: [...LANGUAGES.map((l) => ({ value: l, label: l })), { value: "other", label: "Other" }],
+    initialValue: known ?? (proposed ? "other" : "English"),
   });
   const language =
-    choice === "other" ? (await p.text({ message: "Language", placeholder: "German", validate: required })).trim() : choice;
+    choice === "other"
+      ? (
+          await p.text({
+            message: "Language",
+            placeholder: "German",
+            initialValue: known ? undefined : proposed,
+            validate: required,
+          })
+        ).trim()
+      : choice;
 
   return {
     version: 1,
@@ -158,6 +223,34 @@ async function askContext(p: Prompter): Promise<ContextInput> {
     ...(exclude.length > 0 && { exclude }),
     language,
   };
+}
+
+const LANGUAGES = ["English", "Japanese"] as const;
+
+// The proposed entries come first, all picked, so accepting the proposal is one keypress;
+// more can be typed after them.
+async function askListWithProposals(
+  p: Prompter,
+  proposed: readonly ProposedText[],
+  opts: { message: string; placeholder: string; min: number; max: number },
+): Promise<string[]> {
+  const seen = new Set<string>();
+  const unique = proposed.filter((e) => once(seen, e.text)).slice(0, opts.max);
+  const picked =
+    unique.length === 0
+      ? []
+      : await p.multiselect({
+          message: `${opts.message} (proposed; space to toggle)`,
+          options: unique.map((e) => ({
+            value: e.text,
+            label: displayLine(e.text, SHOWN_MAX_CHARS),
+            hint: displayLine(e.evidence, HINT_MAX_CHARS) || undefined,
+          })),
+          initialValues: unique.map((e) => e.text),
+        });
+  if (picked.length >= opts.max) return picked;
+  const typed = await askList(p, { ...opts, min: Math.max(0, opts.min - picked.length), max: opts.max - picked.length });
+  return [...picked, ...typed];
 }
 
 // One text prompt per entry; an empty answer ends the list once min entries are in.
@@ -215,8 +308,8 @@ export interface SourceSession {
    * trial fetch does not ask again. Keyed by object: a rejected source's id may be reused.
    */
   checked: WeakMap<FeedInput, Item | undefined>;
-  /** Asked once; later rounds offer what is left of them. */
-  suggestions?: string[];
+  /** Asked once (or taken from a proposal); later rounds offer what is left of them. */
+  suggestions?: QuerySuggestion[];
   tavilyNoted?: boolean;
 }
 
@@ -233,9 +326,12 @@ export function newSession(
  * Asks for feeds and queries, fetches the latest item of each and keeps the ones the user wants
  * to watch. Repeats until at least one is kept, since sources.yml needs one.
  */
-export async function askSources(s: SourceSession): Promise<SourcesInput> {
+export async function askSources(s: SourceSession, proposed: FeedInput[] = []): Promise<SourcesInput> {
+  // Proposed feeds were claimed already; the first trial fetch tries them with the typed ones.
+  let pending = proposed;
   for (;;) {
-    const feeds = await askFeeds(s);
+    const feeds = await askFeeds(s, pending);
+    pending = [];
     const queries = await askQueries(s);
     if (feeds.length + queries.length > 0) {
       const kept = await trialFetch(s, feeds, queries);
@@ -248,8 +344,7 @@ export async function askSources(s: SourceSession): Promise<SourcesInput> {
   return { version: 1, feeds: s.feeds, ...(s.queries.length > 0 && { queries: s.queries }) };
 }
 
-async function askFeeds(s: SourceSession): Promise<FeedInput[]> {
-  const added: FeedInput[] = [];
+async function askFeeds(s: SourceSession, added: FeedInput[] = []): Promise<FeedInput[]> {
   for (;;) {
     const count = s.feeds.length + added.length;
     const kind = await s.p.select({
@@ -401,17 +496,20 @@ function repoFeed(s: SourceSession, repo: string, check?: FoundRepo): FeedInput 
 }
 
 async function askSite(s: SourceSession): Promise<FeedInput | undefined> {
-  const { p, signal } = s;
   const raw = (
-    await p.text({
+    await s.p.text({
       message: "Blog or feed URL (empty to go back)",
       placeholder: "https://simonwillison.net/",
       validate: (v) => (v.trim() === "" || parseHttpUrl(v.trim()) ? undefined : "Enter an absolute http(s) URL"),
     })
   ).trim();
   if (raw === "") return undefined;
-  const url = parseHttpUrl(raw)!.href;
+  return resolveSite(s, parseHttpUrl(raw)!.href);
+}
 
+/** Finds the feed of a page, asking which one when it has several. */
+async function resolveSite(s: SourceSession, url: string): Promise<FeedInput | undefined> {
+  const { p, signal } = s;
   let feeds: DiscoveredFeed[];
   try {
     feeds = await p.spin(`Looking for feeds on ${url}`, () => discoverFeeds(url, signal), signal);
@@ -456,6 +554,79 @@ function siteFeed(s: SourceSession, pageUrl: string, feedUrl: string, title?: st
   return { id: sourceIdFrom(host, s.ids), type: "rss", name: shown ? `${base}: ${shown}` : base, url: feedUrl };
 }
 
+/**
+ * Offers the proposed repositories and sites, all picked, and keeps those GitHub confirms or that
+ * have a feed. Unlike a name typed in, a proposed repository GitHub cannot check is left out:
+ * nobody typed it, so nobody vouches for it.
+ */
+async function addProposedFeeds(s: SourceSession, proposal: Proposal): Promise<FeedInput[]> {
+  const { p, signal } = s;
+  const added: FeedInput[] = [];
+  const keep = (feed: FeedInput | undefined) => {
+    if (feed && claim(s, keyOf(feed), feed.id)) added.push(feed);
+  };
+
+  const seenRepos = new Set<string>();
+  const repos = proposal.repos.filter((r) => once(seenRepos, r.repo.toLowerCase()));
+  const chosenRepos =
+    repos.length === 0
+      ? []
+      : await p.multiselect({
+          message: "Proposed repositories to watch (space to toggle)",
+          options: repos.map((r) => ({ value: r.repo, label: r.repo, hint: displayLine(r.evidence, HINT_MAX_CHARS) || undefined })),
+          initialValues: repos.map((r) => r.repo),
+        });
+  if (chosenRepos.length > 0) {
+    const limit = pLimit(GITHUB_CONCURRENCY);
+    const checks = await p.spin(
+      `Checking ${plural(chosenRepos.length, "repository", "repositories")} on GitHub`,
+      () => Promise.allSettled(chosenRepos.map((repo) => limit(() => verifyRepo(repo, signal)))),
+      signal,
+    );
+    throwIfCancelled(signal);
+    // In the order proposed, one at a time: each id is chosen against the ones claimed before it.
+    chosenRepos.forEach((repo, i) => {
+      const result = checks[i]!;
+      if (result.status === "rejected") {
+        const err: unknown = result.reason;
+        if (!(err instanceof HttpError || err instanceof FeedParseError)) throw err;
+        p.warn(`Could not check ${repo} on GitHub: ${errorLine(err)}; left out.`);
+        return;
+      }
+      const check = result.value;
+      if (check.status === "not_found") {
+        p.warn(`${repo} was not found on GitHub; left out.`);
+        return;
+      }
+      const current = check.movedTo ?? repo;
+      if (check.movedTo) p.note(`${repo} moved to ${current}; watching that instead.`);
+      if (check.status === "empty") {
+        p.warn(`${current} has no releases or tags to watch; left out.`);
+        return;
+      }
+      keep(repoFeed(s, current, check));
+    });
+  }
+
+  const seenSites = new Set<string>();
+  const sites = proposal.sites.filter((site) => once(seenSites, normalizeUrl(site.url) ?? site.url));
+  const chosenSites =
+    sites.length === 0
+      ? []
+      : await p.multiselect({
+          message: "Proposed sites to watch (space to toggle)",
+          options: sites.map((site) => ({
+            value: site.url,
+            label: displayLine(site.url, SHOWN_MAX_CHARS),
+            hint: displayLine(site.evidence, HINT_MAX_CHARS) || undefined,
+          })),
+          initialValues: sites.map((site) => site.url),
+        });
+  // One at a time: a page with several feeds asks which one.
+  for (const url of chosenSites) keep(await resolveSite(s, url));
+  return added;
+}
+
 async function askQueries(s: SourceSession): Promise<QueryInput[]> {
   const { p, signal } = s;
   // fetchTavilyItems reads the same key, so a query asked for here is one a run can fetch.
@@ -479,7 +650,8 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
       s.suggestions = reply.queries
         .map(cleanQuery)
         .filter((q) => q !== "" && once(seen, q.toLowerCase()))
-        .slice(0, MAX_QUERY_SUGGESTIONS);
+        .slice(0, MAX_QUERY_SUGGESTIONS)
+        .map((query) => ({ query, topic: "news" as const }));
     } catch (err) {
       throwIfCancelled(signal);
       if (!(err instanceof LlmError)) throw err;
@@ -488,15 +660,19 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
     }
   }
 
-  const candidates: string[] = [];
-  const offered = (s.suggestions ?? []).filter((q) => !s.keys.has(queryKey(q)));
+  // None picked to begin with, proposed or not: each costs a credit every morning.
+  const candidates: QuerySuggestion[] = [];
+  const offered = (s.suggestions ?? []).filter((q) => !s.keys.has(queryKey(q.query)));
   if (offered.length > 0) {
-    candidates.push(
-      ...(await p.multiselect({
-        message: "Search queries to run every morning (space to select)",
-        options: offered.map((q) => ({ value: q, label: displayLine(q, SHOWN_MAX_CHARS) })),
+    const picked = await p.multiselect({
+      message: "Search queries to run every morning (space to select)",
+      options: offered.map((q) => ({
+        value: q.query,
+        label: displayLine(q.query, SHOWN_MAX_CHARS),
+        hint: q.hint && (displayLine(q.hint, HINT_MAX_CHARS) || undefined),
       })),
-    );
+    });
+    candidates.push(...offered.filter((q) => picked.includes(q.query)));
   }
   const typed = await askList(p, {
     message: "Add a search query",
@@ -504,16 +680,16 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
     min: 0,
     max: MAX_TYPED_QUERIES,
   });
-  candidates.push(...typed.map(cleanQuery));
+  candidates.push(...typed.map((q) => ({ query: cleanQuery(q), topic: "news" as const })));
 
   const added: QueryInput[] = [];
-  for (const query of candidates) {
+  for (const { query, topic } of candidates) {
     const id = sourceIdFrom(query, s.ids);
     if (!claim(s, queryKey(query), id)) {
       p.warn(`Already added: ${displayLine(query, SHOWN_MAX_CHARS)}; skipped.`);
       continue;
     }
-    added.push({ id, query, topic: "news" });
+    added.push({ id, query, topic });
   }
   return added;
 }

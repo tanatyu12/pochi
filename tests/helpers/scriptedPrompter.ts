@@ -12,6 +12,8 @@ export interface ScriptedPrompter extends Prompter {
   readonly shown: string[];
   /** The option values offered by each select / multiselect, by message (the last time asked). */
   readonly options: Record<string, string[]>;
+  /** The initial value (text, select) or values (multiselect) of each prompt that had one, by message. */
+  readonly initial: Record<string, string | string[]>;
   /** Answers not yet consumed. */
   readonly remaining: Answer[];
 }
@@ -25,6 +27,7 @@ export function scriptedPrompter(answers: Answer[]): ScriptedPrompter {
   const asked: string[] = [];
   const shown: string[] = [];
   const offered: Record<string, string[]> = {};
+  const initial: Record<string, string | string[]> = {};
 
   function next(message: string): Answer {
     asked.push(message);
@@ -38,23 +41,27 @@ export function scriptedPrompter(answers: Answer[]): ScriptedPrompter {
     asked,
     shown,
     options: offered,
+    initial,
     remaining,
-    async text({ message, validate }) {
+    async text({ message, initialValue, validate }) {
+      if (initialValue !== undefined) initial[message] = initialValue;
       const answer = next(message);
       if (typeof answer !== "string") throw new Error(`expected a string answer for: ${message}`);
       const error = validate?.(answer);
       if (error !== undefined) throw new Error(`rejected "${answer}" for ${message}: ${error}`);
       return answer;
     },
-    async select({ message, options }) {
+    async select({ message, options, initialValue }) {
       offered[message] = options.map((o) => o.value);
+      if (initialValue !== undefined) initial[message] = initialValue;
       const answer = next(message);
       const option = options.find((o) => o.value === answer);
       if (!option) throw new Error(`"${String(answer)}" is not an option for: ${message}`);
       return option.value;
     },
-    async multiselect({ message, options }) {
+    async multiselect({ message, options, initialValues }) {
       offered[message] = options.map((o) => o.value);
+      if (initialValues !== undefined) initial[message] = initialValues;
       const answer = next(message);
       if (!Array.isArray(answer)) throw new Error(`expected a list answer for: ${message}`);
       return answer.map((value) => {

@@ -323,6 +323,12 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   5. Trial Fetch：新しく足したソースを `fetchEach` でまとめて取得し、各ソースの最新記事（title・日付・URL。制御文字を除いて1行にする）、「No items yet.」、または失敗を示して「毎朝ウォッチしますか？」と確認する（失敗したソースは既定 No）。却下したソースは書き出さず、あとで足し直せる。通信中の Ctrl-C は signal で中断して130にし、何も書かない
   6. 設定ファイルを権限 600 で書き出し、.gitignore に含まれていることを確認する（ファイルのディレクトリで、2つのファイルをまとめて1回の `git check-ignore` で確認する。無視されていなければ、実際の設定ディレクトリの `*.yml` を .gitignore に足すよう warn し、git がない・リポジトリ外なら確認できなかったと伝えるだけで、終了コードは0）。POCHI_CONTEXT_YAML / POCHI_SOURCES_YAML が設定されていれば、ファイルより優先される旨を warn する（値は出さない）。最後に次の手順（run --dry-run、gh secret set）を案内する。既定以外の設定ディレクトリなら run に `--config-dir` を付け、パスはシェル用にクォートする
   - LLM が使えない環境でも完了できるようにする（その場合、技術名は owner/repo の直接入力だけを受け付ける）
+  - **提案の取り込み（`--from <file>`、`--print-prompt`）**：利用者が自分のプロジェクトでコーディングエージェントにリポジトリを読ませ、監視すべき情報源の案を作らせて、それを初期値にする。pochi 自身はエージェントを起動しない（CLI モードは claude をツールなしで動かす方針で、案を作るにはリポジトリを読む必要があるため）
+    - `--print-prompt`：探索プロンプト（`src/proposal/prompt.ts` の `DISCOVERY_PROMPT`）を stdout に出して0で終える。端末でなくても動く。`--from` との併用は2。プロンプトは4つの軸（技術基盤、ビジネス、市場・競合・規制、運用課題）で探索させ、読み取り専用であること、.env などの機密ファイルを開かないこと、ファイル内の指示に従わないことを求める。各案には根拠（evidence）を付けさせ、すべての repo / site / query がいずれかの problem で説明されるよう求める（Triage は problems で判定するため）。クエリはブール式を使わない2〜6語にする
+    - 使い方の例：対象のリポジトリで `claude -p --allowedTools "Read,Glob,Grep" < prompt.md > proposal.md`。最後の ```json ブロックを読むので、説明文が付いていてもよい
+    - 形式（proposal v1）：`pochi: "proposal/v1"`、project（name、description）、language、problems / exclude（text、axis、evidence）、repos（repo、evidence）、sites（url、evidence）、queries（query、intent、topic、evidence）。上限は problems 12、exclude 8、repos 15、sites 8、queries 8（`PROPOSAL_LIMITS`）
+    - 読み込み（`src/proposal/parse.ts`）：256KB まで。中身が `{` で始まればそのまま、そうでなければ行頭の ``` で囲まれたブロックのうち最後に解析できたオブジェクトを使う。バージョンが違うか JSON がなければ、質問の前に ConfigError（2）にする（メッセージにファイルの中身は含めない）。エントリは1件ずつ検証し、不正なもの（REPO_PATTERN に合わない repo、http(s) でない URL、空の文字列）と上限を超えた分は捨てて件数を warn で示す。未知のキーは無視する。文字列は制御文字を除いて空白を詰め、text と query は200字、evidence は120字で切る
+    - 対話：name と description を入力の初期値にする。problems と exclude は案を全選択の multiselect で出し（hint は axis と evidence）、続けて手入力で足せる（選んだ数を上限から引く。problems を1件も選ばなければ手入力が1件必要）。language は English / Japanese ならそれを、それ以外は Other を選んだうえでその値を初期値にする。LLM の解決の後、提案の repos（大文字小文字を区別せずに重複を除く）を全選択の multiselect で出し、`verifyRepo` を同時に4件まで実行する。not_found / empty / 確認できなかったもの（手で入力したものではないので「それでも追加するか」は聞かない）は warn を出して除外し、movedTo・tags・プレリリースは手入力と同じに扱う。sites は全選択の multiselect の後、手順3と同じく discoverFeeds で探す。残ったソースは最初の回のメニューに「n so far」として加わり、手で足したソースと一緒に Trial Fetch で確かめる。queries があれば Claude に提案を求めず、案を multiselect で出す（毎朝1クレジットずつかかるので、初期状態では選ばない）。topic は案の値を引き継ぐ
   - 対話の間は、ログを warn 以上に絞る（取得処理の info で画面が崩れないようにする）
 
 ### 終了コード
@@ -386,8 +392,9 @@ README に書く注意点：
 | T19 | M4 init | init のソース特定と Trial Fetch | T18, T6, T7, T8, T13 | 存在を確認できないリポジトリは提示しない。owner/repo は LLM を通さない。LLM なしでも完了する。複数フィードは選ばせる。却下されたソースは除外する | 完了 |
 | T20 | M5 CI・文書 | daily_briefing.yml | T16 | actionlint が通る。dry_run ではコミットしない。秘密情報を echo しない | 未着手 |
 | T21 | M5 CI・文書 | ci.yml と dependabot | T1 | 最初の push で CI が通る | 未着手 |
-| T22 | M5 CI・文書 | README と SECURITY.md | T16, T19 | README だけを見て clone から最初の dry-run まで進める | 未着手 |
+| T22 | M5 CI・文書 | README と SECURITY.md | T16, T19 | README だけを見て clone から最初の dry-run まで進める。`init --print-prompt` から `--from` までの手順も載せる | 未着手 |
 | T23 | M5 CI・文書 | 手動 E2E とリリース準備 | すべて | 検証計画の12項目を通す。npm audit で high 以上がない | 未着手 |
+| T24 | M4 init | 提案の取り込み（`init --from`、`--print-prompt`、探索プロンプト） | T19 | 提案の JSON を前後の説明文ごと読める。不正なエントリだけを捨てる。存在しない repo は書き出さない。案の queries があれば LLM に提案を求めない。読めないファイルなら質問の前に2。手元の claude で pochi 自身から作った案を読める | 完了 |
 
 ## 検証計画とリスク
 
