@@ -1,12 +1,14 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { ConfigError, DEFAULT_CONFIG_DIR } from "../config/load.js";
+import { ConfigError, DEFAULT_CONFIG_DIR, parseContext } from "../config/load.js";
 import {
   type Context,
   type ContextInput,
   ContextSchema,
   REPO_PATTERN,
+  type Schedule,
   type SourcesInput,
   SourcesSchema,
 } from "../config/schema.js";
@@ -26,6 +28,8 @@ import {
 import { type IdeaSuggestionOutput, type LlmClient, LlmError } from "../llm/schema.js";
 import { type Proposal, type ProposedText, readProposal } from "../proposal/parse.js";
 import { DISCOVERY_PROMPT } from "../proposal/prompt.js";
+import { CalendarError, DEFAULT_TIME, describeSchedule, parseTime, type Weekday } from "../schedule/calendar.js";
+import { type ScheduleDeps, installSchedule } from "./schedule.js";
 import { type DiscoveredFeed, FeedCheckError, discoverFeeds, isTransient } from "../sources/discover.js";
 import { type RepoCheck, verifyRepo } from "../sources/github.js";
 import { type SourceConfig, type SourceOutcome, fetchEach, sourceConfigs, sourceInfo } from "../sources/index.js";
@@ -67,6 +71,10 @@ export interface InitDeps {
   signal?: AbortSignal;
   /** Receives the prompt for --print-prompt. Defaults to stdout. */
   stdout?: (s: string) => void;
+  /** The machine's time zone, written as schedule.timezone. */
+  timeZone?: string;
+  /** For installing the schedule at the end; output goes to the prompter. */
+  schedule?: ScheduleDeps;
 }
 
 type FeedInput = NonNullable<SourcesInput["feeds"]>[number];
@@ -120,6 +128,8 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
     const overwrite = await p.confirm({ message: `Overwrite ${existing.join(" and ")}?`, initialValue: false });
     if (!overwrite) throw new PromptCancelled();
   }
+  // init asks for the schedule again, so an overwrite would otherwise drop the one set before.
+  const previousSchedule = await readSchedule(dir);
   if (proposal) noteProposal(p, proposal);
 
   let contextInput = await askContext(p, proposal);
@@ -160,6 +170,9 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
   } finally {
     lookup.abort();
   }
+  const timeZone = deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  contextInput = { ...contextInput, schedule: await askSchedule(p, previousSchedule, timeZone) };
+  context = ContextSchema.parse(contextInput);
   // Nothing touches the disk until every answer is in, so a cancel above leaves no trace.
   const { contextPath, sourcesPath } = await writeConfig(dir, { context: contextInput, sources }, { overwrite: true });
 
@@ -177,6 +190,8 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
 
   const configDir = dir === DEFAULT_CONFIG_DIR ? "" : ` --config-dir ${shellQuote(dir)}`;
   const types = new Set(context.notify.channels.map((c) => c.type));
+  // With Slack the job goes to Actions, which needs the secrets set first; see the next steps.
+  const installed = !types.has("slack") && (await offerInstall(p, dir, context, timeZone, deps.schedule));
   p.note(
     [
       `node dist/pochi.mjs run --dry-run${configDir}`,
@@ -189,11 +204,120 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
             `gh secret set ANTHROPIC_API_KEY`,
             `node dist/pochi.mjs schedule install --backend github${configDir}`,
           ]
-        : [`node dist/pochi.mjs run${configDir}`, `node dist/pochi.mjs schedule install${configDir}`]),
+        : [
+            `node dist/pochi.mjs run${configDir}`,
+            installed
+              ? `node dist/pochi.mjs schedule status${configDir}`
+              : `node dist/pochi.mjs schedule install${configDir}`,
+          ]),
     ].join("\n"),
     "Next steps",
   );
   p.outro(`Wrote ${contextPath} and ${sourcesPath}`);
+}
+
+const WEEK: readonly Weekday[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+/** The schedule in the context.yml about to be overwritten, if it can be read. */
+async function readSchedule(dir: string): Promise<Schedule | undefined> {
+  const path = join(dir, "context.yml");
+  try {
+    return parseContext(await readFile(path, "utf8"), path).schedule;
+  } catch {
+    return undefined;
+  }
+}
+
+type ScheduleInput = NonNullable<ContextInput["schedule"]>;
+
+/**
+ * Every day or on chosen weekdays, at a time; the time zone is the machine's (or the one set
+ * before), so a run on Actions keeps the same wall time. A monthly or cron schedule set by hand
+ * can be kept as it is.
+ */
+async function askSchedule(p: Prompter, previous: Schedule | undefined, timeZone: string): Promise<ScheduleInput> {
+  const custom = previous?.interval === "monthly" || previous?.interval === "cron" ? previous : undefined;
+  const interval = await p.select({
+    message: "When should pochi run?",
+    options: [
+      { value: "daily" as const, label: "Every day" },
+      { value: "weekly" as const, label: "On chosen days of the week" },
+      ...(custom ? [{ value: "keep" as const, label: `Keep ${describeSchedule(custom, custom.timezone ?? timeZone)}` }] : []),
+    ],
+    initialValue: custom ? "keep" : previous?.interval === "weekly" ? "weekly" : "daily",
+  });
+  if (interval === "keep") return custom!;
+  let days: Weekday[] = [];
+  if (interval === "weekly") {
+    const before = previous?.day === undefined ? ["monday" as const] : [previous.day].flat();
+    for (;;) {
+      days = await p.multiselect({
+        message: "Days to run on (space to select)",
+        options: WEEK.map((d) => ({ value: d, label: d[0]!.toUpperCase() + d.slice(1) })),
+        initialValues: before,
+      });
+      if (days.length > 0) break;
+      p.warn("Pick at least one day.");
+    }
+  }
+  const time = await p.text({
+    message: "Time to run (HH:MM, 24-hour)",
+    placeholder: DEFAULT_TIME,
+    initialValue: custom ? undefined : (previous?.time ?? DEFAULT_TIME),
+    validate: validTime,
+  });
+  return {
+    interval,
+    ...(days.length > 0 && { day: days.length === 1 ? days[0] : days }),
+    time: time.trim(),
+    timezone: previous?.timezone ?? timeZone,
+  };
+}
+
+function validTime(value: string): string | undefined {
+  try {
+    parseTime(value.trim());
+    return undefined;
+  } catch (err) {
+    if (err instanceof CalendarError) return err.message;
+    throw err;
+  }
+}
+
+/**
+ * Offers to install the job on this machine (launchd or cron) now that the config is written,
+ * and whether it was installed. A failure is a warning: the config is fine, and the next steps
+ * still show the command.
+ */
+async function offerInstall(
+  p: Prompter,
+  dir: string,
+  context: Context,
+  timeZone: string,
+  deps: ScheduleDeps | undefined,
+): Promise<boolean> {
+  let wanted: boolean;
+  try {
+    wanted = await p.confirm({
+      message: `Install the schedule on this machine now (${describeSchedule(context.schedule, context.schedule.timezone ?? timeZone)})?`,
+      initialValue: true,
+    });
+  } catch (err) {
+    // The config is already written, so a cancel here only skips the install.
+    if (err instanceof PromptCancelled) return false;
+    throw err;
+  }
+  if (!wanted) return false;
+  const lines: string[] = [];
+  try {
+    await installSchedule({ configDir: dir }, { ...deps, write: (line) => void lines.push(line) });
+  } catch (err) {
+    if (!(err instanceof ConfigError)) throw err;
+    p.warn(`Could not install the schedule: ${err.message}`);
+    return false;
+  }
+  p.note(lines.join("\n"), "Schedule");
+  return true;
 }
 
 function noteProposal(p: Prompter, proposal: Proposal): void {
