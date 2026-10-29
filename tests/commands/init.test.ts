@@ -27,6 +27,7 @@ import {
 } from "../../src/llm/schema.js";
 import { PromptCancelled } from "../../src/util/prompter.js";
 import { type Route, mockFetch, reply } from "../helpers/mockFetch.js";
+import { fakeExec } from "../helpers/fakeExec.js";
 import { type Answer, CANCEL, scriptedPrompter } from "../helpers/scriptedPrompter.js";
 
 const FIXTURES = join(import.meta.dirname, "../fixtures/feeds");
@@ -47,8 +48,10 @@ const CONTEXT_ANSWERS: Answer[] = [
   ["slack"],
   false,
 ];
-// Two sources, then yes to watching each after the trial fetch.
-const SOURCE_ANSWERS: Answer[] = ["repo", "vercel/next.js", "site", SIMON, "done", true, true];
+// Every day at the default time (no install offer: Slack runs on Actions).
+const SCHEDULE_ANSWERS: Answer[] = ["daily", "06:17"];
+// Two sources, then yes to watching each after the trial fetch, then the schedule.
+const SOURCE_ANSWERS: Answer[] = ["repo", "vercel/next.js", "site", SIMON, "done", true, true, ...SCHEDULE_ANSWERS];
 
 const CONTEXT = ContextSchema.parse({ version: 1, project: { name: "app", description: "" }, problems: ["News"] });
 
@@ -156,6 +159,9 @@ function deps(answers: Answer[], overrides: Partial<InitDeps> = {}) {
       checkIgnored: async (paths: string[]) => paths.map(() => true),
       env: {},
       resolveLlm: noLlm,
+      timeZone: "Asia/Tokyo",
+      // Never the real launchctl or crontab.
+      schedule: { platform: "darwin" as const, cwd: dir, home: dir, uid: 501, exec: fakeExec().exec, scriptPath: "/app/dist/pochi.mjs" },
       ...overrides,
     },
   };
@@ -211,7 +217,7 @@ describe("runInit", () => {
 
   it("waits for Claude only when a step needs it, and stops the lookup when done", async () => {
     let lookup: AbortSignal | undefined;
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, "site", SIMON, "done", true], {
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, "site", SIMON, "done", true, ...SCHEDULE_ANSWERS], {
       // Never settles, like a CLI probe that hangs.
       resolveLlm: (_, opts) => {
         lookup = opts?.signal;
@@ -292,7 +298,7 @@ describe("runInit", () => {
   });
 
   it("asks again until a channel is picked, and leaves the Actions steps out for files only", async () => {
-    const { prompter, deps: d } = deps(["app", "", "Problem", "", "", "English", [], ["file"], false, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps(["app", "", "Problem", "", "", "English", [], ["file"], false, ...SOURCE_ANSWERS, false]);
     await runInit({ configDir: dir }, d);
     expect(prompter.shown).toContain("warn: Pick at least one.");
     expect((await loadConfig({ configDir: dir, env: {} })).context.notify.channels).toEqual([
@@ -302,6 +308,90 @@ describe("runInit", () => {
     expect(steps).toContain(`node dist/pochi.mjs run --config-dir`);
     expect(steps).toContain(`node dist/pochi.mjs schedule install --config-dir`);
     expect(steps).not.toContain("gh secret set");
+  });
+
+  describe("schedule", () => {
+    const FILE_ONLY: Answer[] = ["app", "", "Problem", "", "", "English", ["file"], false, ...SOURCE_ANSWERS.slice(0, -2)];
+    const NOW = new Date("2026-10-29T03:30:00Z"); // Thu 12:30 in Tokyo
+
+    it("writes the days, time and machine zone, asking again until a day is picked", async () => {
+      const answers = [...FILE_ONLY, "weekly", [], ["thursday", "friday", "saturday"], "06:17", false];
+      const { prompter, deps: d } = deps(answers);
+      await runInit({ configDir: dir }, d);
+      expect(prompter.shown).toContain("warn: Pick at least one day.");
+      expect(prompter.initial["Days to run on (space to select)"]).toEqual(["monday"]);
+      expect((await loadConfig({ configDir: dir, env: {} })).context.schedule).toEqual({
+        interval: "weekly",
+        day: ["thursday", "friday", "saturday"],
+        time: "06:17",
+        timezone: "Asia/Tokyo",
+      });
+    });
+
+    it("writes one day as a single value and rejects a time that is not HH:MM", async () => {
+      const { deps: d } = deps([...FILE_ONLY, "weekly", ["monday"], "25:00"]);
+      expect(String(await rejection(runInit({ configDir: dir }, d)))).toContain('rejected "25:00"');
+      const ok = deps([...FILE_ONLY, "weekly", ["monday"], "07:00", false]);
+      await runInit({ configDir: dir }, ok.deps);
+      expect(await readFile(join(dir, "context.yml"), "utf8")).toMatch(/day: monday\n/);
+    });
+
+    it("offers the schedule being overwritten as the defaults, and keeps one set by hand", async () => {
+      const old = (schedule: string) =>
+        `version: 1\nproject: { name: old, description: "" }\nproblems: [p]\nschedule: ${schedule}\n`;
+      await writeFile(join(dir, "context.yml"), old('{ interval: weekly, day: [friday], time: "21:00", timezone: UTC }'));
+      const first = deps([true, ...FILE_ONLY, "weekly", ["friday"], "21:00", false]);
+      await runInit({ configDir: dir }, first.deps);
+      expect(first.prompter.initial).toMatchObject({
+        "When should pochi run?": "weekly",
+        "Days to run on (space to select)": ["friday"],
+        "Time to run (HH:MM, 24-hour)": "21:00",
+      });
+      expect((await loadConfig({ configDir: dir, env: {} })).context.schedule.timezone).toBe("UTC");
+
+      await writeFile(join(dir, "context.yml"), old('{ interval: cron, cronjob: "0 9 * * 1-5" }'));
+      const second = deps([true, ...FILE_ONLY, "keep", false]);
+      await runInit({ configDir: dir }, second.deps);
+      expect(second.prompter.options["When should pochi run?"]).toEqual(["daily", "weekly", "keep"]);
+      expect((await loadConfig({ configDir: dir, env: {} })).context.schedule).toMatchObject({
+        interval: "cron",
+        cronjob: "0 9 * * 1-5",
+      });
+    });
+
+    it("installs the job when asked, showing the next runs, and points the next steps at status", async () => {
+      const { exec, calls } = fakeExec();
+      const { prompter, deps: d } = deps([...FILE_ONLY, "weekly", ["thursday", "friday", "saturday"], "06:17", true], {
+        schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec, scriptPath: "/app/dist/pochi.mjs", now: () => NOW, timeZone: "Asia/Tokyo" },
+      });
+      await runInit({ configDir: dir }, d);
+      expect(prompter.asked).toContain(
+        "Install the schedule on this machine now (weekly on Thursday, Friday and Saturday at 06:17 (Asia/Tokyo))?",
+      );
+      expect(calls.map((c) => c.args[0])).toEqual(["bootout", "bootstrap"]);
+      const shown = prompter.shown.find((s) => s.startsWith("note: Schedule: "))!;
+      expect(shown).toContain("Next runs: Fri 2026-10-30 06:17, Sat 2026-10-31 06:17, Thu 2026-11-05 06:17");
+      const steps = prompter.shown.find((s) => s.startsWith("note: Next steps: "))!;
+      expect(steps).toContain("schedule status");
+      expect(steps).not.toContain("schedule install");
+    });
+
+    it("warns and leaves the install to the next steps when it fails", async () => {
+      const { prompter, deps: d } = deps([...FILE_ONLY, "daily", "06:17", true], {
+        schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec: fakeExec().exec, scriptPath: "/app/src/cli.ts" },
+      });
+      await runInit({ configDir: dir }, d);
+      expect(prompter.shown).toContain(
+        "warn: Could not install the schedule: run `npm run build` and install with `node dist/pochi.mjs schedule install`",
+      );
+      expect(prompter.shown.find((s) => s.startsWith("note: Next steps: "))).toContain("schedule install");
+    });
+
+    it("does not offer to install when Slack runs it on Actions", async () => {
+      const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+      await runInit({ configDir: dir }, d);
+      expect(prompter.asked.some((m) => m.startsWith("Install the schedule"))).toBe(false);
+    });
   });
 
   it("requires a project name and at least one problem", async () => {
@@ -932,6 +1022,7 @@ describe("runInit --from", () => {
       "done",
       true,
       true,
+      ...SCHEDULE_ANSWERS,
     ]);
     await runInit({ configDir, from }, d);
     expect(prompter.remaining).toEqual([]);
@@ -975,7 +1066,7 @@ describe("runInit --from", () => {
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [] });
     const configDir = join(dir, "config");
     const { prompter, deps: d } = deps(
-      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["pet AI illustration app"], false, true, true],
+      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["pet AI illustration app"], false, true, true, ...SCHEDULE_ANSWERS],
       // The fetch reads process.env; init reads the env it is given.
       { resolveLlm: llm.resolve, env: { TAVILY_API_KEY: "tvly-test" } },
     );
@@ -1017,7 +1108,7 @@ describe("runInit --from", () => {
     const configDir = join(dir, "config");
     const answers = [...PROPOSAL_CONTEXT];
     answers.splice(3, 1, true, "Supabase outages", "");
-    const { prompter, deps: d } = deps([...answers, ["vercel/next.js"], [], "done", true]);
+    const { prompter, deps: d } = deps([...answers, ["vercel/next.js"], [], "done", true, ...SCHEDULE_ANSWERS]);
     await runInit({ configDir, from }, d);
     expect(prompter.asked).toContain("What do you want to hear about? (1/18, empty to finish)");
     expect((await loadConfig({ configDir, env: {} })).context.problems).toEqual([
@@ -1038,7 +1129,7 @@ describe("runInit --from", () => {
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
     let lookup: AbortSignal | undefined;
     const from = await writeProposal(PROPOSAL);
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [SIMON], "done", [], false, true, true], {
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [SIMON], "done", [], false, true, true, ...SCHEDULE_ANSWERS], {
       env: { TAVILY_API_KEY: "tvly-test" },
       // Never settles, like a CLI probe that hangs.
       resolveLlm: (_, opts) => {
@@ -1065,7 +1156,7 @@ describe("runInit --from", () => {
       queries: [{ query: "\u0007" }, { query: "Pet  AI" }, { query: "pet ai" }, { query: "ペット イラスト" }],
     });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, "done", ["Pet AI", "ペット イラスト"], false, true, true], {
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, "done", ["Pet AI", "ペット イラスト"], false, true, true, ...SCHEDULE_ANSWERS], {
       env: { TAVILY_API_KEY: "tvly-test" },
     });
     await runInit({ configDir, from }, d);
@@ -1082,7 +1173,7 @@ describe("runInit --from", () => {
     });
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: blog }, { url: SIMON }] });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done", true]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done", true, ...SCHEDULE_ANSWERS]);
     await runInit({ configDir, from }, d);
     expect(prompter.shown).toContain("spin: Looking for feeds on 2 sites");
     expect(prompter.shown).toContain("warn: Already added: simonwillison.net/atom/everything; skipped.");
@@ -1093,7 +1184,7 @@ describe("runInit --from", () => {
     const down = "https://down.example.com/";
     mockFetch({ ...BASE_ROUTES, [down]: reply.status(503) });
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: down }, { url: SIMON }] });
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done", true]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done", true, ...SCHEDULE_ANSWERS]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown.some((s) => s.startsWith(`warn: Could not open ${down}`) && s.endsWith("; left out"))).toBe(true);
     expect(prompter.asked.some((m) => m.includes("anyway"))).toBe(false);
@@ -1101,7 +1192,7 @@ describe("runInit --from", () => {
 
   it("says the proposed queries are left out without a Tavily key", async () => {
     const from = await writeProposal(PROPOSAL);
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done", true]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done", true, ...SCHEDULE_ANSWERS]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown).toContain(
       "note: TAVILY_API_KEY is not set, so web search queries are skipped (1 proposed query left out).",
@@ -1180,7 +1271,7 @@ describe("runInit: ideas from Claude", () => {
     });
     const configDir = join(dir, "config");
     const { prompter, deps: d } = deps(
-      [...BEFORE_IDEAS, true, ["Accessibility rules for pet apps"], [SIMON], "done", ["WCAG 3 draft"], false, true, true],
+      [...BEFORE_IDEAS, true, ["Accessibility rules for pet apps"], [SIMON], "done", ["WCAG 3 draft"], false, true, true, ...SCHEDULE_ANSWERS],
       { resolveLlm: llm.resolve, env: { TAVILY_API_KEY: "tvly-test" } },
     );
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
