@@ -1,4 +1,5 @@
 import type { Context } from "../config/schema.js";
+import { EMPTY_WATCHLIST, type Watchlist } from "../proposal/prompt.js";
 import type { Item } from "../types.js";
 import { parseHttpUrl } from "../util/hash.js";
 import { collapseWhitespace, truncate } from "../util/text.js";
@@ -184,11 +185,26 @@ export function repoInferenceRequest(
   };
 }
 
-export function querySuggestionRequest(context: Context): GenerateRequest<QuerySuggestionOutput> {
+// Typed by the user, so escaped like the project details and left to judge relevance by.
+function watchLines(watch: Watchlist): string[] {
+  const list = (names: string[]) => names.map(oneLine).join(", ");
+  return [
+    ...(watch.competitors.length > 0 ? [`- The team follows these competitors: ${list(watch.competitors)}.`] : []),
+    ...(watch.adopters.length > 0
+      ? [`- The team follows these businesses, which may adopt or sell products like this one: ${list(watch.adopters)}.`]
+      : []),
+  ];
+}
+
+export function querySuggestionRequest(
+  context: Context,
+  watch: Watchlist = EMPTY_WATCHLIST,
+): GenerateRequest<QuerySuggestionOutput> {
   const task = [
     "Task: suggest web search queries that would surface this week's news on the team's interests.",
     `- Suggest up to ${MAX_QUERY_SUGGESTIONS} short queries, a few words each, as you would type them into a news search.`,
     "- Write the queries in the language of the market the project serves, usually the language of its description.",
+    ...watchLines(watch),
   ].join("\n");
   return {
     system: buildSystem(context, task, []),
@@ -198,7 +214,10 @@ export function querySuggestionRequest(context: Context): GenerateRequest<QueryS
   };
 }
 
-export function ideaSuggestionRequest(context: Context): GenerateRequest<IdeaSuggestionOutput> {
+export function ideaSuggestionRequest(
+  context: Context,
+  watch: Watchlist = EMPTY_WATCHLIST,
+): GenerateRequest<IdeaSuggestionOutput> {
   const task = [
     "Task: suggest interests the team has not listed but would likely want to hear about, to cover their blind spots.",
     `- Suggest up to ${MAX_IDEAS} ideas, each from one perspective, spread over the ones that fit this project:`,
@@ -213,6 +232,7 @@ export function ideaSuggestionRequest(context: Context): GenerateRequest<IdeaSug
     "- why: a few words on why it matters to this project.",
     `- sites: up to ${MAX_IDEA_SITES} official blogs, changelogs or news pages (press releases, trade news) with an RSS or Atom feed, as page URLs. Every one is checked, so leave the list empty rather than guess.`,
     `- queries: up to ${MAX_IDEA_QUERIES} web searches for news no feed covers, 2-6 words each, in the language that gives the best results for the market.`,
+    ...watchLines(watch),
   ].join("\n");
   return {
     system: buildSystem(context, task, ["problem", "why"]),

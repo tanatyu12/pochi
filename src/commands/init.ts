@@ -7,6 +7,7 @@ import {
   type Context,
   type ContextInput,
   ContextSchema,
+  DomainSchema,
   REPO_PATTERN,
   type Schedule,
   type SourcesInput,
@@ -27,7 +28,7 @@ import {
 } from "../llm/prompts.js";
 import { type IdeaSuggestionOutput, type LlmClient, LlmError } from "../llm/schema.js";
 import { type Proposal, type ProposedText, readProposal } from "../proposal/parse.js";
-import { DISCOVERY_PROMPT } from "../proposal/prompt.js";
+import { EMPTY_WATCHLIST, type Watchlist, discoveryPrompt } from "../proposal/prompt.js";
 import { CalendarError, DEFAULT_TIME, describeSchedule, parseTime, type Weekday } from "../schedule/calendar.js";
 import { type ScheduleDeps, installSchedule } from "./schedule.js";
 import { type DiscoveredFeed, FeedCheckError, discoverFeeds, isTransient } from "../sources/discover.js";
@@ -80,7 +81,12 @@ export interface InitDeps {
 type FeedInput = NonNullable<SourcesInput["feeds"]>[number];
 type QueryInput = NonNullable<SourcesInput["queries"]>[number];
 type FoundRepo = Extract<RepoCheck, { status: "found" }>;
-type QuerySuggestion = { query: string; topic: NonNullable<QueryInput["topic"]>; hint?: string };
+type QuerySuggestion = {
+  query: string;
+  topic: NonNullable<QueryInput["topic"]>;
+  hint?: string;
+  includeDomains?: string[];
+};
 /** Settles either way, so nobody has to wait for it until Claude is needed. */
 type LlmLookup = Promise<{ client: LlmClient } | { error: unknown }>;
 
@@ -90,13 +96,38 @@ export interface InitOptions {
   from?: string;
   /** Print the prompt that asks an agent for a proposal, and ask nothing. */
   printPrompt?: boolean;
+  /** Who to follow (--competitor, --adopter, --news-site); every list may be empty or left out. */
+  watch?: Partial<Watchlist>;
+}
+
+const MAX_WATCHED = 10;
+
+/** Cleans the names and checks the news sites; ConfigError (exit 2) for a site that is not a domain. */
+export function cleanWatchlist(watch: Partial<Watchlist> = {}): Watchlist {
+  const names = (list: string[] = [], flag: string) => {
+    const seen = new Set<string>();
+    const kept = list.map(cleanQuery).filter((n) => n !== "" && once(seen, n.toLowerCase()));
+    if (kept.length > MAX_WATCHED) throw new ConfigError(`${flag} can be given at most ${MAX_WATCHED} times`);
+    return kept;
+  };
+  const sites = names(watch.newsSites, "--news-site").map((site) => {
+    const parsed = DomainSchema.safeParse(site);
+    if (!parsed.success) throw new ConfigError(`--news-site must be a domain name such as example.com`);
+    return parsed.data;
+  });
+  return {
+    competitors: names(watch.competitors, "--competitor"),
+    adopters: names(watch.adopters, "--adopter"),
+    newsSites: [...new Set(sites)],
+  };
 }
 
 export async function runInit(opts: InitOptions = {}, deps: Partial<InitDeps> = {}): Promise<void> {
+  const watch = cleanWatchlist(opts.watch);
   if (opts.printPrompt) {
     if (opts.from !== undefined) throw new ConfigError("--print-prompt and --from cannot be used together");
     // Asks nothing, so it works in a pipe: init --print-prompt | claude -p ...
-    (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(DISCOVERY_PROMPT);
+    (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(discoveryPrompt(watch));
     return;
   }
   const isInteractive = deps.isInteractive ?? (() => Boolean(process.stdin.isTTY && process.stdout.isTTY));
@@ -109,13 +140,18 @@ export async function runInit(opts: InitOptions = {}, deps: Partial<InitDeps> = 
   // The prompts show what matters; info lines from the fetchers would only break up the screen.
   const restoreLog = configureLog({ level: "quiet" });
   try {
-    await init(opts.configDir ?? DEFAULT_CONFIG_DIR, deps, proposal);
+    await init(opts.configDir ?? DEFAULT_CONFIG_DIR, deps, proposal, watch);
   } finally {
     restoreLog();
   }
 }
 
-async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | undefined): Promise<void> {
+async function init(
+  dir: string,
+  deps: Partial<InitDeps>,
+  proposal: Proposal | undefined,
+  watch: Watchlist,
+): Promise<void> {
   const p = deps.prompter ?? createClackPrompter();
   const checkIgnored = deps.checkIgnored ?? gitCheckIgnored;
   const env = deps.env ?? process.env;
@@ -146,7 +182,7 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
   );
   let sources: SourcesInput;
   try {
-    const session = newSession(p, context, { llm, env, signal });
+    const session = newSession(p, context, { llm, env, signal, watch });
     const ideas = await askIdeas(session);
     if (ideas.problems.length > 0) {
       contextInput = { ...contextInput, problems: [...context.problems, ...ideas.problems] };
@@ -158,7 +194,13 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
     if (proposal) {
       // Offered in place of Claude's suggestions; with none proposed, Claude is still asked.
       const suggestions = cleanSuggestions(
-        proposal.queries.map((q) => ({ query: q.query, topic: q.topic, hint: q.evidence || undefined })),
+        proposal.queries.map((q) => ({
+          query: q.query,
+          topic: q.topic,
+          // The sites lead, so a query limited to them is told apart from the same words unlimited.
+          hint: [q.includeDomains && `on ${q.includeDomains.join(", ")}`, q.evidence].filter(Boolean).join(" · ") || undefined,
+          includeDomains: q.includeDomains,
+        })),
       );
       if (suggestions.length > 0) session.suggestions = suggestions;
     }
@@ -522,13 +564,15 @@ export interface SourceSession {
   suggestions?: QuerySuggestion[];
   /** From the ideas picked; offered with the suggestions, which Claude is still asked for. */
   ideaQueries?: QuerySuggestion[];
+  /** Who the user named on the command line; empty lists when nobody was. */
+  watch: Watchlist;
   tavilyNoted?: boolean;
 }
 
 export function newSession(
   p: Prompter,
   context: Context,
-  opts: { llm?: LlmClient | LlmLookup; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
+  opts: { llm?: LlmClient | LlmLookup; env?: NodeJS.ProcessEnv; signal?: AbortSignal; watch?: Watchlist } = {},
 ): SourceSession {
   const { llm, signal } = opts;
   return {
@@ -542,7 +586,24 @@ export function newSession(
     ids: new Set(),
     keys: new Set(),
     checked: new WeakMap(),
+    watch: opts.watch ?? EMPTY_WATCHLIST,
   };
+}
+
+/**
+ * Each competitor and business named on the command line, searched for by its name as typed (in
+ * the user's language) and, with --news-site, only on those sites. Offered, never picked for the user.
+ */
+function watchQueries(watch: Watchlist): QuerySuggestion[] {
+  const on = watch.newsSites.length > 0 ? ` on ${watch.newsSites.join(", ")}` : "";
+  const named = (names: string[], kind: string) =>
+    names.map((query) => ({
+      query,
+      topic: "news" as const,
+      hint: `${kind}${on}`,
+      ...(watch.newsSites.length > 0 && { includeDomains: watch.newsSites }),
+    }));
+  return [...named(watch.competitors, "competitor"), ...named(watch.adopters, "adopter")];
 }
 
 type Ideas = { problems: string[]; sites: { url: string; evidence: string }[]; queries: QuerySuggestion[] };
@@ -566,7 +627,11 @@ async function askIdeas(s: SourceSession): Promise<Ideas> {
   if (!llm) return none;
   let reply: IdeaSuggestionOutput;
   try {
-    reply = await p.spin("Asking Claude for ideas", () => llm.generate(ideaSuggestionRequest(s.context), { signal }), signal);
+    reply = await p.spin(
+      "Asking Claude for ideas",
+      () => llm.generate(ideaSuggestionRequest(s.context, s.watch), { signal }),
+      signal,
+    );
   } catch (err) {
     throwIfCancelled(signal);
     if (!(err instanceof LlmError)) throw err;
@@ -973,7 +1038,7 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
   // A run reads the same key (from process.env, which env is outside tests), so a query asked
   // for here is one a run can fetch.
   if (!tavilyApiKey(s.env)) {
-    const proposed = (s.suggestions?.length ?? 0) + (s.ideaQueries?.length ?? 0);
+    const proposed = (s.suggestions?.length ?? 0) + (s.ideaQueries?.length ?? 0) + watchQueries(s.watch).length;
     if (!s.tavilyNoted) {
       p.note(
         `TAVILY_API_KEY is not set, so web search queries are skipped${proposed > 0 ? ` (${plural(proposed, "proposed query", "proposed queries")} left out)` : ""}.`,
@@ -990,7 +1055,7 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
     try {
       const reply = await p.spin(
         "Asking Claude for search queries",
-        () => llm.generate(querySuggestionRequest(s.context), { signal }),
+        () => llm.generate(querySuggestionRequest(s.context, s.watch), { signal }),
         signal,
       );
       s.suggestions = cleanSuggestions(reply.queries.map((query) => ({ query, topic: "news" as const }))).slice(
@@ -1007,7 +1072,7 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
 
   // None picked to begin with, proposed or not: each costs a credit every morning.
   const candidates: QuerySuggestion[] = [];
-  const offered = cleanSuggestions([...(s.suggestions ?? []), ...(s.ideaQueries ?? [])]).filter(
+  const offered = cleanSuggestions([...watchQueries(s.watch), ...(s.suggestions ?? []), ...(s.ideaQueries ?? [])]).filter(
     (q) => !s.keys.has(queryKey(q.query)),
   );
   let addOwn = true;
@@ -1030,13 +1095,13 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
   candidates.push(...typed.map(cleanQuery).filter((q) => q !== "").map((query) => ({ query, topic: "news" as const })));
 
   const added: QueryInput[] = [];
-  for (const { query, topic } of candidates) {
+  for (const { query, topic, includeDomains } of candidates) {
     const id = queryIdFrom(query, s.ids);
     if (!claim(s, queryKey(query), id)) {
       p.warn(`Already added: ${displayLine(query, SHOWN_MAX_CHARS)}; skipped.`);
       continue;
     }
-    added.push({ id, query, topic });
+    added.push({ id, query, topic, ...(includeDomains && { includeDomains }) });
   }
   return added;
 }

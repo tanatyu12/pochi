@@ -1056,6 +1056,32 @@ describe("runInit --from", () => {
     expect(loaded.sources.feeds.map((f) => f.id)).toEqual(["next-js", "simonwillison-net"]);
   });
 
+  it("offers the named businesses as searches on the news sites, and keeps a proposed query's sites", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
+    mockFetch({ ...BASE_ROUTES, [TAVILY]: reply.json({ results: [] }) });
+    const from = await writeProposal({
+      ...PROPOSAL,
+      repos: [],
+      sites: [],
+      queries: [{ query: "ペット保険 グッズ", topic: "general", evidence: "knowledge", includeDomains: ["prtimes.jp"] }],
+    });
+    const configDir = join(dir, "config");
+    const picked = ["ペット葬儀社", "ペット保険 グッズ"];
+    const { prompter, deps: d } = deps(
+      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", picked, false, true, true, true, ...SCHEDULE_ANSWERS],
+      { env: { TAVILY_API_KEY: "tvly-test" } },
+    );
+    await runInit({ configDir, from, watch: { competitors: ["SUZURI"], adopters: ["ペット葬儀社"], newsSites: ["prtimes.jp"] } }, d);
+    const message = "Search queries to run every morning (space to select)";
+    expect(prompter.options[message]).toEqual(["SUZURI", "ペット葬儀社", "ペット保険 グッズ"]);
+    expect(prompter.initial[message]).toBeUndefined();
+    const queries = (await loadConfig({ configDir, env: {} })).sources.queries;
+    expect(queries.map((q) => [q.query, q.topic, q.includeDomains])).toEqual([
+      ["ペット葬儀社", "news", ["prtimes.jp"]],
+      ["ペット保険 グッズ", "general", ["prtimes.jp"]],
+    ]);
+  });
+
   it("offers the proposed queries in place of Claude's, keeping their topic", async () => {
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
     mockFetch({
@@ -1230,6 +1256,19 @@ describe("runInit --print-prompt", () => {
     expect(out).toContain('"pochi": "proposal/v1"');
     expect(prompter.asked).toEqual([]);
     expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("adds who to follow, cleaned, and refuses a news site that is not a domain before printing", async () => {
+    let out = "";
+    const { deps: d } = deps([], { isInteractive: () => false, stdout: (s) => (out += s) });
+    const watch = { adopters: ["  ペット葬儀社 ", "ペット葬儀社", ""], newsSites: ["PRTimes.jp"] };
+    await runInit({ printPrompt: true, watch }, d);
+    expect(out).toContain('like this one: "ペット葬儀社". Add a problem');
+    expect(out).toContain('news: "prtimes.jp"');
+    out = "";
+    const err = await rejection(runInit({ printPrompt: true, watch: { newsSites: ["prtimes.jp/news"] } }, d));
+    expect(err).toBeInstanceOf(ConfigError);
+    expect(out).toBe("");
   });
 
   it("cannot be combined with --from", async () => {

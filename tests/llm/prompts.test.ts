@@ -233,6 +233,15 @@ describe("request builders", () => {
     expect(ideas).not.toContain("software team");
   });
 
+  it("tell the query and idea suggestions who the team follows, escaped", () => {
+    const watch = { competitors: ["<SUZURI>"], adopters: ["ペット葬儀社"], newsSites: ["prtimes.jp"] };
+    for (const req of [querySuggestionRequest(context, watch), ideaSuggestionRequest(context, watch)]) {
+      expect(req.system).toContain("- The team follows these competitors: &lt;SUZURI&gt;.");
+      expect(req.system).toContain("may adopt or sell products like this one: ペット葬儀社.");
+    }
+    expect(querySuggestionRequest(context).system).not.toContain("The team follows");
+  });
+
   it("refuse an empty batch", () => {
     expect(() => triageRequest(context, [])).toThrow(RangeError);
     expect(() => analyzeRequest(context, [])).toThrow(RangeError);
