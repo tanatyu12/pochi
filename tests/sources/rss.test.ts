@@ -10,7 +10,7 @@ function fixture(name: string): string {
 }
 
 const source = { id: "blog", name: "Example Blog" };
-const opts = { baseUrl: "https://blog.example.com/feed.xml", itemsPerFeed: 10, maxContentChars: 2000 };
+const opts = { baseUrl: "https://blog.example.com/feed.xml", itemsPerFeed: 10, maxItemsPerFeed: 20, maxContentChars: 2000 };
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -187,6 +187,30 @@ describe("toItems", () => {
     expect(items.map((i) => i.url)).toEqual(["https://blog.example.com/up"]);
   });
 
+  describe("since", () => {
+    const dated = (n: number, day: number) => entry({ link: `/p${n}`, published: `2026-10-${day}T00:00:00Z` });
+    // Newest first: 25, 24, 23, 22, 20, then one undated.
+    const entries = [dated(1, 25), dated(2, 24), dated(3, 23), dated(4, 22), dated(5, 20), entry({ link: "/undated" })];
+    const paths = (items: { url: string }[]) => items.map((i) => new URL(i.url).pathname);
+
+    it("keeps every entry published since then beyond itemsPerFeed", () => {
+      const items = toItems(entries, source, { ...opts, itemsPerFeed: 2, since: new Date("2026-10-22T00:00:00Z") });
+      expect(paths(items)).toEqual(["/p1", "/p2", "/p3", "/p4"]);
+    });
+
+    it("stops at maxItemsPerFeed", () => {
+      const since = new Date("2026-10-01T00:00:00Z");
+      expect(toItems(entries, source, { ...opts, itemsPerFeed: 1, maxItemsPerFeed: 3, since })).toHaveLength(3);
+    });
+
+    it("never takes fewer than itemsPerFeed, and adds no undated entries", () => {
+      const since = new Date("2026-10-30T00:00:00Z");
+      expect(paths(toItems(entries, source, { ...opts, itemsPerFeed: 2, since }))).toEqual(["/p1", "/p2"]);
+      const all = toItems(entries, source, { ...opts, itemsPerFeed: 1, since: new Date("2026-10-01T00:00:00Z") });
+      expect(paths(all)).not.toContain("/undated");
+    });
+  });
+
   it("does not count dropped entries against itemsPerFeed", () => {
     const items = toItems([entry({ link: undefined }), entry({ link: "/a" })], source, { ...opts, itemsPerFeed: 1 });
     expect(items).toHaveLength(1);
@@ -294,7 +318,7 @@ describe("toItems", () => {
 
 describe("fetchRssItems", () => {
   const feed = { id: "blog", type: "rss" as const, name: "Example Blog", url: "https://blog.example.com/feed" };
-  const defaults = { itemsPerFeed: 3, maxContentChars: 2000 };
+  const defaults = { itemsPerFeed: 3, maxItemsPerFeed: 20, maxContentChars: 2000 };
 
   it("fetches, parses and resolves links against the final URL", async () => {
     mockFetch({ [feed.url]: reply.redirect("https://cdn.example.net/blog/feed.xml", fixture("rss2.xml")) });

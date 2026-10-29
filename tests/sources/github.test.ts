@@ -199,7 +199,7 @@ describe("verifyRepo", () => {
 });
 
 describe("fetchGithubItems", () => {
-  const defaults = { itemsPerFeed: 3, maxContentChars: 2000 };
+  const defaults = { itemsPerFeed: 3, maxItemsPerFeed: 20, maxContentChars: 2000 };
   const next = {
     id: "nextjs",
     type: "github" as const,

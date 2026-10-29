@@ -17,7 +17,7 @@ exports[`buildCliArgs > builds the arguments in this exact order 1`] = `
   "--model",
   "haiku",
   "--system-prompt",
-  "You help a software team keep up with news that matters to their project.
+  "You help a team keep up with news that matters to their project: a product, a service or a business.
 
 <project>
 Name: my-app

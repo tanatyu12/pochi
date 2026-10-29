@@ -122,6 +122,19 @@ describe("content length", () => {
   });
 });
 
+describe("today", () => {
+  it("tells triage the date and the age limit, and analyze the date", () => {
+    const triage = triageRequest(context, [item(1)], { today: "2026-10-28" }).system;
+    expect(triage).toContain("Today is 2026-10-28. The team only wants news from the last 14 days");
+    expect(analyzeRequest(context, [item(1)], { today: "2026-10-28" }).system).toContain("Today is 2026-10-28;");
+  });
+
+  it("says nothing about the date without one", () => {
+    expect(triageRequest(context, [item(1)]).system).not.toContain("Today is");
+    expect(analyzeRequest(context, [item(1)]).system).not.toContain("Today is");
+  });
+});
+
 describe("system prompt", () => {
   const { system } = triageRequest(context, [item(1)]);
 
@@ -211,6 +224,13 @@ describe("request builders", () => {
   it("put the shared limits into the task", () => {
     expect(repoInferenceRequest(context, ["x"]).system).toContain(`at most ${MAX_REPO_CANDIDATES} candidates`);
     expect(querySuggestionRequest(context).system).toContain(`up to ${MAX_QUERY_SUGGESTIONS} short queries`);
+  });
+
+  it("suggest queries in the market's language and ideas from adjacent industries", () => {
+    expect(querySuggestionRequest(context).system).toContain("in the language of the market the project serves");
+    const ideas = ideaSuggestionRequest(context).system;
+    expect(ideas).toContain("  - industry: competitors' new products, and companies in adjacent businesses");
+    expect(ideas).not.toContain("software team");
   });
 
   it("refuse an empty batch", () => {

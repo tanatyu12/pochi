@@ -362,6 +362,38 @@ describe("runCommand", () => {
     }
   });
 
+  describe("since the last run", () => {
+    const posts = [1, 2, 3, 4, 6].map((age) => ({ title: `Post ${age}`, age }));
+    const savedAt = async () => JSON.parse(await readFile(statePath, "utf8")).updatedAt;
+
+    beforeEach(() => {
+      mockFetch({ [FEED_A]: feedA(posts), [FEED_B]: feedB([]), [WEBHOOK]: reply.text("ok") });
+    });
+
+    it("takes only the newest itemsPerFeed on a first run", async () => {
+      const llm = fakeLlm();
+      await run(llm);
+      expect(llm.titles("triage")).toEqual(["Post 1", "Post 2", "Post 3"]);
+      expect(await savedAt()).toBe("2026-10-26T00:00:00Z");
+    });
+
+    it("takes every post from a day before the last run", async () => {
+      await mkdir(join(dir, "state"));
+      await writeFile(statePath, JSON.stringify({ version: 1, updatedAt: "2026-10-23T00:00:00Z", entries: {} }));
+      const llm = fakeLlm();
+      await run(llm);
+      expect(llm.titles("triage")).toEqual(["Post 1", "Post 2", "Post 3", "Post 4"]);
+    });
+
+    it("keeps the saved time while items are left undecided", async () => {
+      await writeFile(join(dir, "config", "context.yml"), `${CONTEXT}llm: { maxItemsPerRun: 2 }\n`);
+      await mkdir(join(dir, "state"));
+      await writeFile(statePath, JSON.stringify({ version: 1, updatedAt: "2026-10-23T00:00:00Z", entries: {} }));
+      await run(fakeLlm());
+      expect(await savedAt()).toBe("2026-10-23T00:00:00Z");
+    });
+  });
+
   it("records new items older than maxItemAgeDays as irrelevant without asking the LLM", async () => {
     routes({ a: feedA([{ title: "Ancient post", age: 30 }, { title: "Breaking change in lib" }]) });
     const llm = fakeLlm();
