@@ -57,6 +57,8 @@ const CONTEXT_ANSWERS: Answer[] = [
   ...SCHEDULE_ANSWERS,
   false,
 ];
+// Asked last with Slack: run on GitHub Actions, as the next steps for Slack assume.
+const ON_ACTIONS: Answer = "github";
 // Two sources; both bring an item, so the trial fetch asks nothing.
 const SOURCE_ANSWERS: Answer[] = ["repo", "vercel/next.js", "site", SIMON, "done"];
 
@@ -179,7 +181,7 @@ function deps(answers: Answer[], overrides: Partial<InitDeps> = {}) {
 
 describe("runInit", () => {
   it("writes a config that loads back to the answers, readable by the owner only", async () => {
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: dir }, d);
     expect(prompter.remaining).toEqual([]);
 
@@ -201,7 +203,7 @@ describe("runInit", () => {
   });
 
   it("completes without an LLM, saying so once", async () => {
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: dir }, d);
     expect(prompter.shown.filter((s) => s.includes("Continuing without Claude"))).toEqual([
       "warn: no LLM available. Continuing without Claude: enter repositories as owner/repo.",
@@ -212,7 +214,7 @@ describe("runInit", () => {
   it("passes the env and the parsed llm settings to resolveLlm", async () => {
     const llm = fakeLlm();
     const seen: unknown[] = [];
-    const { deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS], {
+    const { deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS], {
       env: { ANTHROPIC_API_KEY: "k" },
       resolveLlm: async (settings, opts) => {
         seen.push(settings, opts?.env);
@@ -227,7 +229,7 @@ describe("runInit", () => {
 
   it("waits for Claude only when a step needs it, and stops the lookup when done", async () => {
     let lookup: AbortSignal | undefined;
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, "site", SIMON, "done"], {
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, "site", SIMON, "done", ON_ACTIONS], {
       // Settles late, like a slow CLI probe.
       resolveLlm: (_, opts) => {
         lookup = opts?.signal;
@@ -250,7 +252,7 @@ describe("runInit", () => {
       // At the time, back to how often, from every day to Fridays.
       const at = answers.indexOf("06:17");
       answers.splice(at, 1, BACK, "weekly", ["friday"], "07:00");
-      const { prompter, deps: d } = deps([...answers, ...SOURCE_ANSWERS]);
+      const { prompter, deps: d } = deps([...answers, ...SOURCE_ANSWERS, ON_ACTIONS]);
       await runInit({ configDir: dir }, d);
       expect(prompter.remaining).toEqual([]);
       expect(prompter.initial["Project name"]).toBe("my-app");
@@ -268,14 +270,14 @@ describe("runInit", () => {
       const quiet: Answer[] = ["repo", "vercel/next.js", "site", QUIET, "site", other, "done"];
       const once = mockFetch(routes);
       const llm = fakeLlm({ queries: () => [] });
-      await runInit({ configDir: dir }, deps([...CONTEXT_ANSWERS, ...quiet, true, true], { resolveLlm: llm.resolve }).deps);
+      await runInit({ configDir: dir }, deps([...CONTEXT_ANSWERS, ...quiet, true, true, ON_ACTIONS], { resolveLlm: llm.resolve }).deps);
       const fetched = urls(once);
 
       await rm(dir, { recursive: true, force: true });
       const again = mockFetch(routes);
       const llm2 = fakeLlm({ queries: () => [] });
       // At the trial fetch of the second feed, back to the first one's, which is answered again.
-      const answers: Answer[] = [...CONTEXT_ANSWERS, ...quiet, true, BACK, true, true];
+      const answers: Answer[] = [...CONTEXT_ANSWERS, ...quiet, true, BACK, true, true, ON_ACTIONS];
       const { prompter, deps: d } = deps(answers, { resolveLlm: llm2.resolve });
       await runInit({ configDir: dir }, d);
       expect(prompter.remaining).toEqual([]);
@@ -349,13 +351,13 @@ describe("runInit", () => {
   it("overwrites existing files when agreed", async () => {
     await writeFile(join(dir, "context.yml"), "# old\n");
     await writeFile(join(dir, "sources.yml"), "# old\n");
-    const { deps: d } = deps([true, ...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+    const { deps: d } = deps([true, ...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: dir }, d);
     expect((await loadConfig({ configDir: dir, env: {} })).context.project.name).toBe("my-app");
   });
 
   it("asks for another language when Other is chosen and leaves exclude out when empty", async () => {
-    const { deps: d } = deps(["app", "", "Problem", "", "", "other", "German", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS]);
+    const { deps: d } = deps(["app", "", "Problem", "", "", "other", "German", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: dir }, d);
     const text = await readFile(join(dir, "context.yml"), "utf8");
     expect(text).not.toContain("exclude");
@@ -449,20 +451,70 @@ describe("runInit", () => {
     });
 
     it("warns and leaves the install to the next steps when it fails", async () => {
+      const exec = fakeExec(() => ({ code: 5, stderr: "Bootstrap failed" })).exec;
       const { prompter, deps: d } = deps(fileOnly(["daily", "06:17"], true), {
-        schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec: fakeExec().exec, scriptPath: "/app/src/cli.ts" },
+        schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec, scriptPath: "/app/dist/pochi.mjs" },
       });
       await runInit({ configDir: dir }, d);
-      expect(prompter.shown).toContain(
-        "warn: Could not install the schedule: run `npm run build` and install with `node dist/pochi.mjs schedule install`",
-      );
+      expect(prompter.shown.some((s) => s.startsWith("warn: Could not install the schedule: "))).toBe(true);
       expect(prompter.shown.find((s) => s.startsWith("note: Next steps: "))).toContain("schedule install");
     });
 
-    it("does not offer to install when Slack runs it on Actions", async () => {
-      const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+    it("does not offer an install that cannot work when run from source", async () => {
+      const { exec, calls } = fakeExec();
+      // The second run is asked to overwrite the files of the first.
+      for (const answers of [fileOnly(["daily", "06:17"]), [true, ...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, "local"]]) {
+        const { prompter, deps: d } = deps(answers, {
+          schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec, scriptPath: "/app/src/cli.ts" },
+        });
+        await runInit({ configDir: dir }, d);
+        expect(prompter.remaining).toEqual([]);
+        expect(prompter.asked.some((m) => m.startsWith("Install the schedule"))).toBe(false);
+        expect(
+          prompter.shown.some((s) => s.startsWith("warn: The schedule was not installed: init is running from source.")),
+        ).toBe(true);
+        expect(prompter.shown.find((s) => s.startsWith("note: Next steps: "))).toContain("schedule install");
+      }
+      expect(calls).toEqual([]);
+    });
+
+    const WHERE = "Where should pochi run on schedule?";
+
+    it("asks where a Slack setup runs, and installs it here without asking again", async () => {
+      const { exec, calls } = fakeExec();
+      const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, "local"], {
+        schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec, scriptPath: "/app/dist/pochi.mjs" },
+      });
+      await runInit({ configDir: dir }, d);
+      expect(prompter.options[WHERE]).toEqual(["local", "github"]);
+      expect(prompter.initial[WHERE]).toBe("local");
+      expect(prompter.asked.some((m) => m.startsWith("Install the schedule"))).toBe(false);
+      expect(calls.map((c) => c.args[0])).toEqual(["bootout", "bootstrap"]);
+      const steps = prompter.shown.find((s) => s.startsWith("note: Next steps: "))!;
+      expect(steps).toContain("schedule status");
+      expect(steps).not.toContain("gh secret set");
+    });
+
+    it("installs nothing for a Slack setup run on Actions", async () => {
+      const { exec, calls } = fakeExec();
+      const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS], {
+        schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec, scriptPath: "/app/dist/pochi.mjs" },
+      });
       await runInit({ configDir: dir }, d);
       expect(prompter.asked.some((m) => m.startsWith("Install the schedule"))).toBe(false);
+      expect(calls).toEqual([]);
+      expect(prompter.shown.find((s) => s.startsWith("note: Next steps: "))).toContain("schedule install --backend github");
+    });
+
+    it("keeps the files and shows the Actions steps when cancelled at where to run", async () => {
+      const { exec, calls } = fakeExec();
+      const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, CANCEL], {
+        schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec, scriptPath: "/app/dist/pochi.mjs" },
+      });
+      await runInit({ configDir: dir }, d);
+      expect(calls).toEqual([]);
+      expect(await readdir(dir)).toEqual(expect.arrayContaining(["context.yml", "sources.yml"]));
+      expect(prompter.shown.find((s) => s.startsWith("note: Next steps: "))).toContain("gh secret set");
     });
   });
 
@@ -477,7 +529,7 @@ describe("runInit", () => {
 
   it("stops asking for problems at 50", async () => {
     const problems = Array.from({ length: 50 }, (_, i) => `Problem ${i + 1}`);
-    const { prompter, deps: d } = deps(["app", "", ...problems, "", "English", ["slack"], ...SCHEDULE_ANSWERS, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps(["app", "", ...problems, "", "English", ["slack"], ...SCHEDULE_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: dir }, d);
     expect(prompter.asked.filter((m) => m.startsWith("What do you want to hear about?"))).toHaveLength(50);
     expect((await loadConfig({ configDir: dir, env: {} })).context.problems).toEqual(problems);
@@ -485,7 +537,7 @@ describe("runInit", () => {
 
   it("warns when git does not ignore the files and notes when it cannot tell", async () => {
     const checked: string[][] = [];
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS], {
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS], {
       checkIgnored: async (paths) => {
         checked.push(paths);
         return [false, undefined];
@@ -501,7 +553,7 @@ describe("runInit", () => {
 
   it("checks with git by default", async () => {
     // The temporary directory is in no repository, so git cannot tell.
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
     const { checkIgnored: _, ...withoutCheck } = d;
     await runInit({ configDir: dir }, withoutCheck);
     expect(prompter.shown).toContain(`note: Could not check whether git ignores ${join(dir, "context.yml")}.`);
@@ -509,7 +561,7 @@ describe("runInit", () => {
 
   it("points the next steps at the config dir used, quoted for the shell", async () => {
     const spaced = join(dir, "my configs");
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: spaced }, d);
     const steps = prompter.shown.find((s) => s.startsWith("note: Next steps: "))!;
     expect(steps).toContain(`run --dry-run --config-dir '${spaced}'`);
@@ -517,7 +569,7 @@ describe("runInit", () => {
   });
 
   it("leaves --config-dir out of the next steps for the default dir", async () => {
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
     const cwd = process.cwd();
     process.chdir(dir);
     try {
@@ -539,7 +591,7 @@ describe("runInit", () => {
 
   it("warns when the env vars would override the files, without showing their values", async () => {
     const secret = "project: { name: leaked-value }";
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS], {
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS], {
       env: { POCHI_CONTEXT_YAML: secret, POCHI_SOURCES_YAML: "  ", SLACK_WEBHOOK_URL: "https://hooks.slack.com/x" },
     });
     await runInit({ configDir: dir }, d);
@@ -1101,6 +1153,7 @@ describe("runInit --from", () => {
       ["vercel/next.js", "ghost/missing"],
       [SIMON],
       "done",
+      ON_ACTIONS,
     ]);
     await runInit({ configDir, from }, d);
     expect(prompter.remaining).toEqual([]);
@@ -1146,7 +1199,7 @@ describe("runInit --from", () => {
     const configDir = join(dir, "config");
     const picked = ["ペット葬儀社", "ペット保険 グッズ"];
     const { prompter, deps: d } = deps(
-      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["ペット葬儀社"], ["ペット保険 グッズ"], false, true, true, true],
+      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["ペット葬儀社"], ["ペット保険 グッズ"], false, true, true, ON_ACTIONS],
       { env: { TAVILY_API_KEY: "tvly-test" } },
     );
     await runInit({ configDir, from, watch: { competitors: ["SUZURI"], adopters: ["ペット葬儀社"], newsSites: ["prtimes.jp"] } }, d);
@@ -1171,7 +1224,7 @@ describe("runInit --from", () => {
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [] });
     const configDir = join(dir, "config");
     const { prompter, deps: d } = deps(
-      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["pet AI illustration app"], false, true, true],
+      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["pet AI illustration app"], false, ON_ACTIONS],
       // The fetch reads process.env; init reads the env it is given.
       { resolveLlm: llm.resolve, env: { TAVILY_API_KEY: "tvly-test" } },
     );
@@ -1189,7 +1242,7 @@ describe("runInit --from", () => {
   it("leaves a language it does not list to Other, filled in", async () => {
     const from = await writeProposal({ pochi: "proposal/v1", language: "German", problems: [{ text: "News" }] });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "other", "German", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "other", "German", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir, from }, d);
     expect(prompter.initial["Language for the summaries"]).toBe("other");
     expect(prompter.initial.Language).toBe("German");
@@ -1213,7 +1266,7 @@ describe("runInit --from", () => {
     const configDir = join(dir, "config");
     const answers = [...PROPOSAL_CONTEXT];
     answers.splice(3, 1, true, "Supabase outages", "");
-    const { prompter, deps: d } = deps([...answers, ["vercel/next.js"], [], "done"]);
+    const { prompter, deps: d } = deps([...answers, ["vercel/next.js"], [], "done", ON_ACTIONS]);
     await runInit({ configDir, from }, d);
     expect(prompter.asked).toContain("What do you want to hear about? (1/48, empty to finish)");
     expect((await loadConfig({ configDir, env: {} })).context.problems).toEqual([
@@ -1225,7 +1278,7 @@ describe("runInit --from", () => {
 
   it("warns about the entries it left out", async () => {
     const from = await writeProposal({ pochi: "proposal/v1", problems: [{ text: "News" }], repos: [{ repo: "nope" }, "x"] });
-    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "English", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "English", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown).toContain("warn: Left out 2 proposed entries: malformed or past the limits.");
   });
@@ -1234,7 +1287,7 @@ describe("runInit --from", () => {
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
     let lookup: AbortSignal | undefined;
     const from = await writeProposal(PROPOSAL);
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [SIMON], "done", [], false, true, true], {
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [SIMON], "done", [], false, ON_ACTIONS], {
       env: { TAVILY_API_KEY: "tvly-test" },
       // Never settles, like a CLI probe that hangs.
       resolveLlm: (_, opts) => {
@@ -1261,7 +1314,7 @@ describe("runInit --from", () => {
       queries: [{ query: "\u0007" }, { query: "Pet  AI" }, { query: "pet ai" }, { query: "ペット イラスト" }],
     });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, "done", ["Pet AI", "ペット イラスト"], "", true, true], {
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, "done", ["Pet AI", "ペット イラスト"], "", true, true, ON_ACTIONS], {
       env: { TAVILY_API_KEY: "tvly-test" },
     });
     await runInit({ configDir, from }, d);
@@ -1280,7 +1333,7 @@ describe("runInit --from", () => {
     });
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: blog }, { url: SIMON }] });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done"]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done", ON_ACTIONS]);
     await runInit({ configDir, from }, d);
     expect(prompter.shown).toContain("spin: Looking for feeds on 2 sites");
     expect(prompter.shown).toContain("warn: Already added: simonwillison.net/atom/everything; skipped.");
@@ -1291,7 +1344,7 @@ describe("runInit --from", () => {
     const down = "https://down.example.com/";
     mockFetch({ ...BASE_ROUTES, [down]: reply.status(503) });
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: down }, { url: SIMON }] });
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done"]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done", ON_ACTIONS]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown.some((s) => s.startsWith(`warn: Could not open ${down}`) && s.endsWith("; left out"))).toBe(true);
     expect(prompter.asked.some((m) => m.includes("anyway"))).toBe(false);
@@ -1299,7 +1352,7 @@ describe("runInit --from", () => {
 
   it("says the proposed queries are left out without a Tavily key", async () => {
     const from = await writeProposal(PROPOSAL);
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done"]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done", ON_ACTIONS]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown).toContain(
       "note: TAVILY_API_KEY is not set, so web searches are skipped (1 proposed web search left out).",
@@ -1401,7 +1454,7 @@ describe("runInit: ideas from Claude", () => {
     });
     const configDir = join(dir, "config");
     const { prompter, deps: d } = deps(
-      [...BEFORE_IDEAS, true, ["Accessibility rules for pet apps"], [SIMON], "done", ["WCAG 3 draft"], "", true],
+      [...BEFORE_IDEAS, true, ["Accessibility rules for pet apps"], [SIMON], "done", ["WCAG 3 draft"], "", true, ON_ACTIONS],
       { resolveLlm: llm.resolve, env: { TAVILY_API_KEY: "tvly-test" } },
     );
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
@@ -1427,14 +1480,14 @@ describe("runInit: ideas from Claude", () => {
   });
 
   it("says how many interests there are before asking for ideas", async () => {
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: dir }, d);
     expect(prompter.shown).toContain("note: Interests: 2 of 50 interests so far.");
   });
 
   it("does not ask Claude when declined", async () => {
     const llm = fakeLlm();
-    const { deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS], { resolveLlm: llm.resolve });
+    const { deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS], { resolveLlm: llm.resolve });
     await runInit({ configDir: dir }, d);
     expect(llm.calls).not.toContain("ideas");
   });
@@ -1447,7 +1500,7 @@ describe("runInit: ideas from Claude", () => {
       () => [],
     ]) {
       const llm = fakeLlm({ ideas });
-      const { prompter, deps: d } = deps([...BEFORE_IDEAS, true, ...SOURCE_ANSWERS], { resolveLlm: llm.resolve });
+      const { prompter, deps: d } = deps([...BEFORE_IDEAS, true, ...SOURCE_ANSWERS, ON_ACTIONS], { resolveLlm: llm.resolve });
       await runInit({ configDir: dir }, d);
       expect(prompter.remaining).toEqual([]);
       expect(prompter.asked).not.toContain(IDEAS);
