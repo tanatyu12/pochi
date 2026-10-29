@@ -24,17 +24,17 @@ export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
     .option("--from <file>", "start from a proposal an agent wrote for your project (see --print-prompt)")
     .option("--print-prompt", "print the prompt that asks a coding agent for a proposal, and exit")
     // Optional and repeatable: who to follow, beyond what the project's own files show.
-    .option("--competitor <name>", "a competitor to follow (repeatable)", collect, [])
-    .option("--adopter <business>", "a business that may adopt or sell products like yours (repeatable)", collect, [])
-    .option("--news-site <domain>", "a site that carries your industry's news, such as prtimes.jp (repeatable)", collect, [])
+    .option("--competitor <name>", "a competitor to follow (repeatable)", collect)
+    .option("--adopter <business>", "a business that may adopt or sell products like yours (repeatable)", collect)
+    .option("--news-site <domain>", "a site that carries your industry's news, such as prtimes.jp (repeatable)", collect)
     .action(
       (o: {
         configDir: string;
         from?: string;
         printPrompt?: boolean;
-        competitor: string[];
-        adopter: string[];
-        newsSite: string[];
+        competitor?: string[];
+        adopter?: string[];
+        newsSite?: string[];
       }) =>
         runInit(
           {
@@ -63,8 +63,9 @@ export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
   return program;
 }
 
-function collect(value: string, previous: string[]): string[] {
-  return [...previous, value];
+// Without a default, so --help does not show an empty list for options left out.
+function collect(value: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), value];
 }
 
 export async function main(argv: readonly string[] = process.argv): Promise<number> {
