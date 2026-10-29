@@ -23,8 +23,28 @@ export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
     .option("--config-dir <dir>", "directory to write the config to", DEFAULT_CONFIG_DIR)
     .option("--from <file>", "start from a proposal an agent wrote for your project (see --print-prompt)")
     .option("--print-prompt", "print the prompt that asks a coding agent for a proposal, and exit")
-    .action((o: { configDir: string; from?: string; printPrompt?: boolean }) =>
-      runInit({ configDir: o.configDir, from: o.from, printPrompt: o.printPrompt }, { signal: opts.signal }),
+    // Optional and repeatable: who to follow, beyond what the project's own files show.
+    .option("--competitor <name>", "a competitor to follow (repeatable)", collect, [])
+    .option("--adopter <business>", "a business that may adopt or sell products like yours (repeatable)", collect, [])
+    .option("--news-site <domain>", "a site that carries your industry's news, such as prtimes.jp (repeatable)", collect, [])
+    .action(
+      (o: {
+        configDir: string;
+        from?: string;
+        printPrompt?: boolean;
+        competitor: string[];
+        adopter: string[];
+        newsSite: string[];
+      }) =>
+        runInit(
+          {
+            configDir: o.configDir,
+            from: o.from,
+            printPrompt: o.printPrompt,
+            watch: { competitors: o.competitor, adopters: o.adopter, newsSites: o.newsSite },
+          },
+          { signal: opts.signal },
+        ),
     );
   program
     .command("run")
@@ -41,6 +61,10 @@ export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
   program.addCommand(doctorCommand({ signal: opts.signal }).exitOverride());
   program.addCommand(scheduleCommand());
   return program;
+}
+
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 export async function main(argv: readonly string[] = process.argv): Promise<number> {
