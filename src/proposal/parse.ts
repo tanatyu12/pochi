@@ -4,7 +4,7 @@ import { ConfigError } from "../config/load.js";
 import { DomainSchema, MAX_DOMAINS, REPO_PATTERN } from "../config/schema.js";
 import { parseHttpUrl } from "../util/hash.js";
 import { displayLine as clean } from "../util/text.js";
-import { PROPOSAL_LIMITS, PROPOSAL_VERSION } from "./prompt.js";
+import { PARSE_LIMITS, PROPOSAL_VERSION } from "./prompt.js";
 
 const MAX_BYTES = 256 * 1024;
 const TEXT_MAX_CHARS = 200;
@@ -126,17 +126,17 @@ export function parseProposal(text: string, label: string): Proposal {
       description: clean(p.project?.description ?? "", TEXT_MAX_CHARS * 2),
     },
     ...(language && { language }),
-    problems: entries(p.problems, TextEntry, PROPOSAL_LIMITS.problems, proposedText),
-    exclude: entries(p.exclude, TextEntry, PROPOSAL_LIMITS.exclude, proposedText),
-    repos: entries(p.repos, RepoEntry, PROPOSAL_LIMITS.repos, (e) => {
+    problems: entries(p.problems, TextEntry, PARSE_LIMITS.problems, proposedText),
+    exclude: entries(p.exclude, TextEntry, PARSE_LIMITS.exclude, proposedText),
+    repos: entries(p.repos, RepoEntry, PARSE_LIMITS.repos, (e) => {
       const repo = e.repo.trim();
       return REPO_PATTERN.test(repo) ? { repo, evidence: evidence(e) } : undefined;
     }),
-    sites: entries(p.sites, SiteEntry, PROPOSAL_LIMITS.sites, (e) => {
+    sites: entries(p.sites, SiteEntry, PARSE_LIMITS.sites, (e) => {
       const url = parseHttpUrl(e.url.trim())?.href;
       return url ? { url, evidence: evidence(e) } : undefined;
     }),
-    queries: entries(p.queries, QueryEntry, PROPOSAL_LIMITS.queries, (e) => {
+    queries: entries(p.queries, QueryEntry, PARSE_LIMITS.queries, (e) => {
       const query = clean(e.query, TEXT_MAX_CHARS);
       if (!query) return undefined;
       // A domain that is not one is left out; the query still searches, just not only there.
