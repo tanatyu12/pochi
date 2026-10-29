@@ -35,6 +35,8 @@ import { type Answer, BACK, CANCEL, scriptedPrompter } from "../helpers/scripted
 const FIXTURES = join(import.meta.dirname, "../fixtures/feeds");
 const API = "https://api.github.com/repos";
 const SIMON = "https://simonwillison.net/atom/everything/";
+// A feed with nothing in it yet, so the trial fetch asks whether to keep it.
+const QUIET = "https://quiet.example.com/feed";
 const TAVILY = "https://api.tavily.com/search";
 
 const NEWS = "News searches to run (Google News, free; space to select)";
@@ -55,8 +57,8 @@ const CONTEXT_ANSWERS: Answer[] = [
   ...SCHEDULE_ANSWERS,
   false,
 ];
-// Two sources, then yes to watching each after the trial fetch.
-const SOURCE_ANSWERS: Answer[] = ["repo", "vercel/next.js", "site", SIMON, "done", true, true];
+// Two sources; both bring an item, so the trial fetch asks nothing.
+const SOURCE_ANSWERS: Answer[] = ["repo", "vercel/next.js", "site", SIMON, "done"];
 
 const CONTEXT = ContextSchema.parse({ version: 1, project: { name: "app", description: "" }, problems: ["News"] });
 
@@ -87,9 +89,12 @@ function repoRoutes(repo: string, opts: { fullName?: string; releases?: unknown[
   };
 }
 
+const EMPTY_FEED = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>t</title></feed>';
+
 const BASE_ROUTES: Record<string, Route> = {
   ...repoRoutes("vercel/next.js"),
   [SIMON]: reply.text(atom("Simon's post")),
+  [QUIET]: reply.text(EMPTY_FEED),
 };
 
 /** Answers repo lookups with repos(name), query suggestions with queries() and ideas with ideas(); any may throw. */
@@ -222,7 +227,7 @@ describe("runInit", () => {
 
   it("waits for Claude only when a step needs it, and stops the lookup when done", async () => {
     let lookup: AbortSignal | undefined;
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, "site", SIMON, "done", true], {
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, "site", SIMON, "done"], {
       // Settles late, like a slow CLI probe.
       resolveLlm: (_, opts) => {
         lookup = opts?.signal;
@@ -257,16 +262,20 @@ describe("runInit", () => {
     });
 
     it("fetches and asks Claude nothing again when going back over it", async () => {
-      const once = mockFetch(BASE_ROUTES);
+      // Two feeds with nothing in them yet, so the trial fetch asks about each.
+      const other = "https://quiet.example.com/other";
+      const routes = { ...BASE_ROUTES, [other]: reply.text(EMPTY_FEED) };
+      const quiet: Answer[] = ["repo", "vercel/next.js", "site", QUIET, "site", other, "done"];
+      const once = mockFetch(routes);
       const llm = fakeLlm({ queries: () => [] });
-      await runInit({ configDir: dir }, deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS], { resolveLlm: llm.resolve }).deps);
+      await runInit({ configDir: dir }, deps([...CONTEXT_ANSWERS, ...quiet, true, true], { resolveLlm: llm.resolve }).deps);
       const fetched = urls(once);
 
       await rm(dir, { recursive: true, force: true });
-      const again = mockFetch(BASE_ROUTES);
+      const again = mockFetch(routes);
       const llm2 = fakeLlm({ queries: () => [] });
-      // At the trial fetch of the second source, back to the first one's, which is answered again.
-      const answers: Answer[] = [...CONTEXT_ANSWERS, "repo", "vercel/next.js", "site", SIMON, "done", true, BACK, true, true];
+      // At the trial fetch of the second feed, back to the first one's, which is answered again.
+      const answers: Answer[] = [...CONTEXT_ANSWERS, ...quiet, true, BACK, true, true];
       const { prompter, deps: d } = deps(answers, { resolveLlm: llm2.resolve });
       await runInit({ configDir: dir }, d);
       expect(prompter.remaining).toEqual([]);
@@ -294,7 +303,8 @@ describe("runInit", () => {
     expect(await readdir(dir)).toEqual([]);
   });
 
-  const answers = [...CONTEXT_ANSWERS, ...SOURCE_ANSWERS];
+  // The quiet feed is asked about at the trial fetch.
+  const answers = [...CONTEXT_ANSWERS, "repo", "vercel/next.js", "site", QUIET, "done", true];
   it.each([
     ["the project name", 0],
     ["a problem in the middle of the list", 3],
@@ -543,7 +553,11 @@ describe("runInit", () => {
 /** Runs askSources on scripted answers, with the LLM client given (none by default). */
 function sources(answers: Answer[], llm?: LlmClient) {
   const prompter = scriptedPrompter(answers);
-  return { prompter, result: askSources(newSession(prompter, CONTEXT, { llm })) };
+  const result = askSources(newSession(prompter, CONTEXT, { llm })).then((r) => {
+    expect(prompter.remaining).toEqual([]);
+    return r;
+  });
+  return { prompter, result };
 }
 
 describe("askSources: repositories", () => {
@@ -554,7 +568,7 @@ describe("askSources: repositories", () => {
 
   it("checks a typed owner/repo on GitHub without asking the model", async () => {
     const llm = fakeLlm();
-    const { result } = sources(["repo", "vercel/next.js", "done", true], llm.client);
+    const { result } = sources(["repo", "vercel/next.js", "done"], llm.client);
     expect((await result).feeds).toEqual([{ id: "next-js", type: "github", name: "vercel/next.js", repo: "vercel/next.js" }]);
     expect(llm.calls).toEqual(["queries"]);
   });
@@ -577,7 +591,7 @@ describe("askSources: repositories", () => {
       ...repoRoutes("acme/empty", { releases: [] }),
       "https://github.com/acme/empty/tags.atom": reply.text(await readFile(join(FIXTURES, "github-empty.atom"), "utf8")),
     });
-    const { prompter, result } = sources(["repo", "ghost/missing", "repo", "acme/empty", "repo", "  ", "repo", "vercel/next.js", "done", true]);
+    const { prompter, result } = sources(["repo", "ghost/missing", "repo", "acme/empty", "repo", "  ", "repo", "vercel/next.js", "done"]);
     expect((await result).feeds!.map((f) => f.id)).toEqual(["next-js"]);
     expect(prompter.shown).toContain("warn: ghost/missing was not found on GitHub.");
     expect(prompter.shown).toContain("warn: acme/empty has no releases or tags to watch.");
@@ -589,7 +603,7 @@ describe("askSources: repositories", () => {
       ...repoRoutes("old/widget", { fullName: "acme/widget", releases: [] }),
       "https://github.com/acme/widget/tags.atom": reply.text(tags),
     });
-    const { prompter, result } = sources(["repo", "old/widget", "done", true]);
+    const { prompter, result } = sources(["repo", "old/widget", "done"]);
     expect((await result).feeds).toEqual([
       { id: "widget", type: "github", name: "acme/widget", repo: "acme/widget", feed: "tags" },
     ]);
@@ -599,7 +613,7 @@ describe("askSources: repositories", () => {
 
   it("follows prereleases when a repository has nothing else", async () => {
     mockFetch(repoRoutes("acme/canary", { releases: [release("v1.0.0-canary.1", true)] }));
-    const { prompter, result } = sources(["repo", "acme/canary", "done", true]);
+    const { prompter, result } = sources(["repo", "acme/canary", "done"]);
     expect((await result).feeds![0]).toMatchObject({ repo: "acme/canary", includePrereleases: true });
     expect(prompter.shown).toContain("note: acme/canary has only prereleases so far; following them.");
   });
@@ -628,7 +642,7 @@ describe("askSources: repositories", () => {
         { repo: "acme/fourth", note: "" },
       ],
     });
-    const { prompter, result } = sources(["repo", "Next.js", "vercel/next.js", "done", true], llm.client);
+    const { prompter, result } = sources(["repo", "Next.js", "vercel/next.js", "done"], llm.client);
     expect((await result).feeds!.map((f) => (f.type === "github" ? f.repo : "url" in f ? f.url : f.query))).toEqual(["vercel/next.js"]);
     expect(llm.calls).toEqual(["repo:Next.js", "queries"]);
     expect(prompter.options["Which repository is Next.js?"]).toEqual(["vercel/next.js", "none"]);
@@ -640,7 +654,7 @@ describe("askSources: repositories", () => {
     mockFetch({ ...BASE_ROUTES, [`${API}/ghost/missing`]: reply.status(404) });
     const llm = fakeLlm({ repos: (name) => (name === "Ghost" ? [{ repo: "ghost/missing", note: "" }] : [{ repo: "vercel/next.js", note: "" }]) });
     const { prompter, result } = sources(
-      ["repo", "Ghost", "repo", "Next.js", "none", "repo", "vercel/next.js", "done", true],
+      ["repo", "Ghost", "repo", "Next.js", "none", "repo", "vercel/next.js", "done"],
       llm.client,
     );
     expect((await result).feeds!.map((f) => (f.type === "github" ? f.repo : "url" in f ? f.url : f.query))).toEqual(["vercel/next.js"]);
@@ -654,12 +668,12 @@ describe("askSources: repositories", () => {
         throw new LlmError(kinds[llm.calls.length - 1]!, "failed");
       },
     });
-    const first = sources(["repo", "Next.js", "repo", "Next.js", "repo", "vercel/next.js", "done", true], llm.client);
+    const first = sources(["repo", "Next.js", "repo", "Next.js", "repo", "vercel/next.js", "done"], llm.client);
     await first.result;
     expect(llm.calls).toEqual(["repo:Next.js", "repo:Next.js"]);
     expect(first.prompter.shown).toContain("warn: Claude could not answer (transport).");
     expect(first.prompter.shown).toContain("warn: Claude is not usable (auth); continuing without it.");
-    expect(first.prompter.asked.at(-3)).toBe("GitHub repository (empty to go back)");
+    expect(first.prompter.asked.at(-2)).toBe("GitHub repository (empty to go back)");
   });
 
   it("gives clashing names distinct ids and skips sources already added", async () => {
@@ -676,8 +690,6 @@ describe("askSources: repositories", () => {
       "repo",
       "someone/next.js",
       "done",
-      true,
-      true,
     ]);
     expect((await result).feeds!.map((f) => f.id)).toEqual(["next-js", "next-js-2"]);
     expect(prompter.shown).toContain("warn: Already added; skipped.");
@@ -687,7 +699,7 @@ describe("askSources: repositories", () => {
     const fetch = mockFetch(BASE_ROUTES);
     const llm = fakeLlm({ repos: () => [{ repo: "vercel/next.js", note: "" }] });
     const { prompter, result } = sources(
-      ["repo", "vercel/next.js", "repo", "Vercel/Next.js", "repo", "Next.js", "done", true],
+      ["repo", "vercel/next.js", "repo", "Vercel/Next.js", "repo", "Next.js", "done"],
       llm.client,
     );
     expect((await result).feeds!.map((f) => f.id)).toEqual(["next-js"]);
@@ -698,7 +710,7 @@ describe("askSources: repositories", () => {
   it("does not claim a repository is missing when GitHub could not be asked", async () => {
     mockFetch({ ...BASE_ROUTES, [`${API}/acme/limited`]: reply.status(403) });
     const llm = fakeLlm({ repos: (name) => (name === "Limited" ? [{ repo: "acme/limited", note: "" }] : []) });
-    const { prompter, result } = sources(["repo", "Limited", "repo", "vercel/next.js", "done", true], llm.client);
+    const { prompter, result } = sources(["repo", "Limited", "repo", "vercel/next.js", "done"], llm.client);
     await result;
     expect(prompter.shown).toContain(
       "warn: Could not check 1 candidate for Limited on GitHub; try again later or enter it as owner/repo.",
@@ -722,7 +734,7 @@ describe("askSources: sites", () => {
       [`${PAGE}posts.atom`]: reply.text(atom("A post")),
       [`${PAGE}comments.rss`]: reply.text(atom("A comment")),
     });
-    const { prompter, result } = sources(["site", PAGE, `${PAGE}posts.atom`, "done", true]);
+    const { prompter, result } = sources(["site", PAGE, `${PAGE}posts.atom`, "done"]);
     expect((await result).feeds).toEqual([
       // The page's title for the feed, without control characters, tells it from the comments feed.
       { id: "blog-example-com", type: "rss", name: "blog.example.com: Posts [2J", url: `${PAGE}posts.atom` },
@@ -742,7 +754,7 @@ describe("askSources: sites", () => {
       [`${PAGE}b.atom`]: reply.text(atom("B")),
       [SIMON]: reply.text(atom("Simon's post")),
     });
-    const { prompter, result } = sources(["site", PAGE, "none", "site", SIMON, "done", true]);
+    const { prompter, result } = sources(["site", PAGE, "none", "site", SIMON, "done"]);
     expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : "repo" in f ? f.repo : f.query))).toEqual([SIMON]);
     expect(prompter.asked.filter((m) => m.endsWith("which one?"))).toHaveLength(1);
   });
@@ -755,7 +767,7 @@ describe("askSources: sites", () => {
       ...Object.fromEntries(fallbacks.map((path) => [`${PAGE}${path}`, reply.status(404)])),
       "https://down.example.com/": reply.status(404),
     });
-    const { prompter, result } = sources(["site", PAGE, "site", "https://down.example.com/", "site", SIMON, "done", true]);
+    const { prompter, result } = sources(["site", PAGE, "site", "https://down.example.com/", "site", SIMON, "done"]);
     expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : "repo" in f ? f.repo : f.query))).toEqual([SIMON]);
     expect(prompter.shown).toContain(`warn: No feed found on ${PAGE}.`);
     expect(prompter.shown.some((s) => s.startsWith("warn: Could not open https://down.example.com/: "))).toBe(true);
@@ -767,9 +779,8 @@ describe("askSources: sites", () => {
       [PAGE]: reply.text(page(`<link rel="alternate" type="application/rss+xml" title="Feed" href="${burner}">`)),
       [burner]: reply.text(atom("A post")),
     });
-    const { prompter, result } = sources(["site", PAGE, "done", true]);
+    const { prompter, result } = sources(["site", PAGE, "done"]);
     expect((await result).feeds).toEqual([{ id: "blog-example-com", type: "rss", name: "blog.example.com", url: burner }]);
-    expect(prompter.asked).toContain("Watch blog.example.com every morning?");
   });
 
   it("offers to add a page that may be up again later, and not one that is gone", async () => {
@@ -789,12 +800,11 @@ describe("askSources: sites", () => {
       SIMON,
       "done",
       false,
-      true,
     ]);
     expect((await result).feeds).toEqual([{ id: "simonwillison-net", type: "rss", name: "simonwillison.net/atom/everything", url: SIMON }]);
     expect(prompter.asked.filter((m) => m === "Add https://busy.example.com/feed as a feed anyway?")).toHaveLength(2);
     // Tried like any other source, and rejected here.
-    expect(prompter.asked).toContain("Watch busy.example.com/feed every morning?");
+    expect(prompter.asked).toContain("Watch busy.example.com/feed anyway?");
     expect(prompter.asked.some((m) => m.startsWith(`Add ${PAGE}`))).toBe(false);
   });
 
@@ -821,7 +831,7 @@ describe("askSources: sites", () => {
       ...Object.fromEntries(fallbacks.map((path) => [`${PAGE}${path}`, reply.status(404)])),
       [`${PAGE}rss`]: [limited, limited],
     });
-    const { prompter, result } = sources(["site", PAGE, "site", SIMON, "done", true]);
+    const { prompter, result } = sources(["site", PAGE, "site", SIMON, "done"]);
     expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : "repo" in f ? f.repo : f.query))).toEqual([SIMON]);
     expect(prompter.shown.some((s) => s.startsWith(`warn: Could not check a feed on ${PAGE}: `))).toBe(true);
     expect(prompter.asked.some((m) => m.endsWith("anyway?"))).toBe(false);
@@ -836,7 +846,7 @@ describe("askSources: sites", () => {
   it("treats feed URLs that normalize the same as one feed", async () => {
     const other = "https://example.com/feed/?utm_source=x#top";
     const fetch = mockFetch({ "https://example.com/feed": reply.text(atom("A")), [other]: reply.text(atom("A")) });
-    const { prompter, result } = sources(["site", "https://example.com/feed", "site", other, "done", true]);
+    const { prompter, result } = sources(["site", "https://example.com/feed", "site", other, "done"]);
     expect((await result).feeds).toEqual([
       { id: "example-com", type: "rss", name: "example.com/feed", url: "https://example.com/feed" },
     ]);
@@ -855,19 +865,20 @@ describe("askSources: searches", () => {
   it("offers Claude's suggestions as free news searches without a Tavily key, five at most", async () => {
     mockFetch(route(news("Qwen release"), news("B")));
     const llm = fakeLlm({ queries: () => ["Qwen release", " qwen  release ", "", "A", "B", "C", "D", "E"] });
-    const { prompter, result } = sources(["done", ["Qwen release", "B"], true, true], llm.client);
+    const { prompter, result } = sources(["done", ["Qwen release", "B"]], llm.client);
     expect(await result).toEqual({ version: 1, feeds: [news("Qwen release"), news("B")] });
     expect(prompter.options[NEWS]).toEqual(["Qwen release", "A", "B", "C", "D"]);
     // Suggestions from Claude are not picked for the user.
     expect(prompter.initial[NEWS]).toEqual([]);
-    expect(prompter.asked).toContain("Watch B every morning?");
+    // Both brought news, so neither is asked about again.
+    expect(prompter.asked.some((m) => m.startsWith("Watch "))).toBe(false);
     expect(prompter.asked).not.toContain(WEB);
   });
 
   it("takes a news search typed from the menu, kept to the sites given", async () => {
     const feed = news("Qwen release", { sites: ["prtimes.jp", "news.example.com"] });
     mockFetch(route(feed));
-    const answers = ["news", "  Qwen   release ", "prtimes.jp, News.example.com", "done", true];
+    const answers = ["news", "  Qwen   release ", "prtimes.jp, News.example.com", "done"];
     const { result } = sources(answers);
     expect((await result).feeds).toEqual([feed]);
     expect(await rejection(sources(["news", "Qwen", "https://prtimes.jp"]).result)).toMatchObject({
@@ -914,7 +925,7 @@ describe("askSources: searches", () => {
         throw new LlmError("invalid_output", "bad");
       },
     });
-    const { prompter, result } = sources(["news", "Qwen", "", "done", true], llm.client);
+    const { prompter, result } = sources(["news", "Qwen", "", "done"], llm.client);
     expect((await result).feeds!.map((f) => ("query" in f ? f.query : f.name))).toEqual(["Qwen"]);
     expect(prompter.shown).toContain("warn: Claude could not answer (invalid_output).");
   });
@@ -923,7 +934,7 @@ describe("askSources: searches", () => {
 describe("askSources: trial fetch", () => {
   it("shows the latest item of each source without control characters", async () => {
     mockFetch(repoRoutes("vercel/next.js", { releases: [release("\u001b]0;pwned\u0007v16 \u001b[31mred")] }));
-    const { prompter, result } = sources(["repo", "vercel/next.js", "done", true]);
+    const { prompter, result } = sources(["repo", "vercel/next.js", "done"]);
     await result;
     const shown = prompter.shown.find((s) => s.startsWith("note: vercel/next.js (github): "))!;
     expect(shown).not.toMatch(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/);
@@ -931,52 +942,55 @@ describe("askSources: trial fetch", () => {
   });
 
   it("drops rejected sources and asks again when nothing is left", async () => {
+    mockFetch({ ...BASE_ROUTES, [SIMON]: [reply.text(atom("ok")), reply.status(410)] });
     const { prompter, result } = sources([
-      "repo",
-      "vercel/next.js",
+      "site",
+      QUIET,
       "site",
       SIMON,
       "done",
       false,
       false,
       // The rejected ones can be added again.
-      "repo",
-      "vercel/next.js",
+      "site",
+      QUIET,
       "done",
       true,
     ]);
-    expect((await result).feeds!.map((f) => f.id)).toEqual(["next-js"]);
+    expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : f.id))).toEqual([QUIET]);
     expect(prompter.shown).toContain("warn: Nothing to watch yet; add a source.");
   });
 
   it("reports a failing source and keeps it only when the user says so", async () => {
     mockFetch({ ...BASE_ROUTES, [SIMON]: [reply.text(atom("ok")), reply.status(410)] });
-    const { prompter, result } = sources(["repo", "vercel/next.js", "site", SIMON, "done", true, false]);
+    const { prompter, result } = sources(["repo", "vercel/next.js", "site", SIMON, "done", false]);
     expect((await result).feeds!.map((f) => f.id)).toEqual(["next-js"]);
     expect(prompter.shown.some((s) => s.startsWith("warn: simonwillison.net/atom/everything (rss) failed: "))).toBe(true);
+    expect(prompter.asked).toEqual(expect.arrayContaining(["Watch simonwillison.net/atom/everything anyway?"]));
+    expect(prompter.asked).not.toContain("Watch vercel/next.js anyway?");
   });
 
-  it("notes a source with no items yet", async () => {
-    const empty = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>t</title></feed>';
-    mockFetch({ "https://quiet.example.com/feed": reply.text(empty) });
-    const { prompter, result } = sources(["site", "https://quiet.example.com/feed", "done", true]);
-    await result;
+  it("notes a source with no items yet and asks whether to keep it", async () => {
+    const { prompter, result } = sources(["site", QUIET, "done", true]);
+    expect((await result).feeds).toHaveLength(1);
     expect(prompter.shown).toContain("note: quiet.example.com/feed (rss): No items yet.");
+    expect(prompter.asked).toContain("Watch quiet.example.com/feed anyway?");
   });
 
   it("shows what GitHub returned while checking a repository instead of asking again", async () => {
     const fetch = mockFetch(repoRoutes("vercel/next.js"));
-    const { prompter, result } = sources(["repo", "vercel/next.js", "done", true]);
+    const { prompter, result } = sources(["repo", "vercel/next.js", "done"]);
     await result;
     expect(fetch.callsTo(`${API}/vercel/next.js/releases?per_page=100`)).toHaveLength(1);
     expect(prompter.shown.some((s) => s.startsWith("spin: Fetching"))).toBe(false);
+    expect(prompter.asked.some((m) => m.startsWith("Watch "))).toBe(false);
     expect(prompter.shown).toContain("note: vercel/next.js (github): v16.0.0\n2026-10-24\nhttps://github.com/x/y/releases/tag/v16.0.0");
   });
 
   it("follows a repository whose tags are all prereleases", async () => {
     const rc = atom("v2.0.0-rc.1", "https://github.com/acme/quiet/releases/tag/v2.0.0-rc.1");
     mockFetch({ ...repoRoutes("acme/quiet", { releases: [] }), "https://github.com/acme/quiet/tags.atom": reply.text(rc) });
-    const { prompter, result } = sources(["repo", "acme/quiet", "done", true]);
+    const { prompter, result } = sources(["repo", "acme/quiet", "done"]);
     expect((await result).feeds![0]).toMatchObject({ feed: "tags", includePrereleases: true });
     expect(prompter.shown).toContain("note: acme/quiet has only prereleases so far; following them.");
     expect(prompter.shown.some((s) => s.startsWith("note: acme/quiet (github): v2.0.0-rc.1"))).toBe(true);
@@ -1087,8 +1101,6 @@ describe("runInit --from", () => {
       ["vercel/next.js", "ghost/missing"],
       [SIMON],
       "done",
-      true,
-      true,
     ]);
     await runInit({ configDir, from }, d);
     expect(prompter.remaining).toEqual([]);
@@ -1201,7 +1213,7 @@ describe("runInit --from", () => {
     const configDir = join(dir, "config");
     const answers = [...PROPOSAL_CONTEXT];
     answers.splice(3, 1, true, "Supabase outages", "");
-    const { prompter, deps: d } = deps([...answers, ["vercel/next.js"], [], "done", true]);
+    const { prompter, deps: d } = deps([...answers, ["vercel/next.js"], [], "done"]);
     await runInit({ configDir, from }, d);
     expect(prompter.asked).toContain("What do you want to hear about? (1/48, empty to finish)");
     expect((await loadConfig({ configDir, env: {} })).context.problems).toEqual([
@@ -1268,7 +1280,7 @@ describe("runInit --from", () => {
     });
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: blog }, { url: SIMON }] });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done", true]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done"]);
     await runInit({ configDir, from }, d);
     expect(prompter.shown).toContain("spin: Looking for feeds on 2 sites");
     expect(prompter.shown).toContain("warn: Already added: simonwillison.net/atom/everything; skipped.");
@@ -1279,7 +1291,7 @@ describe("runInit --from", () => {
     const down = "https://down.example.com/";
     mockFetch({ ...BASE_ROUTES, [down]: reply.status(503) });
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: down }, { url: SIMON }] });
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done", true]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done"]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown.some((s) => s.startsWith(`warn: Could not open ${down}`) && s.endsWith("; left out"))).toBe(true);
     expect(prompter.asked.some((m) => m.includes("anyway"))).toBe(false);
@@ -1287,7 +1299,7 @@ describe("runInit --from", () => {
 
   it("says the proposed queries are left out without a Tavily key", async () => {
     const from = await writeProposal(PROPOSAL);
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done", true]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done"]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown).toContain(
       "note: TAVILY_API_KEY is not set, so web searches are skipped (1 proposed web search left out).",
@@ -1389,7 +1401,7 @@ describe("runInit: ideas from Claude", () => {
     });
     const configDir = join(dir, "config");
     const { prompter, deps: d } = deps(
-      [...BEFORE_IDEAS, true, ["Accessibility rules for pet apps"], [SIMON], "done", ["WCAG 3 draft"], "", true, true],
+      [...BEFORE_IDEAS, true, ["Accessibility rules for pet apps"], [SIMON], "done", ["WCAG 3 draft"], "", true],
       { resolveLlm: llm.resolve, env: { TAVILY_API_KEY: "tvly-test" } },
     );
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
