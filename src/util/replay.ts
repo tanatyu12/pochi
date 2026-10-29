@@ -30,6 +30,7 @@ export function replayingPrompter(inner: Prompter): ReplayingPrompter {
   let replayUntil = 0;
   let again: { index: number; answer: unknown } | undefined;
   let frozen = false;
+  let introduced = false;
   const replaying = () => cursor < replayUntil;
 
   async function ask<T>(kind: Kind, message: string, call: (previous: unknown) => Promise<T>): Promise<T> {
@@ -75,7 +76,12 @@ export function replayingPrompter(inner: Prompter): ReplayingPrompter {
         inner.confirm(typeof prev === "boolean" ? { ...prompt, initialValue: prev } : prompt),
       ),
     // What a replay shows was on screen already.
-    intro: (title) => void (replaying() || inner.intro(title)),
+    // The title stays at the top of the screen; going back to the first question does not repeat it.
+    intro: (title) => {
+      if (introduced) return;
+      introduced = true;
+      inner.intro(title);
+    },
     outro: (message) => void (replaying() || inner.outro(message)),
     note: (message, title) => void (replaying() || inner.note(message, title)),
     warn: (message) => void (replaying() || inner.warn(message)),
