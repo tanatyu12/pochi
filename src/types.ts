@@ -1,6 +1,6 @@
 import type { Impact, Sources } from "./config/schema.js";
 
-export type SourceKind = "rss" | "github" | "tavily";
+export type SourceKind = "rss" | "github" | "googlenews" | "tavily";
 
 /**
  * What every source is fetched with: the configured defaults and, when the run knows when it last

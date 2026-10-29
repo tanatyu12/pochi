@@ -110,6 +110,7 @@ defaults: { itemsPerFeed: 3, maxItemsPerFeed: 20, maxContentChars: 2000 }   # ma
 feeds:
   - { id: nextjs, type: github, name: "Next.js releases", repo: vercel/next.js }   # feed: releases|tags, includePrereleases: false
   - { id: simonw, type: rss, name: "Simon Willison", url: "https://simonwillison.net/atom/everything/" }
+  - { id: pet-funeral, type: googlenews, query: "ペット葬儀 グッズ", sites: [prtimes.jp], locale: ja-JP }   # name は省略可（query を名前にする）
 queries:
   - { id: qwen-news, query: "Qwen model release", topic: news, maxResults: 10 }   # requireDate: false。maxResults の既定は10（basic 検索は件数によらず1クレジット）。includeDomains / excludeDomains（ドメイン名1〜20件、小文字にする）で検索先を絞れる（例：プレスリリースにしか載らないニュースに prtimes.jp）
 ```
@@ -234,6 +235,9 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 本文は抽出済みの抜粋 `content` を使い、`include_raw_content` は使わない（ページ全体は雑音が多く大きい）
   - 結果は Tavily の関連度順のまま、URL のない結果、正規化 URL の重複、http(s) でない URL を除く（1件の欠けで応答全体を失わないよう、url はスキーマ上 null を許す）。件数は maxResults で決まり、itemsPerFeed は適用しない。sourceName は検索語、日付は published_date（推定できなければ null）
   - JSON でない応答や形の違う応答は `FeedParseError` を投げる（github.ts と共通の `sources/api.ts` の `parseApi`）
+- **googlenews.ts**
+  - `googleNewsUrl(feed, since?)` で Google ニュースの検索 RSS（`https://news.google.com/rss/search?q=…&hl=ja&gl=JP&ceid=JP:ja`）を組み立てる。q は query に、sites があれば ` site:a`（複数なら ` (site:a OR site:b)`）、since があれば ` after:YYYY-MM-DD`、なければ ` when:7d` を足す。locale（`ja-JP` の形、既定 `en-US`）から hl / gl / ceid を作る
+  - 取得と変換は rss.ts の `fetchFeedItems`（kind は googlenews）。無料でキーが要らず、日付も付くので、ニュースで拾える検索は Tavily のクエリより先にこちらを使う。本文はタイトルだけで、結果は関連度順ではなく新しい順（検索語と関係の薄い記事は Triage で落とす）。`after:` / `when:` を付けても古い記事がわずかに混ざるが、maxItemAgeDays の判定で落ちる
 - **index.ts** `collectAll(sources, { signal?, concurrency?, since? })`（since は各ソースに `FetchDefaults`（types.ts。defaults に since を足したもの）として渡す） は `{ items, attempted, failures, skipped }` を返す
   - 同時実行は4件まで（concurrency が正の整数でなければ warn を出して4にする）。ソースごとに try/catch し、失敗（sourceId・sourceName・kind・error）を記録して warn を出し、次に進む。中断以外で例外は投げない
   - TAVILY_API_KEY がなければ queries を取得せず、`skipped` に id を入れて info を1回出す（ほかに取得するソースがなければ warn）。スキップした分は `attempted` に数えない
@@ -340,13 +344,13 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - stdin と stdout のどちらかが端末でなければ、質問を出す前に、端末が必要なことと config/*.example.yml を複製するよう案内するメッセージを出して終了コード2にする（パイプや CI で最初の質問のまま止まらないようにする）
   - 対話は `util/prompter.ts` の `Prompter`（text / select / multiselect / confirm、表示系と spinner の `spin`）を通し、テストでは回答を順に返す偽物（`tests/helpers/scriptedPrompter.ts`）に差し替える。clack のキャンセルはこの層で `PromptCancelled`（130）にする
   - 既存の context.yml か sources.yml があれば、質問の前に上書きを確認する（既定は No。断れば130）。書き出しは全部の回答がそろってからなので、途中のキャンセルでは既存のファイルも変わらない
-  1. プロジェクト名、説明、課題（複数）、除外ルール、言語を対話で聞く。課題と除外ルールは1件ずつ聞き、空の入力で終える（課題は1件以上、上限はスキーマと同じ20件と30件）。言語は English / Japanese / その他（自由入力）。続けて通知先（Slack / Markdown ファイル）を multiselect で聞き（初期は Slack。0件なら warn を出して聞き直す）、`notify.channels` に書く
+  1. プロジェクト名、説明、課題（複数）、除外ルール、言語を対話で聞く。課題と除外ルールは1件ずつ聞き、空の入力で終える（課題は1件以上、上限はスキーマと同じ50件と30件。課題は毎回のプロンプトに1行ずつ入るだけなので、50件でも約1,000トークン）。言語は English / Japanese / その他（自由入力）。続けて通知先（Slack / Markdown ファイル）を multiselect で聞き（初期は Slack。0件なら warn を出して聞き直す）、`notify.channels` に書く
   - 手順1の後で `resolveLlm` を呼ぶ。使えなければ warn を1回出し、LLM なしで続ける。ソースはメニュー（技術名か GitHub リポジトリ / ブログかフィードの URL / Done）から1件ずつ足し、手順4と5に進む。Trial Fetch で1件も残らなければメニューに戻る（sources.yml には1件以上が必要なため）。入力欄を空のまま確定するとメニューに戻る。同じソースは skip する（repo は大文字小文字を区別せず、フィード URL は `normalizeUrl` した形、クエリは小文字にして比べる）。id はリポジトリ名・ホスト名・クエリから作り、重複すれば `-2` などを付ける（`sourceIdFrom`）
   2. 技術名の入力（アプローチB）：owner/repo の形なら LLM を通さずに `verifyRepo` だけで確かめる。not_found と empty なら戻り、確認できなければ「それでも追加するか」を聞く（既定は No）。movedTo なら新しい名前にし、tags しかなければ `feed: tags`、プレリリースしかなければ `includePrereleases: true` にする。それ以外の入力は LLM に候補を出させ、形の正しい候補の重複を除いて最大3件（`MAX_REPO_CANDIDATES`）に切り、`verifyRepo` で found になったものだけを選択肢にする（確認できなかった候補は件数だけを warn で出す）。LLM がなければ owner/repo の形しか受け付けない。auth と unavailable の後は、この実行では LLM を使わない
   3. ブログ URL の入力（アプローチC）：discoverFeeds でフィードを探す。URL 自体がフィードならそれを使う。複数見つかれば選ばせ（title は制御文字を除いて表示する）、開けないページやフィードのないページは warn を出して戻る
-  4. Tavily：TAVILY_API_KEY があるときだけ。LLM があれば提案を1回だけ求め、空白を詰めて重複を除き、最大5件（`MAX_QUERY_SUGGESTIONS`）を multiselect で選ばせる。続けて手入力でも足せる（topic は news）。キーがなければ note を出して飛ばす
+  4. 検索（2段）：まず「ニュース検索（Google ニュース、無料）」。キーの有無にかかわらず、`--competitor` / `--adopter` の名前、提案ファイルの topic news のクエリ（提案が無ければ LLM に1回だけ最大5件を提案させる）、選んだアイデアのクエリを multiselect で出し、選んだものを `googlenews` フィード（locale は言語から。Japanese → ja-JP、他は en-US）にする。提案ファイルとアイデア由来のものは選択済み、LLM の提案と名前は未選択で示す。提案の includeDomains と `--news-site` は sites にする。手入力は情報源メニューの「News search」から（検索語のあと、絞るサイトをカンマ区切りで。空なら絞らない）。続けて「Web 検索（Tavily、有料）」：TAVILY_API_KEY があるときだけ。最初に「実行のたびに1件1クレジット（今の予定で1件あたり月約 N）、無料枠は月1,000」と示し、候補は提案ファイルの topic general のクエリだけ（未選択）、手入力もできる。選んだ後に件数 × 月の実行回数（`runsPerMonth`：今後30日の実行回数、上限1000）の見込みを note で示し、1,000 を超えれば warn。キーがなければ、general の提案があるときだけ「left out」と note を出して飛ばす。アイデアを聞く前に、課題の件数と上限（「18 of 50」）を note で示す
   5. Trial Fetch：新しく足したソースを `fetchEach` でまとめて取得し、各ソースの最新記事（title・日付・URL。制御文字を除いて1行にする）、「No items yet.」、または失敗を示して「毎朝ウォッチしますか？」と確認する（失敗したソースは既定 No）。却下したソースは書き出さず、あとで足し直せる。通信中の Ctrl-C は signal で中断して130にし、何も書かない
-  5a. 定期実行：「毎日」か「曜日を選ぶ」かを聞き、曜日を選ぶなら曜日を multiselect で（0件なら warn を出して聞き直す）、続けて時刻（HH:MM、`parseTime` で検証、既定 06:17）を聞く。timezone にはマシンのタイムゾーンを書く（Actions でも同じ現地時刻に動くように）。上書きのときは、書き換える前の context.yml の schedule を既定値にし、timezone もそれを引き継ぐ（init は schedule を書くので、聞かなければ上書きで消えてしまう）。前の schedule が monthly か cron なら「そのまま残す」も選べる。曜日が1つなら day は配列でなく1つの値で書く
+  5a. 定期実行（通知先の直後、情報源より前に聞く。Tavily の費用見込みに使うため）：「毎日」か「曜日を選ぶ」かを聞き、曜日を選ぶなら曜日を multiselect で（0件なら warn を出して聞き直す）、続けて時刻（HH:MM、`parseTime` で検証、既定 06:17）を聞く。timezone にはマシンのタイムゾーンを書く（Actions でも同じ現地時刻に動くように）。上書きのときは、書き換える前の context.yml の schedule を既定値にし、timezone もそれを引き継ぐ（init は schedule を書くので、聞かなければ上書きで消えてしまう）。前の schedule が monthly か cron なら「そのまま残す」も選べる。曜日が1つなら day は配列でなく1つの値で書く
   6. 設定ファイルを権限 600 で書き出し、.gitignore に含まれていることを確認する（ファイルのディレクトリで、2つのファイルをまとめて1回の `git check-ignore` で確認する。無視されていなければ、実際の設定ディレクトリの `*.yml` を .gitignore に足すよう warn し、git がない・リポジトリ外なら確認できなかったと伝えるだけで、終了コードは0）。POCHI_CONTEXT_YAML / POCHI_SOURCES_YAML が設定されていれば、ファイルより優先される旨を warn する（値は出さない）。通知先が file だけなら（Slack は Actions で動かすため、先に secrets が要る）「このマシンに定期実行を登録するか」を聞き（既定 Yes）、Yes なら `installSchedule` で launchd / cron に登録して、その出力（スケジュール・次の実行日時）を note で示す。登録に失敗すれば（ビルド前で tsx から動かしているなど）warn を出して続ける。ここでのキャンセルは登録を飛ばすだけ（設定は書き出し済み）。最後に次の手順を案内する（登録済みなら schedule install の代わりに schedule status を示す。run --dry-run に続けて、Slack を選んだなら gh secret set、ファイルだけなら手元での run。レポートは実行したマシンに残るため）。既定以外の設定ディレクトリなら run に `--config-dir` を付け、パスはシェル用にクォートする
   - LLM が使えない環境でも完了できるようにする（その場合、技術名は owner/repo の直接入力だけを受け付ける）
   - **提案の取り込み（`--from <file>`、`--print-prompt`）**：利用者が自分のプロジェクトでコーディングエージェントにリポジトリを読ませ、監視すべき情報源の案を作らせて、それを初期値にする。pochi 自身はエージェントを起動しない（CLI モードは claude をツールなしで動かす方針で、案を作るにはリポジトリを読む必要があるため）

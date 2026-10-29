@@ -1,9 +1,10 @@
-import type { GithubFeed, QueryConfig, RssFeed, Sources } from "../config/schema.js";
+import type { GithubFeed, GoogleNewsFeed, QueryConfig, RssFeed, Sources } from "../config/schema.js";
 import type { FetchDefaults, Item, SourceKind } from "../types.js";
 import { pLimit } from "../util/concurrency.js";
 import { log } from "../util/log.js";
 import { plural } from "../util/text.js";
 import { fetchGithubItems } from "./github.js";
+import { fetchGoogleNewsItems, googleNewsName } from "./googlenews.js";
 import { fetchRssItems } from "./rss.js";
 import { fetchTavilyItems, tavilyApiKey } from "./tavily.js";
 
@@ -12,6 +13,7 @@ const DEFAULT_CONCURRENCY = 4;
 export type SourceConfig =
   | { kind: "rss"; feed: RssFeed }
   | { kind: "github"; feed: GithubFeed }
+  | { kind: "googlenews"; feed: GoogleNewsFeed }
   | { kind: "tavily"; query: QueryConfig };
 
 export interface SourceFailure {
@@ -45,6 +47,8 @@ export function fetchSource(source: SourceConfig, defaults: FetchDefaults, signa
       return fetchRssItems(source.feed, defaults, signal);
     case "github":
       return fetchGithubItems(source.feed, defaults, signal);
+    case "googlenews":
+      return fetchGoogleNewsItems(source.feed, defaults, signal);
     case "tavily":
       return fetchTavilyItems(source.query, defaults, signal);
   }
@@ -52,17 +56,29 @@ export function fetchSource(source: SourceConfig, defaults: FetchDefaults, signa
 
 /** Feeds in config order, then queries; queries only when withQueries (a Tavily key is set). */
 export function sourceConfigs(sources: Sources, withQueries: boolean): SourceConfig[] {
-  const configs: SourceConfig[] = sources.feeds.map((feed) =>
-    feed.type === "github" ? { kind: "github", feed } : { kind: "rss", feed },
-  );
+  const configs = sources.feeds.map((feed): SourceConfig => {
+    switch (feed.type) {
+      case "github":
+        return { kind: "github", feed };
+      case "googlenews":
+        return { kind: "googlenews", feed };
+      case "rss":
+        return { kind: "rss", feed };
+    }
+  });
   if (withQueries) configs.push(...sources.queries.map((query) => ({ kind: "tavily" as const, query })));
   return configs;
 }
 
 export function sourceInfo(source: SourceConfig): { id: string; name: string; kind: SourceKind } {
-  return source.kind === "tavily"
-    ? { id: source.query.id, name: source.query.query, kind: "tavily" }
-    : { id: source.feed.id, name: source.feed.name, kind: source.kind };
+  switch (source.kind) {
+    case "tavily":
+      return { id: source.query.id, name: source.query.query, kind: "tavily" };
+    case "googlenews":
+      return { id: source.feed.id, name: googleNewsName(source.feed), kind: "googlenews" };
+    default:
+      return { id: source.feed.id, name: source.feed.name, kind: source.kind };
+  }
 }
 
 export type SourceOutcome =

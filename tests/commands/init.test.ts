@@ -9,11 +9,12 @@ import {
   newSession,
   queryIdFrom,
   runInit,
+  runsPerMonth,
   shellQuote,
   sourceIdFrom,
 } from "../../src/commands/init.js";
 import { ConfigError, loadConfig } from "../../src/config/load.js";
-import { ContextSchema } from "../../src/config/schema.js";
+import { ContextSchema, type GoogleNewsFeed } from "../../src/config/schema.js";
 import { ExitCode } from "../../src/errors.js";
 import type { resolveLlm } from "../../src/llm/adapter.js";
 import {
@@ -28,6 +29,7 @@ import {
 import { PromptCancelled } from "../../src/util/prompter.js";
 import { type Route, mockFetch, reply } from "../helpers/mockFetch.js";
 import { fakeExec } from "../helpers/fakeExec.js";
+import { googleNewsUrl } from "../../src/sources/googlenews.js";
 import { type Answer, CANCEL, scriptedPrompter } from "../helpers/scriptedPrompter.js";
 
 const FIXTURES = join(import.meta.dirname, "../fixtures/feeds");
@@ -35,7 +37,11 @@ const API = "https://api.github.com/repos";
 const SIMON = "https://simonwillison.net/atom/everything/";
 const TAVILY = "https://api.tavily.com/search";
 
-// name, description, problems (ended by ""), exclude (ended by ""), language, channels, no ideas.
+const NEWS = "News searches to run (Google News, free; space to select)";
+const WEB = "Web searches to run (Tavily, paid; space to select)";
+// Every day at the default time, asked right after the channels.
+const SCHEDULE_ANSWERS: Answer[] = ["daily", "06:17"];
+// name, description, problems (ended by ""), exclude (ended by ""), language, channels, schedule, no ideas.
 const CONTEXT_ANSWERS: Answer[] = [
   "my-app",
   "A SaaS app: Next.js\nand Postgres",
@@ -46,12 +52,11 @@ const CONTEXT_ANSWERS: Answer[] = [
   "",
   "Japanese",
   ["slack"],
+  ...SCHEDULE_ANSWERS,
   false,
 ];
-// Every day at the default time (no install offer: Slack runs on Actions).
-const SCHEDULE_ANSWERS: Answer[] = ["daily", "06:17"];
-// Two sources, then yes to watching each after the trial fetch, then the schedule.
-const SOURCE_ANSWERS: Answer[] = ["repo", "vercel/next.js", "site", SIMON, "done", true, true, ...SCHEDULE_ANSWERS];
+// Two sources, then yes to watching each after the trial fetch.
+const SOURCE_ANSWERS: Answer[] = ["repo", "vercel/next.js", "site", SIMON, "done", true, true];
 
 const CONTEXT = ContextSchema.parse({ version: 1, project: { name: "app", description: "" }, problems: ["News"] });
 
@@ -211,21 +216,22 @@ describe("runInit", () => {
     });
     await runInit({ configDir: dir }, d);
     expect(seen).toEqual([{ provider: "auto", maxItemsPerCall: 40, maxItemsPerRun: 150 }, { ANTHROPIC_API_KEY: "k" }]);
-    // Both sources were typed in full, so the model was never asked.
-    expect(llm.calls).toEqual([]);
+    // Both sources were typed in full, so the model was only asked for searches.
+    expect(llm.calls).toEqual(["queries"]);
   });
 
   it("waits for Claude only when a step needs it, and stops the lookup when done", async () => {
     let lookup: AbortSignal | undefined;
-    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, "site", SIMON, "done", true, ...SCHEDULE_ANSWERS], {
-      // Never settles, like a CLI probe that hangs.
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, "site", SIMON, "done", true], {
+      // Settles late, like a slow CLI probe.
       resolveLlm: (_, opts) => {
         lookup = opts?.signal;
-        return new Promise(() => {});
+        return new Promise((_, reject) => setTimeout(() => reject(new LlmError("unavailable", "no claude")), 20));
       },
     });
     await runInit({ configDir: dir }, d);
-    expect(prompter.shown.some((s) => s.includes("Looking for Claude"))).toBe(false);
+    // The site needs no Claude; only the search suggestions after the menu wait for it.
+    expect(prompter.shown.filter((s) => s.includes("Looking for Claude"))).toEqual(["spin: Looking for Claude"]);
     expect(lookup?.aborted).toBe(true);
   });
 
@@ -290,7 +296,7 @@ describe("runInit", () => {
   });
 
   it("asks for another language when Other is chosen and leaves exclude out when empty", async () => {
-    const { deps: d } = deps(["app", "", "Problem", "", "", "other", "German", ["slack"], false, ...SOURCE_ANSWERS]);
+    const { deps: d } = deps(["app", "", "Problem", "", "", "other", "German", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS]);
     await runInit({ configDir: dir }, d);
     const text = await readFile(join(dir, "context.yml"), "utf8");
     expect(text).not.toContain("exclude");
@@ -298,7 +304,7 @@ describe("runInit", () => {
   });
 
   it("asks again until a channel is picked, and leaves the Actions steps out for files only", async () => {
-    const { prompter, deps: d } = deps(["app", "", "Problem", "", "", "English", [], ["file"], false, ...SOURCE_ANSWERS, false]);
+    const { prompter, deps: d } = deps(["app", "", "Problem", "", "", "English", [], ["file"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, false]);
     await runInit({ configDir: dir }, d);
     expect(prompter.shown).toContain("warn: Pick at least one.");
     expect((await loadConfig({ configDir: dir, env: {} })).context.notify.channels).toEqual([
@@ -311,11 +317,18 @@ describe("runInit", () => {
   });
 
   describe("schedule", () => {
-    const FILE_ONLY: Answer[] = ["app", "", "Problem", "", "", "English", ["file"], false, ...SOURCE_ANSWERS.slice(0, -2)];
+    // The schedule answers go right after the channels; install is the answer to the offer at the end.
+    const fileOnly = (schedule: Answer[], install?: boolean): Answer[] => [
+      ...["app", "", "Problem", "", "", "English", ["file"]],
+      ...schedule,
+      false,
+      ...SOURCE_ANSWERS,
+      ...(install === undefined ? [] : [install]),
+    ];
     const NOW = new Date("2026-10-29T03:30:00Z"); // Thu 12:30 in Tokyo
 
     it("writes the days, time and machine zone, asking again until a day is picked", async () => {
-      const answers = [...FILE_ONLY, "weekly", [], ["thursday", "friday", "saturday"], "06:17", false];
+      const answers = fileOnly(["weekly", [], ["thursday", "friday", "saturday"], "06:17"], false);
       const { prompter, deps: d } = deps(answers);
       await runInit({ configDir: dir }, d);
       expect(prompter.shown).toContain("warn: Pick at least one day.");
@@ -329,9 +342,9 @@ describe("runInit", () => {
     });
 
     it("writes one day as a single value and rejects a time that is not HH:MM", async () => {
-      const { deps: d } = deps([...FILE_ONLY, "weekly", ["monday"], "25:00"]);
+      const { deps: d } = deps(fileOnly(["weekly", ["monday"], "25:00"]));
       expect(String(await rejection(runInit({ configDir: dir }, d)))).toContain('rejected "25:00"');
-      const ok = deps([...FILE_ONLY, "weekly", ["monday"], "07:00", false]);
+      const ok = deps(fileOnly(["weekly", ["monday"], "07:00"], false));
       await runInit({ configDir: dir }, ok.deps);
       expect(await readFile(join(dir, "context.yml"), "utf8")).toMatch(/day: monday\n/);
     });
@@ -340,7 +353,7 @@ describe("runInit", () => {
       const old = (schedule: string) =>
         `version: 1\nproject: { name: old, description: "" }\nproblems: [p]\nschedule: ${schedule}\n`;
       await writeFile(join(dir, "context.yml"), old('{ interval: weekly, day: [friday], time: "21:00", timezone: UTC }'));
-      const first = deps([true, ...FILE_ONLY, "weekly", ["friday"], "21:00", false]);
+      const first = deps([true, ...fileOnly(["weekly", ["friday"], "21:00"], false)]);
       await runInit({ configDir: dir }, first.deps);
       expect(first.prompter.initial).toMatchObject({
         "When should pochi run?": "weekly",
@@ -350,7 +363,7 @@ describe("runInit", () => {
       expect((await loadConfig({ configDir: dir, env: {} })).context.schedule.timezone).toBe("UTC");
 
       await writeFile(join(dir, "context.yml"), old('{ interval: cron, cronjob: "0 9 * * 1-5" }'));
-      const second = deps([true, ...FILE_ONLY, "keep", false]);
+      const second = deps([true, ...fileOnly(["keep"], false)]);
       await runInit({ configDir: dir }, second.deps);
       expect(second.prompter.options["When should pochi run?"]).toEqual(["daily", "weekly", "keep"]);
       expect((await loadConfig({ configDir: dir, env: {} })).context.schedule).toMatchObject({
@@ -361,7 +374,7 @@ describe("runInit", () => {
 
     it("installs the job when asked, showing the next runs, and points the next steps at status", async () => {
       const { exec, calls } = fakeExec();
-      const { prompter, deps: d } = deps([...FILE_ONLY, "weekly", ["thursday", "friday", "saturday"], "06:17", true], {
+      const { prompter, deps: d } = deps(fileOnly(["weekly", ["thursday", "friday", "saturday"], "06:17"], true), {
         schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec, scriptPath: "/app/dist/pochi.mjs", now: () => NOW, timeZone: "Asia/Tokyo" },
       });
       await runInit({ configDir: dir }, d);
@@ -377,7 +390,7 @@ describe("runInit", () => {
     });
 
     it("warns and leaves the install to the next steps when it fails", async () => {
-      const { prompter, deps: d } = deps([...FILE_ONLY, "daily", "06:17", true], {
+      const { prompter, deps: d } = deps(fileOnly(["daily", "06:17"], true), {
         schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec: fakeExec().exec, scriptPath: "/app/src/cli.ts" },
       });
       await runInit({ configDir: dir }, d);
@@ -403,11 +416,11 @@ describe("runInit", () => {
     });
   });
 
-  it("stops asking for problems at 20", async () => {
-    const problems = Array.from({ length: 20 }, (_, i) => `Problem ${i + 1}`);
-    const { prompter, deps: d } = deps(["app", "", ...problems, "", "English", ["slack"], ...SOURCE_ANSWERS]);
+  it("stops asking for problems at 50", async () => {
+    const problems = Array.from({ length: 50 }, (_, i) => `Problem ${i + 1}`);
+    const { prompter, deps: d } = deps(["app", "", ...problems, "", "English", ["slack"], ...SCHEDULE_ANSWERS, ...SOURCE_ANSWERS]);
     await runInit({ configDir: dir }, d);
-    expect(prompter.asked.filter((m) => m.startsWith("What do you want to hear about?"))).toHaveLength(20);
+    expect(prompter.asked.filter((m) => m.startsWith("What do you want to hear about?"))).toHaveLength(50);
     expect((await loadConfig({ configDir: dir, env: {} })).context.problems).toEqual(problems);
   });
 
@@ -494,7 +507,7 @@ describe("askSources: repositories", () => {
     const llm = fakeLlm();
     const { result } = sources(["repo", "vercel/next.js", "done", true], llm.client);
     expect((await result).feeds).toEqual([{ id: "next-js", type: "github", name: "vercel/next.js", repo: "vercel/next.js" }]);
-    expect(llm.calls).toEqual([]);
+    expect(llm.calls).toEqual(["queries"]);
   });
 
   it("rejects names that are not owner/repo without an LLM, and malformed repos with one", async () => {
@@ -567,8 +580,8 @@ describe("askSources: repositories", () => {
       ],
     });
     const { prompter, result } = sources(["repo", "Next.js", "vercel/next.js", "done", true], llm.client);
-    expect((await result).feeds!.map((f) => (f.type === "github" ? f.repo : f.url))).toEqual(["vercel/next.js"]);
-    expect(llm.calls).toEqual(["repo:Next.js"]);
+    expect((await result).feeds!.map((f) => (f.type === "github" ? f.repo : "url" in f ? f.url : f.query))).toEqual(["vercel/next.js"]);
+    expect(llm.calls).toEqual(["repo:Next.js", "queries"]);
     expect(prompter.options["Which repository is Next.js?"]).toEqual(["vercel/next.js", "none"]);
     expect(prompter.shown).toContain("warn: Could not check 1 candidate on GitHub; left out.");
     expect(fetch.calls.map((c) => c.url)).not.toContain(`${API}/acme/fourth`);
@@ -581,7 +594,7 @@ describe("askSources: repositories", () => {
       ["repo", "Ghost", "repo", "Next.js", "none", "repo", "vercel/next.js", "done", true],
       llm.client,
     );
-    expect((await result).feeds!.map((f) => (f.type === "github" ? f.repo : f.url))).toEqual(["vercel/next.js"]);
+    expect((await result).feeds!.map((f) => (f.type === "github" ? f.repo : "url" in f ? f.url : f.query))).toEqual(["vercel/next.js"]);
     expect(prompter.shown).toContain("warn: No GitHub repository found for Ghost; enter it as owner/repo.");
   });
 
@@ -681,7 +694,7 @@ describe("askSources: sites", () => {
       [SIMON]: reply.text(atom("Simon's post")),
     });
     const { prompter, result } = sources(["site", PAGE, "none", "site", SIMON, "done", true]);
-    expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : f.repo))).toEqual([SIMON]);
+    expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : "repo" in f ? f.repo : f.query))).toEqual([SIMON]);
     expect(prompter.asked.filter((m) => m.endsWith("which one?"))).toHaveLength(1);
   });
 
@@ -694,7 +707,7 @@ describe("askSources: sites", () => {
       "https://down.example.com/": reply.status(404),
     });
     const { prompter, result } = sources(["site", PAGE, "site", "https://down.example.com/", "site", SIMON, "done", true]);
-    expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : f.repo))).toEqual([SIMON]);
+    expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : "repo" in f ? f.repo : f.query))).toEqual([SIMON]);
     expect(prompter.shown).toContain(`warn: No feed found on ${PAGE}.`);
     expect(prompter.shown.some((s) => s.startsWith("warn: Could not open https://down.example.com/: "))).toBe(true);
   });
@@ -760,7 +773,7 @@ describe("askSources: sites", () => {
       [`${PAGE}rss`]: [limited, limited],
     });
     const { prompter, result } = sources(["site", PAGE, "site", SIMON, "done", true]);
-    expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : f.repo))).toEqual([SIMON]);
+    expect((await result).feeds!.map((f) => (f.type === "rss" ? f.url : "repo" in f ? f.repo : f.query))).toEqual([SIMON]);
     expect(prompter.shown.some((s) => s.startsWith(`warn: Could not check a feed on ${PAGE}: `))).toBe(true);
     expect(prompter.asked.some((m) => m.endsWith("anyway?"))).toBe(false);
   });
@@ -784,53 +797,58 @@ describe("askSources: sites", () => {
   });
 });
 
-describe("askSources: search queries", () => {
-  it("skips queries without a Tavily key", async () => {
-    const llm = fakeLlm();
-    const { prompter, result } = sources(["repo", "vercel/next.js", "done", true], llm.client);
-    expect((await result).queries).toBeUndefined();
-    expect(prompter.shown).toContain("note: TAVILY_API_KEY is not set, so web search queries are skipped.");
-    expect(llm.calls).toEqual([]);
-  });
+describe("askSources: searches", () => {
+  const news = (query: string, extra: Partial<GoogleNewsFeed> = {}) =>
+    ({ id: queryIdFrom(query, new Set()), type: "googlenews", query, locale: "en-US", ...extra }) as const;
+  const route = (...feeds: GoogleNewsFeed[]) =>
+    Object.fromEntries(feeds.map((f) => [googleNewsUrl(f), reply.text(atom(`About ${f.query}`))]));
 
-  it("offers up to five suggestions and takes typed queries too", async () => {
-    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
-    mockFetch({ [TAVILY]: reply.text(await readFile(join(import.meta.dirname, "../fixtures/tavily/search.json"), "utf8")) });
+  it("offers Claude's suggestions as free news searches without a Tavily key, five at most", async () => {
+    mockFetch(route(news("Qwen release"), news("B")));
     const llm = fakeLlm({ queries: () => ["Qwen release", " qwen  release ", "", "A", "B", "C", "D", "E"] });
-    const { prompter, result } = sources(
-      ["done", ["Qwen release", "B"], true, " qwen \t RELEASE ", "Next.js   news", "", true, false, true],
-      llm.client,
-    );
-    expect(await result).toEqual({
-      version: 1,
-      feeds: [],
-      queries: [
-        { id: "qwen-release", query: "Qwen release", topic: "news" },
-        { id: "next-js-news", query: "Next.js news", topic: "news" },
-      ],
-    });
-    expect(prompter.options["Search queries to run every morning (space to select)"]).toEqual(["Qwen release", "A", "B", "C", "D"]);
+    const { prompter, result } = sources(["done", ["Qwen release", "B"], true, true], llm.client);
+    expect(await result).toEqual({ version: 1, feeds: [news("Qwen release"), news("B")] });
+    expect(prompter.options[NEWS]).toEqual(["Qwen release", "A", "B", "C", "D"]);
+    // Suggestions from Claude are not picked for the user.
+    expect(prompter.initial[NEWS]).toEqual([]);
     expect(prompter.asked).toContain("Watch B every morning?");
-    // Typed queries are compared and stored as the suggestions are.
-    expect(prompter.shown).toContain("warn: Already added: qwen RELEASE; skipped.");
+    expect(prompter.asked).not.toContain(WEB);
   });
 
-  it("stores a long suggestion whole, shortening only its label", async () => {
-    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
-    mockFetch({ [TAVILY]: reply.text(await readFile(join(import.meta.dirname, "../fixtures/tavily/search.json"), "utf8")) });
-    const long = `${"word ".repeat(30)}end`;
-    const llm = fakeLlm({ queries: () => [long] });
-    const { result } = sources(["done", [long], false, true], llm.client);
-    expect((await result).queries!.map((q) => q.query)).toEqual([long]);
+  it("takes a news search typed from the menu, kept to the sites given", async () => {
+    const feed = news("Qwen release", { sites: ["prtimes.jp", "news.example.com"] });
+    mockFetch(route(feed));
+    const answers = ["news", "  Qwen   release ", "prtimes.jp, News.example.com", "done", true];
+    const { result } = sources(answers);
+    expect((await result).feeds).toEqual([feed]);
+    expect(await rejection(sources(["news", "Qwen", "https://prtimes.jp"]).result)).toMatchObject({
+      message: expect.stringMatching(/rejected "https:\/\/prtimes.jp"/),
+    });
   });
 
-  it("ignores a typed query of control characters only and names others by a hash", async () => {
+  it("says what web searches cost before taking any, and only with a Tavily key", async () => {
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
     mockFetch({ [TAVILY]: reply.text(await readFile(join(import.meta.dirname, "../fixtures/tavily/search.json"), "utf8")) });
-    const { result } = sources(["done", "\u001b\u0007", "Next.js リリース", "", true]);
-    expect((await result).queries).toEqual([
-      { id: queryIdFrom("Next.js リリース", new Set()), query: "Next.js リリース", topic: "news" },
-    ]);
+    const prompter = scriptedPrompter(["done", " Qwen \t LoRA ", "\u001b\u0007", "qwen lora", "", true]);
+    const session = newSession(prompter, CONTEXT, { env: { TAVILY_API_KEY: "tvly-test" }, runsPerMonth: 9 });
+    const result = await askSources(session);
+    expect(result.queries).toEqual([{ id: "qwen-lora", query: "Qwen LoRA", topic: "general" }]);
+    expect(prompter.shown).toContain(
+      "note: Tavily: Web searches run on Tavily, a paid search API: each one costs a credit on every run (about 9 credits a month each at this schedule), and one now to try it. The free plan has 1000 credits a month, so add only what a news search cannot find.",
+    );
+    expect(prompter.shown).toContain("note: Tavily: 1 web search: about 9 Tavily credits a month.");
+    // Typed web searches are compared and stored as the suggestions are.
+    expect(prompter.shown).toContain("warn: Already added: qwen lora; skipped.");
+  });
+
+  it("warns when the web searches would cost more than the free plan", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
+    mockFetch({ [TAVILY]: [reply.json({ results: [] }), reply.json({ results: [] })] });
+    const prompter = scriptedPrompter(["done", "a", "b", "", true, true]);
+    await askSources(newSession(prompter, CONTEXT, { env: { TAVILY_API_KEY: "tvly-test" }, runsPerMonth: 600 }));
+    expect(prompter.shown).toContain(
+      "warn: 2 web searches: about 1200 Tavily credits a month. That is more than the 1000 the free plan has.",
+    );
   });
 
   it("reads the Tavily key from the env it is given", async () => {
@@ -840,16 +858,15 @@ describe("askSources: search queries", () => {
     expect(await rejection(result)).toMatchObject({ message: expect.stringMatching(/not an option/) });
   });
 
-  it("takes typed queries only when the model cannot suggest any", async () => {
-    vi.stubEnv("TAVILY_API_KEY", "tvly-test");
-    mockFetch({ [TAVILY]: reply.text(await readFile(join(import.meta.dirname, "../fixtures/tavily/search.json"), "utf8")) });
+  it("goes on without suggestions when Claude cannot give any", async () => {
+    mockFetch(route(news("Qwen")));
     const llm = fakeLlm({
       queries: () => {
         throw new LlmError("invalid_output", "bad");
       },
     });
-    const { prompter, result } = sources(["done", "Qwen", "", true], llm.client);
-    expect((await result).queries!.map((q) => q.query)).toEqual(["Qwen"]);
+    const { prompter, result } = sources(["news", "Qwen", "", "done", true], llm.client);
+    expect((await result).feeds!.map((f) => ("query" in f ? f.query : f.name))).toEqual(["Qwen"]);
     expect(prompter.shown).toContain("warn: Claude could not answer (invalid_output).");
   });
 });
@@ -996,6 +1013,7 @@ describe("runInit --from", () => {
     false,
     "Japanese",
     ["slack"],
+    ...SCHEDULE_ANSWERS,
     false,
   ];
   const PROBLEMS = "What do you want to hear about? (proposed; space to toggle, enter to confirm)";
@@ -1022,7 +1040,6 @@ describe("runInit --from", () => {
       "done",
       true,
       true,
-      ...SCHEDULE_ANSWERS,
     ]);
     await runInit({ configDir, from }, d);
     expect(prompter.remaining).toEqual([]);
@@ -1068,21 +1085,22 @@ describe("runInit --from", () => {
     const configDir = join(dir, "config");
     const picked = ["ペット葬儀社", "ペット保険 グッズ"];
     const { prompter, deps: d } = deps(
-      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", picked, false, true, true, true, ...SCHEDULE_ANSWERS],
+      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["ペット葬儀社"], ["ペット保険 グッズ"], false, true, true, true],
       { env: { TAVILY_API_KEY: "tvly-test" } },
     );
     await runInit({ configDir, from, watch: { competitors: ["SUZURI"], adopters: ["ペット葬儀社"], newsSites: ["prtimes.jp"] } }, d);
-    const message = "Search queries to run every morning (space to select)";
-    expect(prompter.options[message]).toEqual(["SUZURI", "ペット葬儀社", "ペット保険 グッズ"]);
-    expect(prompter.initial[message]).toBeUndefined();
-    const queries = (await loadConfig({ configDir, env: {} })).sources.queries;
-    expect(queries.map((q) => [q.query, q.topic, q.includeDomains])).toEqual([
-      ["ペット葬儀社", "news", ["prtimes.jp"]],
-      ["ペット保険 グッズ", "general", ["prtimes.jp"]],
+    // The names are free news searches on the news sites; the proposal's general query is a web search.
+    expect(prompter.options[NEWS]).toEqual(["SUZURI", "ペット葬儀社"]);
+    expect(prompter.initial[NEWS]).toEqual([]);
+    expect(prompter.options[WEB]).toEqual(["ペット保険 グッズ"]);
+    const { feeds, queries } = (await loadConfig({ configDir, env: {} })).sources;
+    expect(feeds.filter((f) => f.type === "googlenews")).toEqual([
+      { id: queryIdFrom("ペット葬儀社", new Set()), type: "googlenews", query: "ペット葬儀社", sites: ["prtimes.jp"], locale: "ja-JP" },
     ]);
+    expect(queries.map((q) => [q.query, q.topic, q.includeDomains])).toEqual([["ペット保険 グッズ", "general", ["prtimes.jp"]]]);
   });
 
-  it("offers the proposed queries in place of Claude's, keeping their topic", async () => {
+  it("offers the proposal's general queries as web searches in place of Claude's", async () => {
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
     mockFetch({
       ...BASE_ROUTES,
@@ -1092,16 +1110,16 @@ describe("runInit --from", () => {
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [] });
     const configDir = join(dir, "config");
     const { prompter, deps: d } = deps(
-      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["pet AI illustration app"], false, true, true, ...SCHEDULE_ANSWERS],
+      [...PROPOSAL_CONTEXT, "repo", "vercel/next.js", "done", ["pet AI illustration app"], false, true, true],
       // The fetch reads process.env; init reads the env it is given.
       { resolveLlm: llm.resolve, env: { TAVILY_API_KEY: "tvly-test" } },
     );
     await runInit({ configDir, from }, d);
     expect(llm.calls).toEqual([]);
-    const message = "Search queries to run every morning (space to select)";
-    expect(prompter.options[message]).toEqual(["pet AI illustration app"]);
-    // Each costs a credit every morning, so none is picked for the user.
-    expect(prompter.initial[message]).toBeUndefined();
+    expect(prompter.options[WEB]).toEqual(["pet AI illustration app"]);
+    // Each costs a credit on every run, so none is picked for the user.
+    expect(prompter.initial[WEB]).toBeUndefined();
+    expect(prompter.asked).not.toContain(NEWS);
     expect((await loadConfig({ configDir, env: {} })).sources.queries).toEqual([
       { id: "pet-ai-illustration-app", query: "pet AI illustration app", topic: "general", maxResults: 10, requireDate: false },
     ]);
@@ -1110,7 +1128,7 @@ describe("runInit --from", () => {
   it("leaves a language it does not list to Other, filled in", async () => {
     const from = await writeProposal({ pochi: "proposal/v1", language: "German", problems: [{ text: "News" }] });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "other", "German", ["slack"], false, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "other", "German", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS]);
     await runInit({ configDir, from }, d);
     expect(prompter.initial["Language for the summaries"]).toBe("other");
     expect(prompter.initial.Language).toBe("German");
@@ -1134,9 +1152,9 @@ describe("runInit --from", () => {
     const configDir = join(dir, "config");
     const answers = [...PROPOSAL_CONTEXT];
     answers.splice(3, 1, true, "Supabase outages", "");
-    const { prompter, deps: d } = deps([...answers, ["vercel/next.js"], [], "done", true, ...SCHEDULE_ANSWERS]);
+    const { prompter, deps: d } = deps([...answers, ["vercel/next.js"], [], "done", true]);
     await runInit({ configDir, from }, d);
-    expect(prompter.asked).toContain("What do you want to hear about? (1/18, empty to finish)");
+    expect(prompter.asked).toContain("What do you want to hear about? (1/48, empty to finish)");
     expect((await loadConfig({ configDir, env: {} })).context.problems).toEqual([
       "Next.js breaking changes",
       "Competing pet illustration apps",
@@ -1146,7 +1164,7 @@ describe("runInit --from", () => {
 
   it("warns about the entries it left out", async () => {
     const from = await writeProposal({ pochi: "proposal/v1", problems: [{ text: "News" }], repos: [{ repo: "nope" }, "x"] });
-    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "English", ["slack"], false, ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "English", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown).toContain("warn: Left out 2 proposed entries: malformed or past the limits.");
   });
@@ -1155,7 +1173,7 @@ describe("runInit --from", () => {
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
     let lookup: AbortSignal | undefined;
     const from = await writeProposal(PROPOSAL);
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [SIMON], "done", [], false, true, true, ...SCHEDULE_ANSWERS], {
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [SIMON], "done", [], false, true, true], {
       env: { TAVILY_API_KEY: "tvly-test" },
       // Never settles, like a CLI probe that hangs.
       resolveLlm: (_, opts) => {
@@ -1164,7 +1182,7 @@ describe("runInit --from", () => {
       },
     });
     await runInit({ configDir: join(dir, "config"), from }, d);
-    expect(prompter.asked).toContain("Search queries to run every morning (space to select)");
+    expect(prompter.asked).toContain(WEB);
     expect(prompter.shown.some((s) => s.includes("Looking for Claude"))).toBe(false);
     expect(lookup?.aborted).toBe(true);
   });
@@ -1182,12 +1200,14 @@ describe("runInit --from", () => {
       queries: [{ query: "\u0007" }, { query: "Pet  AI" }, { query: "pet ai" }, { query: "ペット イラスト" }],
     });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, "done", ["Pet AI", "ペット イラスト"], false, true, true, ...SCHEDULE_ANSWERS], {
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, "done", ["Pet AI", "ペット イラスト"], "", true, true], {
       env: { TAVILY_API_KEY: "tvly-test" },
     });
     await runInit({ configDir, from }, d);
-    expect(prompter.options["Search queries to run every morning (space to select)"]).toEqual(["Pet AI", "ペット イラスト"]);
-    const ids = (await loadConfig({ configDir, env: {} })).sources.queries.map((q) => q.id);
+    // Without a topic they are news, so free news searches, picked to begin with as proposed.
+    expect(prompter.options[NEWS]).toEqual(["Pet AI", "ペット イラスト"]);
+    expect(prompter.initial[NEWS]).toEqual(["Pet AI", "ペット イラスト"]);
+    const ids = (await loadConfig({ configDir, env: {} })).sources.feeds.map((f) => f.id);
     expect(ids).toEqual(["pet-ai", expect.stringMatching(/^query-[0-9a-f]{8}$/)]);
   });
 
@@ -1199,7 +1219,7 @@ describe("runInit --from", () => {
     });
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: blog }, { url: SIMON }] });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done", true, ...SCHEDULE_ANSWERS]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [blog, SIMON], "done", true]);
     await runInit({ configDir, from }, d);
     expect(prompter.shown).toContain("spin: Looking for feeds on 2 sites");
     expect(prompter.shown).toContain("warn: Already added: simonwillison.net/atom/everything; skipped.");
@@ -1210,7 +1230,7 @@ describe("runInit --from", () => {
     const down = "https://down.example.com/";
     mockFetch({ ...BASE_ROUTES, [down]: reply.status(503) });
     const from = await writeProposal({ ...PROPOSAL, repos: [], sites: [{ url: down }, { url: SIMON }] });
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done", true, ...SCHEDULE_ANSWERS]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, [down, SIMON], "done", true]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown.some((s) => s.startsWith(`warn: Could not open ${down}`) && s.endsWith("; left out"))).toBe(true);
     expect(prompter.asked.some((m) => m.includes("anyway"))).toBe(false);
@@ -1218,10 +1238,10 @@ describe("runInit --from", () => {
 
   it("says the proposed queries are left out without a Tavily key", async () => {
     const from = await writeProposal(PROPOSAL);
-    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done", true, ...SCHEDULE_ANSWERS]);
+    const { prompter, deps: d } = deps([...PROPOSAL_CONTEXT, ["vercel/next.js"], [], "done", true]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown).toContain(
-      "note: TAVILY_API_KEY is not set, so web search queries are skipped (1 proposed query left out).",
+      "note: TAVILY_API_KEY is not set, so web searches are skipped (1 proposed web search left out).",
     );
   });
 
@@ -1245,6 +1265,16 @@ describe("runInit --from", () => {
       expect(prompter.asked).toEqual([]);
       expect(prompter.shown).toEqual([]);
     }
+  });
+});
+
+describe("runsPerMonth", () => {
+  const now = new Date("2026-10-29T03:30:00Z");
+  it("counts the runs in the next 30 days at the schedule", () => {
+    const schedule = (extra: object) => ContextSchema.parse({ ...CONTEXT, schedule: extra }).schedule;
+    expect(runsPerMonth(schedule({ interval: "daily", timezone: "Asia/Tokyo" }), "UTC", now)).toBe(30);
+    expect(runsPerMonth(schedule({ interval: "weekly", day: ["friday", "saturday"], timezone: "Asia/Tokyo" }), "UTC", now)).toBe(10);
+    expect(runsPerMonth(schedule({ interval: "cron", cronjob: "* * * * *" }), "UTC", now)).toBe(1000);
   });
 });
 
@@ -1280,7 +1310,7 @@ describe("runInit --print-prompt", () => {
 describe("runInit: ideas from Claude", () => {
   const ASK = "Ask Claude for ideas from technology, design, marketing and industry angles you may have missed?";
   const IDEAS = "Ideas to add to what you want to hear about (space to select, enter to confirm)";
-  const QUERIES = "Search queries to run every morning (space to select)";
+  const QUERIES = "News searches to run (Google News, free; space to select)";
   // CONTEXT_ANSWERS up to the channels, without its "no ideas".
   const BEFORE_IDEAS = CONTEXT_ANSWERS.slice(0, -1);
   const DESIGN = {
@@ -1310,7 +1340,7 @@ describe("runInit: ideas from Claude", () => {
     });
     const configDir = join(dir, "config");
     const { prompter, deps: d } = deps(
-      [...BEFORE_IDEAS, true, ["Accessibility rules for pet apps"], [SIMON], "done", ["WCAG 3 draft"], false, true, true, ...SCHEDULE_ANSWERS],
+      [...BEFORE_IDEAS, true, ["Accessibility rules for pet apps"], [SIMON], "done", ["WCAG 3 draft"], "", true, true],
       { resolveLlm: llm.resolve, env: { TAVILY_API_KEY: "tvly-test" } },
     );
     vi.stubEnv("TAVILY_API_KEY", "tvly-test");
@@ -1323,15 +1353,22 @@ describe("runInit: ideas from Claude", () => {
     expect(prompter.initial[IDEAS]).toBeUndefined();
     // Only the sites of the ideas picked, and only the ones that are URLs.
     expect(prompter.options["Proposed sites to watch (space to toggle)"]).toEqual([SIMON]);
-    // Up to two queries an idea, offered with Claude's own suggestions.
+    // Up to two queries an idea, offered with Claude's own suggestions; the idea's are picked.
     expect(prompter.options[QUERIES]).toEqual(["from Claude", "WCAG 3 draft", "a"]);
+    expect(prompter.initial[QUERIES]).toEqual(["WCAG 3 draft", "a"]);
 
     const loaded = await loadConfig({ configDir, env: {} });
     expect(loaded.context.problems).toEqual(["Next.js breaking changes", "日本語の課題", "Accessibility rules for pet apps"]);
-    expect(loaded.sources.feeds).toEqual([expect.objectContaining({ url: SIMON })]);
-    expect(loaded.sources.queries.map((q) => q.query)).toEqual(["WCAG 3 draft"]);
+    expect(loaded.sources.feeds[0]).toEqual(expect.objectContaining({ url: SIMON }));
+    expect(loaded.sources.feeds.map((f) => ("query" in f ? f.query : f.name))).toContain("WCAG 3 draft");
     // The query suggestions were asked for with the new interest in the context.
     expect(llm.calls).toEqual(["ideas", "queries"]);
+  });
+
+  it("says how many interests there are before asking for ideas", async () => {
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS]);
+    await runInit({ configDir: dir }, d);
+    expect(prompter.shown).toContain("note: Interests: 2 of 50 interests so far.");
   });
 
   it("does not ask Claude when declined", async () => {
