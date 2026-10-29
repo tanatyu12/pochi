@@ -30,7 +30,7 @@ import { PromptCancelled } from "../../src/util/prompter.js";
 import { type Route, mockFetch, reply } from "../helpers/mockFetch.js";
 import { fakeExec } from "../helpers/fakeExec.js";
 import { googleNewsUrl } from "../../src/sources/googlenews.js";
-import { type Answer, CANCEL, scriptedPrompter } from "../helpers/scriptedPrompter.js";
+import { type Answer, BACK, CANCEL, scriptedPrompter } from "../helpers/scriptedPrompter.js";
 
 const FIXTURES = join(import.meta.dirname, "../fixtures/feeds");
 const API = "https://api.github.com/repos";
@@ -233,6 +233,55 @@ describe("runInit", () => {
     // The site needs no Claude; only the search suggestions after the menu wait for it.
     expect(prompter.shown.filter((s) => s.includes("Looking for Claude"))).toEqual(["spin: Looking for Claude"]);
     expect(lookup?.aborted).toBe(true);
+  });
+
+  describe("going back (Shift+Tab)", () => {
+    const urls = (mock: ReturnType<typeof mockFetch>) => mock.calls.map((c) => c.url).sort();
+
+    it("asks the question before again with its answer, and changes only what is answered anew", async () => {
+      const answers = [...CONTEXT_ANSWERS];
+      // At the description, back to the name, which is changed.
+      answers.splice(1, 0, BACK, "renamed");
+      // At the time, back to how often, from every day to Fridays.
+      const at = answers.indexOf("06:17");
+      answers.splice(at, 1, BACK, "weekly", ["friday"], "07:00");
+      const { prompter, deps: d } = deps([...answers, ...SOURCE_ANSWERS]);
+      await runInit({ configDir: dir }, d);
+      expect(prompter.remaining).toEqual([]);
+      expect(prompter.initial["Project name"]).toBe("my-app");
+      expect(prompter.initial["When should pochi run?"]).toBe("daily");
+      const { context } = await loadConfig({ configDir: dir, env: {} });
+      expect(context.project.name).toBe("renamed");
+      expect(context.problems).toEqual(["Next.js breaking changes", "日本語の課題"]);
+      expect(context.schedule).toMatchObject({ interval: "weekly", day: "friday", time: "07:00" });
+    });
+
+    it("fetches and asks Claude nothing again when going back over it", async () => {
+      const once = mockFetch(BASE_ROUTES);
+      const llm = fakeLlm({ queries: () => [] });
+      await runInit({ configDir: dir }, deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS], { resolveLlm: llm.resolve }).deps);
+      const fetched = urls(once);
+
+      await rm(dir, { recursive: true, force: true });
+      const again = mockFetch(BASE_ROUTES);
+      const llm2 = fakeLlm({ queries: () => [] });
+      // At the trial fetch of the second source, back to the first one's, which is answered again.
+      const answers: Answer[] = [...CONTEXT_ANSWERS, "repo", "vercel/next.js", "site", SIMON, "done", true, BACK, true, true];
+      const { prompter, deps: d } = deps(answers, { resolveLlm: llm2.resolve });
+      await runInit({ configDir: dir }, d);
+      expect(prompter.remaining).toEqual([]);
+      expect(urls(again)).toEqual(fetched);
+      expect(llm2.calls).toEqual(llm.calls);
+    });
+
+    it("cannot go back once the files are written", async () => {
+      const answers = ["app", "", "Problem", "", "", "English", ["file"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS];
+      const { prompter, deps: d } = deps([...answers, BACK, false]);
+      await runInit({ configDir: dir }, d);
+      const ask = prompter.asked.filter((m) => m.startsWith("Install the schedule"));
+      expect(ask).toHaveLength(2);
+      expect(prompter.remaining).toEqual([]);
+    });
   });
 
   it("fails with 2 before asking anything when not on a terminal", async () => {

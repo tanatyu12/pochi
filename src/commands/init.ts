@@ -41,7 +41,9 @@ import { pLimit } from "../util/concurrency.js";
 import { normalizeUrl, parseHttpUrl, sha256Hex } from "../util/hash.js";
 import { HttpError } from "../util/http.js";
 import { configureLog } from "../util/log.js";
-import { type Prompter, PromptCancelled, createClackPrompter } from "../util/prompter.js";
+import { type Prompter, PromptBack, PromptCancelled, createClackPrompter } from "../util/prompter.js";
+import { replayingPrompter } from "../util/replay.js";
+import { createInitCache } from "./initCache.js";
 import type { Item } from "../types.js";
 import { collapseWhitespace, displayLine, plural, stripControlChars } from "../util/text.js";
 
@@ -145,9 +147,25 @@ export async function runInit(opts: InitOptions = {}, deps: Partial<InitDeps> = 
   const proposal = opts.from === undefined ? undefined : await readProposal(opts.from);
   // The prompts show what matters; info lines from the fetchers would only break up the screen.
   const restoreLog = configureLog({ level: "quiet" });
+  // Shift+Tab goes back a question by running init again with the answers so far replayed; what
+  // it fetches and asks Claude is cached, so a replay repeats nothing.
+  const prompter = replayingPrompter(deps.prompter ?? createClackPrompter());
+  const cache = createInitCache(deps.resolveLlm ?? resolveLlm, deps.signal);
+  const restoreFetch = cache.installFetch();
   try {
-    await init(opts.configDir ?? DEFAULT_CONFIG_DIR, deps, proposal, watch);
+    for (;;) {
+      cache.newRun();
+      try {
+        await init(opts.configDir ?? DEFAULT_CONFIG_DIR, { ...deps, prompter, resolveLlm: cache.resolveLlm }, proposal, watch);
+        return;
+      } catch (err) {
+        if (!(err instanceof PromptBack)) throw err;
+        prompter.back();
+      }
+    }
   } finally {
+    restoreFetch();
+    cache.close();
     restoreLog();
   }
 }
@@ -163,7 +181,7 @@ async function init(
   const env = deps.env ?? process.env;
   const { signal } = deps;
 
-  p.intro("pochi init");
+  p.intro("pochi init  (Shift+Tab: back · Esc: quit)");
   // Asked first so nobody answers every question only to be refused at the end.
   const existing = await existingConfig(dir);
   if (existing.length > 0) {
@@ -226,6 +244,8 @@ async function init(
   context = ContextSchema.parse(contextInput);
   // Nothing touches the disk until every answer is in, so a cancel above leaves no trace.
   const { contextPath, sourcesPath } = await writeConfig(dir, { context: contextInput, sources }, { overwrite: true });
+  // Written: going back would change nothing on disk.
+  p.freeze?.();
 
   const paths = [contextPath, sourcesPath];
   const ignored = await checkIgnored(paths);

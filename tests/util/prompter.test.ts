@@ -16,7 +16,7 @@ const clack = vi.hoisted(() => {
 });
 vi.mock("@clack/prompts", () => clack);
 
-const { PromptCancelled, createClackPrompter } = await import("../../src/util/prompter.js");
+const { PromptBack, PromptCancelled, createClackPrompter } = await import("../../src/util/prompter.js");
 const { log, resetLog } = await import("../../src/util/log.js");
 
 afterEach(() => {
@@ -48,6 +48,28 @@ describe("createClackPrompter", () => {
       kind === "select" || kind === "multiselect" ? p[kind]({ message: "m", options: [] }) : p[kind]({ message: "m" });
     await expect(call).rejects.toBeInstanceOf(PromptCancelled);
     expect(clack.cancel).toHaveBeenCalledOnce();
+  });
+
+  it.each(["text", "select", "multiselect", "confirm"] as const)("turns Shift+Tab on a %s into PromptBack, and Esc into cancel", async (kind) => {
+    const before = process.stdin.listenerCount("keypress");
+    // As clack does: an aborted signal ends the prompt as cancelled.
+    clack[kind].mockImplementation(
+      (opts: { signal: AbortSignal }) =>
+        new Promise((resolve) => opts.signal.addEventListener("abort", () => resolve(clack.CANCEL), { once: true })),
+    );
+    const p = createClackPrompter();
+    const ask = () =>
+      kind === "select" || kind === "multiselect" ? p[kind]({ message: "m", options: [] }) : p[kind]({ message: "m" });
+    const call = ask();
+    await new Promise((resolve) => setImmediate(resolve));
+    process.stdin.emit("keypress", "\t", { name: "tab", shift: false, sequence: "\t" });
+    process.stdin.emit("keypress", undefined, { name: "tab", shift: true, sequence: "\x1b[Z" });
+    await expect(call).rejects.toBeInstanceOf(PromptBack);
+    expect(clack.cancel).not.toHaveBeenCalled();
+    expect(process.stdin.listenerCount("keypress")).toBe(before);
+
+    clack[kind].mockResolvedValue(clack.CANCEL);
+    await expect(ask()).rejects.toBeInstanceOf(PromptCancelled);
   });
 
   it("lets a full-width space toggle in a multiselect, as Space types it with a Japanese IME on", async () => {
