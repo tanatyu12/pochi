@@ -6,7 +6,7 @@ project:
   name: my-app
   description: A Next.js SaaS app with a Postgres backend and an LLM-powered support chat.
 
-# What you want to hear about (1-20 entries).
+# What you want to hear about (1-50 entries).
 problems:
   - Breaking changes and security fixes in Next.js and React
   - Cheaper or faster LLMs for customer support chat

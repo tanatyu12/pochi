@@ -87,7 +87,7 @@ describe("ContextSchema", () => {
 
   it.each([
     [[], "context.yml: problems: must have at least 1 item"],
-    [Array.from({ length: 21 }, (_, i) => `p${i}`), "context.yml: problems: must have at most 20 items"],
+    [Array.from({ length: 51 }, (_, i) => `p${i}`), "context.yml: problems: must have at most 50 items"],
     [[" "], "context.yml: problems[0]: must not be empty"],
   ])("checks the problems list", (problems, expected) => {
     expect(contextErrors({ ...minimalContext, problems })).toEqual([expected]);

@@ -43,7 +43,7 @@ describe("loadConfig", () => {
     await writeConfigFiles(context, sources);
     const loaded = await loadConfig({ configDir: dir, env: {} });
     expect(loaded.context.project.name).toBe("my-app");
-    expect(loaded.sources.feeds.map((f) => f.type)).toEqual(["github", "rss"]);
+    expect(loaded.sources.feeds.map((f) => f.type)).toEqual(["github", "rss", "googlenews"]);
     expect(loaded.sources.queries).toHaveLength(1);
   });
 

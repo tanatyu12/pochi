@@ -1,9 +1,11 @@
-import { type Prompter, PromptCancelled } from "../../src/util/prompter.js";
+import { type Prompter, PromptBack, PromptCancelled } from "../../src/util/prompter.js";
 
 /** An answer that cancels the prompt, as Ctrl-C would. */
 export const CANCEL = Symbol("cancel");
+/** An answer that goes back to the question before, as Shift+Tab does. */
+export const BACK = Symbol("back");
 
-export type Answer = string | string[] | boolean | typeof CANCEL;
+export type Answer = string | string[] | boolean | typeof CANCEL | typeof BACK;
 
 export interface ScriptedPrompter extends Prompter {
   /** Messages of the input prompts asked so far. */
@@ -34,6 +36,7 @@ export function scriptedPrompter(answers: Answer[]): ScriptedPrompter {
     if (remaining.length === 0) throw new Error(`no scripted answer for: ${message}`);
     const answer = remaining.shift()!;
     if (answer === CANCEL) throw new PromptCancelled();
+    if (answer === BACK) throw new PromptBack();
     return answer;
   }
 
