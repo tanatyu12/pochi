@@ -132,10 +132,15 @@ function render(s: Setup, job: Job, p: Planned): string {
   }
 }
 
+/** Whether pochi runs from the built bundle: a scheduled run cannot go through tsx. */
+export function runsFromBundle(deps: Pick<ScheduleDeps, "scriptPath"> = {}): boolean {
+  return /\.m?js$/.test(deps.scriptPath ?? process.argv[1] ?? "");
+}
+
 export async function installSchedule(opts: InstallOptions, deps: ScheduleDeps = {}): Promise<void> {
   const s = setup(opts, deps);
-  // A scheduled run cannot go through tsx; the job calls the bundle that is running now.
-  if (!/\.m?js$/.test(deps.scriptPath ?? process.argv[1] ?? "")) {
+  // The job calls the bundle that is running now.
+  if (!runsFromBundle(deps)) {
     throw new ConfigError("run `npm run build` and install with `node dist/pochi.mjs schedule install`");
   }
   // A broken config would only show up at the first scheduled run.
