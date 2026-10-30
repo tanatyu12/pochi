@@ -47,7 +47,7 @@ Vitest's global setup (`tests/setup/build.ts`) builds the bundle before every ru
 
 Each list is the minimum set of places to touch; the exhaustive switches will point out any you miss.
 
-- Source type: `src/config/schema.ts` (feed union), `src/types.ts` (`SourceKind`), new `src/sources/<name>.ts`, the switches in `src/sources/index.ts`, and if relevant `src/commands/doctor.ts` and `src/commands/init.ts`. Add `tests/sources/<name>.test.ts` with fixtures, and update `docs/configuration.md` and `config/sources.example.yml`.
+- Source type: `src/config/schema.ts` (feed union), `src/types.ts` (`SourceKind`), new `src/sources/<name>.ts`, the switches in `src/sources/index.ts`, and if relevant `src/commands/doctor.ts` and the modules in `src/commands/init/` (`feeds.ts`, `searches.ts`). Add `tests/sources/<name>.test.ts` with fixtures, and update `docs/configuration.md` and `config/sources.example.yml`.
 - Notify channel: `src/config/schema.ts` (`notify.channels`), new `src/notifiers/<name>.ts` implementing `Notifier`, the switch in `src/notifiers/index.ts` (secrets come from env, missing secret → `ConfigError`), `SECRET_ENV` in `src/util/log.ts`, doctor, init and docs.
 - LLM backend: `src/llm/schema.ts`, new `src/llm/<name>.ts` implementing `LlmClient`, `resolveLlm` in `src/llm/adapter.ts`, `llm.provider` in `src/config/schema.ts`.
 - State backend (somewhere other than a local file): implement `StateStore` in `src/state/store.ts`, reusing `parseState`/`serializeState` so the document stays the same, and pass it to `runBriefing` (`src/pipeline/briefing.ts`). The pipeline itself reads no files, env or process state; keep it that way so it can run outside the CLI.

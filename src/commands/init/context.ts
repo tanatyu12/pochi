@@ -1,10 +1,8 @@
-import { type ChannelConfig, type ContextInput, MAX_PROBLEMS } from "../../config/schema.js";
+import { type ChannelConfig, type ContextInput, MAX_EXCLUDE, MAX_PROBLEMS } from "../../config/schema.js";
 import type { Proposal } from "../../proposal/parse.js";
 import type { Prompter } from "../../util/prompter.js";
 import { plural } from "../../util/text.js";
 import { askListWithProposals, required } from "./lists.js";
-
-const MAX_EXCLUDE = 30;
 
 const LANGUAGES = ["English", "Japanese"] as const;
 

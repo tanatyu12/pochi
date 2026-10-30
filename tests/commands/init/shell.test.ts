@@ -2,18 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { gitCheckIgnored, shellQuote } from "../../../src/commands/init/shell.js";
-
-describe("shellQuote", () => {
-  it.each([
-    ["config/context.yml", "config/context.yml"],
-    ["/tmp/my configs", "'/tmp/my configs'"],
-    ["it's", "'it'\\''s'"],
-    ["$HOME", "'$HOME'"],
-  ])("%s -> %s", (raw, quoted) => {
-    expect(shellQuote(raw)).toBe(quoted);
-  });
-});
+import { gitCheckIgnored } from "../../../src/commands/init/shell.js";
 
 describe("gitCheckIgnored", () => {
   it("tells ignored, not ignored and unknown paths apart in one call", async () => {

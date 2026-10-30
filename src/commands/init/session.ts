@@ -124,14 +124,6 @@ export function claim(s: SourceSession, key: string, id: string): boolean {
   return true;
 }
 
-// Like Promise.allSettled for one promise.
-export function settle<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
-  return promise.then(
-    (value) => ({ status: "fulfilled", value }),
-    (reason: unknown) => ({ status: "rejected", reason }),
-  );
-}
-
 // A fetch cut short by Ctrl-C fails like any other; the signal tells them apart.
 export function throwIfCancelled(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new PromptCancelled();
