@@ -23,7 +23,7 @@ describe("ContextSchema", () => {
       language: "English",
       llm: { provider: "auto", maxItemsPerCall: 40, maxItemsPerRun: 150 },
       notify: { minImpact: "Low", postWhenEmpty: false, channels: [{ type: "slack" }] },
-      state: { ttlDays: 45, maxItemAgeDays: 14 },
+      state: { ttlDays: 45 },
       schedule: { interval: "daily" },
     });
   });
@@ -95,7 +95,7 @@ describe("ContextSchema", () => {
 
   it.each([
     [{ ttlDays: 14, maxItemAgeDays: 14 }],
-    [{ ttlDays: 10 }],
+    [{ ttlDays: 10, maxItemAgeDays: 14 }],
   ])("requires ttlDays > maxItemAgeDays (%o)", (state) => {
     expect(contextErrors({ ...minimalContext, state })).toEqual([
       "context.yml: state.ttlDays: must be greater than maxItemAgeDays",

@@ -112,6 +112,8 @@ export interface ItemRequestOptions {
 function recencyRule(context: Context, today: string | undefined): string[] {
   if (today === undefined) return [];
   const days = context.state.maxItemAgeDays;
+  // run always resolves the window; without one there is only the date to go by.
+  if (days === undefined) return [`- Today is ${today}.`];
   return [
     `- Today is ${today}. The team only wants news from the last ${days} days: an item whose content is clearly about something older (an announcement, release or event from months ago, or an undated evergreen page) is not relevant.`,
   ];
