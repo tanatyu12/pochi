@@ -127,15 +127,20 @@ export async function fetchGithubItems(
       dropPrereleases(feed, entries, (e) => isPrerelease(tagOf(e))),
     );
   }
-  const releases = await fetchReleases(feed.repo, "html", signal);
+  const releases = await fetchReleases(feed.repo, "html", signal, defaults.env);
   // Before toItems cuts to itemsPerFeed, so a run of canaries cannot push out the stable release.
   const kept = dropPrereleases(feed, releases, (r) => r.prerelease);
   // html_url is absolute, so the base only matters for a malformed one.
   return toItems(kept.map(toEntry), source, { baseUrl: "https://github.com/", ...defaults });
 }
 
-async function fetchReleases(repo: string, body: "json" | "html", signal?: AbortSignal): Promise<Release[]> {
-  const res = await fetchText(releasesUrl(repo), { signal, headers: apiHeaders(body), maxBytes: API_MAX_BYTES });
+async function fetchReleases(
+  repo: string,
+  body: "json" | "html",
+  signal?: AbortSignal,
+  env?: NodeJS.ProcessEnv,
+): Promise<Release[]> {
+  const res = await fetchText(releasesUrl(repo), { signal, headers: apiHeaders(body, env), maxBytes: API_MAX_BYTES });
   return parseApi(res.text, ReleasesSchema, res.url, "GitHub API").filter((r) => !r.draft);
 }
 
@@ -144,13 +149,13 @@ function releasesUrl(repo: string): string {
 }
 
 // "html" asks for body_html, which goes through the same HTML-to-text path as feed content.
-function apiHeaders(body: "json" | "html"): Record<string, string> {
+function apiHeaders(body: "json" | "html", env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const headers: Record<string, string> = {
     accept: body === "html" ? "application/vnd.github.html+json" : "application/vnd.github+json",
     "x-github-api-version": "2022-11-28",
   };
   // Optional: without it the API allows 60 requests an hour per IP, which shared CI runners can exhaust.
-  const token = process.env.GITHUB_TOKEN?.trim();
+  const token = env.GITHUB_TOKEN?.trim();
   if (token) headers.authorization = `Bearer ${token}`;
   return headers;
 }

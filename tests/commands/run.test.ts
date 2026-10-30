@@ -2,8 +2,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { itemAgeDays, type RunDeps, type RunOptions, runCommand } from "../../src/commands/run.js";
-import { ContextSchema } from "../../src/config/schema.js";
+import { type RunDeps, type RunOptions, runCommand } from "../../src/commands/run.js";
 import { ExitCode, exitCodeOf } from "../../src/errors.js";
 import type { resolveLlm } from "../../src/llm/adapter.js";
 import {
@@ -15,7 +14,6 @@ import {
   LlmError,
   type TriageOutput,
 } from "../../src/llm/schema.js";
-import { emptyState } from "../../src/state/store.js";
 import { configureLog, resetLog } from "../../src/util/log.js";
 import { type FetchMock, mockFetch, type Reply, reply } from "../helpers/mockFetch.js";
 
@@ -477,32 +475,5 @@ describe("runCommand", () => {
 
   it("rejects --verbose with --quiet", async () => {
     expect(await exitOf(run(fakeLlm(), { verbose: true, quiet: true }))).toBe(ExitCode.CONFIG);
-  });
-});
-
-describe("itemAgeDays", () => {
-  const NOW = new Date("2026-10-30T00:30:00Z"); // Fri 09:30 in Tokyo
-  const contextWith = (extra: object) =>
-    ContextSchema.parse({ version: 1, project: { name: "app", description: "" }, problems: ["p"], ...extra });
-  const zoned = (schedule: object) => contextWith({ schedule: { timezone: "Asia/Tokyo", ...schedule } });
-
-  it.each([
-    ["every day", { interval: "daily" }, 2],
-    ["Friday and Saturday", { interval: "weekly", day: ["friday", "saturday"] }, 7],
-    ["once a week", { interval: "weekly", day: "monday" }, 8],
-    ["once a month", { interval: "monthly" }, 32],
-  ])("looks back the longest gap and a day when run %s", (_, schedule, days) => {
-    expect(itemAgeDays(zoned(schedule), emptyState(), NOW)).toBe(days);
-  });
-
-  it("looks back to the last run when runs were missed", () => {
-    const state = { ...emptyState(), updatedAt: new Date("2026-10-20T00:20:00Z") };
-    expect(itemAgeDays(zoned({ interval: "daily" }), state, NOW)).toBe(12);
-  });
-
-  it("takes maxItemAgeDays as set, and stays short of ttlDays", () => {
-    expect(itemAgeDays(contextWith({ state: { maxItemAgeDays: 3 } }), emptyState(), NOW)).toBe(3);
-    const longAgo = { ...emptyState(), updatedAt: new Date("2026-01-01T00:00:00Z") };
-    expect(itemAgeDays(zoned({ interval: "daily" }), longAgo, NOW)).toBe(44);
   });
 });

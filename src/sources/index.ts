@@ -39,6 +39,8 @@ export interface CollectOptions {
   /** Take what each source published since then, not only its newest few. */
   since?: Date;
   concurrency?: number;
+  /** Where source secrets come from; process.env when left out. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export function fetchSource(source: SourceConfig, defaults: FetchDefaults, signal?: AbortSignal): Promise<Item[]> {
@@ -121,7 +123,7 @@ export async function fetchEach(
  */
 export async function collectAll(sources: Sources, opts: CollectOptions = {}): Promise<CollectResult> {
   const { signal } = opts;
-  const withQueries = tavilyApiKey() !== undefined;
+  const withQueries = tavilyApiKey(opts.env) !== undefined;
   const configs = sourceConfigs(sources, withQueries);
   // Skipped here rather than relying on fetchTavilyItems returning [], so they do not count as successes.
   const skipped: string[] = [];
@@ -133,7 +135,7 @@ export async function collectAll(sources: Sources, opts: CollectOptions = {}): P
     else log.info(message);
   }
 
-  const outcomes = await fetchEach(configs, { ...sources.defaults, since: opts.since }, {
+  const outcomes = await fetchEach(configs, { ...sources.defaults, since: opts.since, env: opts.env }, {
     signal,
     concurrency: concurrencyOf(opts.concurrency),
   });

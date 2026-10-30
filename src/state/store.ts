@@ -57,6 +57,42 @@ export function emptyState(): State {
   return { entries: new Map() };
 }
 
+/**
+ * Where the state lives between runs. run only loads and saves through this, so a store other
+ * than a local file (object storage, a database) needs no change to the pipeline. save throws a
+ * StateError when the state could not be kept.
+ */
+export interface StateStore {
+  load(opts: { now: Date }): Promise<State>;
+  /** now becomes updatedAt, where the next run's since starts. */
+  save(state: State, opts: { now: Date }): Promise<void>;
+}
+
+/** The state file at path. With readOnly (a dry run), a corrupt file is left in place and save writes nothing. */
+export function fileStateStore(path: string, opts: { readOnly?: boolean } = {}): StateStore {
+  return {
+    load: ({ now }) => loadState(path, { now, readOnly: opts.readOnly }),
+    save: async (state, { now }) => {
+      if (!opts.readOnly) await saveState(state, path, { now });
+    },
+  };
+}
+
+/** Kept only in this process: --no-state starts empty and leaves nothing behind. */
+export function memoryStateStore(): StateStore {
+  let text: string | undefined;
+  return {
+    load: async () => {
+      const parsed = text === undefined ? undefined : parseState(text);
+      return parsed?.kind === "ok" ? parsed.state : emptyState();
+    },
+    // Serialized, so later changes to the State object do not alter what was saved.
+    save: async (state, { now }) => {
+      text = serializeState(state, now);
+    },
+  };
+}
+
 export function resolveStatePath(opts: { flag?: string; env?: NodeJS.ProcessEnv } = {}): string {
   const fromFlag = opts.flag?.trim();
   const fromEnv = (opts.env ?? process.env).POCHI_STATE_PATH?.trim();
@@ -78,7 +114,11 @@ export async function inspectState(path: string): Promise<StateInspection> {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
     throw new StateError(`cannot read ${path}`, { cause: err });
   }
+  return parseState(text);
+}
 
+/** The state file's text as a State, for any store that keeps the same JSON document. */
+export function parseState(text: string): Exclude<StateInspection, { kind: "missing" }> {
   const file = FileSchema.safeParse(parseJson(text));
   if (!file.success) return { kind: "invalid" };
 
@@ -170,13 +210,13 @@ export function record(state: State, keys: readonly string[], status: EntryStatu
 }
 
 export async function saveState(state: State, path: string, opts: { now?: Date } = {}): Promise<void> {
-  const updatedAt = toIsoSeconds(opts.now ?? new Date());
+  const updatedAt = opts.now ?? new Date();
   const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   try {
     await mkdir(dirname(path), { recursive: true });
     const fh = await open(tmp, "wx");
     try {
-      await fh.writeFile(serialize(state, updatedAt));
+      await fh.writeFile(serializeState(state, updatedAt));
       // Without this a crash after the rename can leave an empty file under the real name. The
       // directory is not synced: losing the rename only keeps the old file.
       await fh.sync();
@@ -193,7 +233,7 @@ export async function saveState(state: State, path: string, opts: { now?: Date }
 
 // One entry per line keeps the daily commit's diff to the entries that changed; pretty-printing
 // would spend five lines on each of tens of thousands of entries.
-function serialize(state: State, updatedAt: string): string {
+export function serializeState(state: State, updatedAt: Date): string {
   const keys = [...state.entries.keys()].sort();
   const lines = keys.map((k, i) => {
     const { s, f, l } = state.entries.get(k)!;
@@ -201,7 +241,7 @@ function serialize(state: State, updatedAt: string): string {
   });
   const entries = lines.length > 0 ? `{\n${lines.join("\n")}\n  }` : "{}";
   const briefings = state.briefings === undefined ? "" : `  "briefings": ${state.briefings},\n`;
-  return `{\n  "version": 1,\n  "updatedAt": ${JSON.stringify(updatedAt)},\n${briefings}  "entries": ${entries}\n}\n`;
+  return `{\n  "version": 1,\n  "updatedAt": ${JSON.stringify(toIsoSeconds(updatedAt))},\n${briefings}  "entries": ${entries}\n}\n`;
 }
 
 function parseJson(text: string): unknown {
