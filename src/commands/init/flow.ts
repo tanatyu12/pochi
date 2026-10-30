@@ -18,7 +18,7 @@ import { askIdeas } from "./ideas.js";
 import { type QuerySuggestion, cleanQuery, cleanSuggestions, once } from "./keys.js";
 import { askSchedule, askWhereToRun, install, offerInstall, runsPerMonth } from "./schedule.js";
 import { lookUpLlm, newSession } from "./session.js";
-import { gitCheckIgnored } from "./shell.js";
+import { gitCheckIgnored } from "./git.js";
 import { askSources } from "./sources.js";
 
 const MAX_WATCHED = 10;
