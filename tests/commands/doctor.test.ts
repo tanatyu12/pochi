@@ -223,14 +223,47 @@ describe("doctor: config", () => {
 });
 
 describe("doctor: LLM", () => {
-  it("reports the API mode without starting claude or calling the API", async () => {
+  const MODELS = "https://api.anthropic.com/v1/models";
+  const model = (id: string) => reply.json({ type: "model", id, display_name: id, created_at: "2026-01-01T00:00:00Z" });
+
+  it("reports the API mode after looking up both models, without starting claude or sending a message", async () => {
     setEnv("ANTHROPIC_API_KEY", "sk-ant-0123456789");
-    const fm = mockFetch({});
+    const fm = mockFetch({
+      [`${MODELS}/claude-haiku-5-5`]: model("claude-haiku-5-5"),
+      [`${MODELS}/claude-sonnet-5-5`]: model("claude-sonnet-5-5"),
+    });
     const spawn = fakeSpawn([]);
-    await check({}, { spawn: spawn.spawn });
-    expect(line("api")).toMatch(/ok\s+api mode\s+triage claude-haiku-5-5 · analyze claude-sonnet-5-5/);
+    const result = await check({}, { spawn: spawn.spawn });
+    expect(result.exitCode).toBe(ExitCode.OK);
+    expect(line("api")).toMatch(/ok\s+api mode\s+triage claude-haiku-5-5 · analyze claude-sonnet-5-5 \(key and models checked/);
     expect(spawn.calls).toHaveLength(0);
-    expect(fm.calls).toHaveLength(0);
+    expect(fm.calls.map((c) => c.method)).toEqual(["GET", "GET"]);
+  });
+
+  it("fails with 3 when the API turns the key down, as a run would before fetching", async () => {
+    setEnv("ANTHROPIC_API_KEY", "sk-ant-0123456789");
+    const denied = reply.json({ type: "error", error: { type: "authentication_error", message: "x" } }, { status: 401 });
+    mockFetch({ [`${MODELS}/claude-haiku-5-5`]: denied, [`${MODELS}/claude-sonnet-5-5`]: denied });
+    const result = await check();
+    expect(result.exitCode).toBe(ExitCode.LLM);
+    expect(line("llm")).toMatch(/fail\s+llm\s+auth: .*HTTP 401/);
+    expect(out).toContain("State");
+  });
+
+  it("stays ok when the API cannot be reached, which says nothing about the key", async () => {
+    setEnv("ANTHROPIC_API_KEY", "sk-ant-0123456789");
+    mockFetch({ [`${MODELS}/claude-haiku-5-5`]: reply.networkError(), [`${MODELS}/claude-sonnet-5-5`]: reply.status(503) });
+    const result = await check();
+    expect(result.exitCode).toBe(ExitCode.OK);
+    expect(line("api")).toMatch(/^\s*ok\s+api mode/);
+  });
+
+  it("fails with 3 when claude is not logged in", async () => {
+    const spawn = fakeSpawn([run.exit(`${CLAUDE_VERSION}\n`), run.exit(JSON.stringify({ loggedIn: false }), { code: 1 })]);
+    const result = await check({}, { spawn: spawn.spawn });
+    expect(result.exitCode).toBe(ExitCode.LLM);
+    expect(spawn.calls.map((c) => c.args.join(" "))).toEqual(["--version", "auth status --json"]);
+    expect(line("llm")).toMatch(/fail\s+llm\s+auth: claude is not logged in/);
   });
 
   it("reports the CLI mode with what claude --version printed", async () => {
