@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/pochi/actions/workflows/ci.yml"><img src="https://github.com/OWNER/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml"><img src="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-9a6fd8" alt="MIT 授權"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A522.18-9a6fd8" alt="Node 22.18 以上">
 </p>
@@ -92,7 +92,7 @@
 Pochi 沒有發布到 npm，而是從你自己複製的這個儲存庫執行。建議按 **Use this template** 建立（這樣排程執行才能正常運作），或直接 clone：
 
 ```sh
-git clone https://github.com/OWNER/pochi && cd pochi
+git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
 ```

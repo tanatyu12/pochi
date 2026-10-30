@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please report vulnerabilities privately through [GitHub's security advisories](https://github.com/OWNER/pochi/security/advisories/new), not in a public issue. You will get a reply within a week.
+Please report vulnerabilities privately through [GitHub's security advisories](https://github.com/tanatyu12/pochi/security/advisories/new), not in a public issue. You will get a reply within a week.
 
 ## How Pochi handles secrets and untrusted text
 
