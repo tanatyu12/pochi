@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/pochi/actions/workflows/ci.yml"><img src="https://github.com/OWNER/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml"><img src="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-9a6fd8" alt="MIT 许可证"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A522.18-9a6fd8" alt="Node 22.18 或更高版本">
 </p>
@@ -92,7 +92,7 @@
 Pochi 没有发布到 npm，你需要在自己的仓库副本中运行它。点击 GitHub 上的 **Use this template**（推荐，这样定时运行才能生效），或者直接 clone：
 
 ```sh
-git clone https://github.com/OWNER/pochi && cd pochi
+git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
 ```
@@ -118,7 +118,7 @@ pochi run --dry-run   # 打印今天的简报
 
 ## 从仓库到关注清单
 
-这段提示词会让智能体阅读你的代码、文档和配置（不碰任何机密文件），并从四个维度展开：技术栈、业务、市场与竞争对手、运营方式。每条建议都附有依据。下面是它为 Pochi 自身给出的部分提案（有删节）：
+这段提示词会让智能体阅读你的代码、文档和配置（不碰任何机密文件），并从五个维度展开：技术栈、设计、业务、市场与营销、运营方式。每条建议都附有依据。下面是它为 Pochi 自身给出的部分提案（有删节）：
 
 ```json
 "problems": [
