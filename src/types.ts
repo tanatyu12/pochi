@@ -36,4 +36,6 @@ export interface Insight {
   impact: Impact;
   /** May be empty when the model left it blank. */
   action: string;
+  /** Other articles on the same story, newest first; only item was analyzed. */
+  related?: Item[];
 }

@@ -9,6 +9,8 @@ import type { resolveLlm } from "../../src/llm/adapter.js";
 import {
   type AnalysisOutput,
   type GenerateRequest,
+  GroupingOutputSchema,
+  type GroupingOutput,
   type LlmClient,
   LlmError,
   type TriageOutput,
@@ -58,13 +60,19 @@ interface Call {
 }
 
 /** Triage marks everything relevant except titles containing "Boring"; analyze rates all High. */
-function fakeLlm(over: { analyze?: (ids: string[]) => AnalysisOutput } = {}) {
+function fakeLlm(
+  over: { analyze?: (ids: string[]) => AnalysisOutput; group?: (titles: string[]) => GroupingOutput } = {},
+) {
   const calls: Call[] = [];
   const client: LlmClient = {
     mode: "api",
     async generate<T>(req: GenerateRequest<T>): Promise<T> {
       const ids = [...req.prompt.matchAll(/<item id="(i\d+)">/g)].map((m) => m[1]!);
       const titles = [...req.prompt.matchAll(/^title: (.*)$/gm)].map((m) => m[1]!);
+      if ((req.schema as unknown) === GroupingOutputSchema) {
+        calls.push({ tier: "group", titles });
+        return (over.group?.(titles) ?? { groups: [] }) as T;
+      }
       calls.push({ tier: req.tier, titles });
       if (req.tier === "triage") {
         const out: TriageOutput = {
@@ -159,6 +167,18 @@ describe("runCommand", () => {
     expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
     expect(stdout).toBe("");
     expect(logs).not.toContain("s3cr3t");
+  });
+
+  it("posts one update per story and records its other reports as notified", async () => {
+    const fetch = routes();
+    // The breaking change and the security fix are one story; the fix is the one shown.
+    const llm = fakeLlm({
+      group: (titles) => ({ groups: [{ ids: ["i1", "i2"], primary: `i${titles.indexOf("Security fix in lib") + 1}` }] }),
+    });
+    expect(await exitOf(run(llm))).toBe(ExitCode.OK);
+    expect(llm.titles("analyze")).toEqual(["Security fix in lib"]);
+    expect(slackTexts(fetch)).toEqual(["Pochi: 1 update for my-app (1 High)"]);
+    expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
   });
 
   it("does not notify or triage known items again, and analyzes pending ones without triage", async () => {
