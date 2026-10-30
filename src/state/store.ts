@@ -2,20 +2,36 @@ import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
+import { type Impact, ImpactSchema } from "../config/schema.js";
 import { ExitCode, PochiError } from "../errors.js";
 import { log } from "../util/log.js";
+import { truncate } from "../util/text.js";
 import { daysBetween, toIsoSeconds } from "../util/time.js";
 
 export const DEFAULT_STATE_PATH = "state/notified.json";
 
 /**
- * n: notified. i: judged irrelevant, so it is not triaged again. r: judged relevant but not yet
- * analyzed, so the next run analyzes it without triaging it again.
+ * n: notified (every channel has it). i: judged irrelevant, so it is not triaged again. r: judged
+ * relevant but not yet delivered everywhere, so the next run sends it on without triaging it again
+ * (and, when a holds its analysis, without analyzing it again). u: collected but not yet triaged
+ * (a failed batch, no answer, over maxItemsPerRun), so the next run triages it.
  */
-export type EntryStatus = "n" | "i" | "r";
+export type EntryStatus = "n" | "i" | "r" | "u";
 
-// A later decision never weakens an earlier one: notified beats irrelevant beats pending.
-const RANK: Record<EntryStatus, number> = { n: 2, i: 1, r: 0 };
+// A later decision never weakens an earlier one: notified beats irrelevant beats pending beats untriaged.
+const RANK: Record<EntryStatus, number> = { n: 3, i: 2, r: 1, u: 0 };
+
+/** What Analyze said about an item, kept so an insight not yet delivered is not paid for again. */
+export interface StoredAnalysis {
+  title: string;
+  summary: string;
+  impact: Impact;
+  action: string;
+}
+
+// Cut where a channel would cut it anyway (a feed title, a Slack section), so the file stays bounded.
+export const STORED_TITLE_CHARS = 300;
+export const STORED_TEXT_CHARS = 2900;
 
 export interface StateEntry {
   s: EntryStatus;
@@ -23,12 +39,26 @@ export interface StateEntry {
   f: string;
   /** UTC day the item was last seen in a feed. */
   l: string;
+  /** r only: the channels (Notifier.name) that already have it, so the next run sends it only to the others. */
+  c?: string[];
+  /** r only: its analysis, so the next run delivers it without analyzing it again. */
+  a?: StoredAnalysis;
+  /** r only, without a: Item.id of the item it was shown with as a related report, whose fate it shares. */
+  p?: string;
 }
+
+/** The fields only an r entry has. */
+export type EntryExtras = Pick<StateEntry, "c" | "a" | "p">;
 
 export interface State {
   entries: Map<string, StateEntry>;
   /** When the file was last saved, which is when the last run that saved it ran. */
   updatedAt?: Date;
+  /**
+   * Per source id, where its next fetch starts from (a day before it, as with updatedAt): when it
+   * was last fetched, or earlier while items from it still wait in the state.
+   */
+  sources?: Map<string, Date>;
   /** Runs that delivered at least one update, for the footer's round numbers (notifiers/voice). */
   briefings?: number;
 }
@@ -46,12 +76,24 @@ const FileSchema = z.object({
   updatedAt: z.iso.datetime().optional().catch(undefined),
   // Only counts for the footer, so likewise.
   briefings: z.number().int().nonnegative().optional().catch(undefined),
+  // Checked one by one: a bad value only sends that source back to updatedAt.
+  sources: z.record(z.string(), z.unknown()).optional().catch(undefined),
   entries: z.record(z.string(), z.unknown()),
 });
 const KEY = /^[0-9a-f]{32}$/;
 // A calendar check, not just the shape: "2026-13-01" would make pruneState throw.
 const day = z.iso.date();
-const EntrySchema = z.object({ s: z.enum(["n", "i", "r"]), f: day, l: day });
+const AnalysisSchema = z.object({ title: z.string(), summary: z.string(), impact: ImpactSchema, action: z.string() });
+// The extras only save work, so a bad one is dropped rather than the entry.
+const EntrySchema = z.object({
+  s: z.enum(["n", "i", "r", "u"]),
+  f: day,
+  l: day,
+  c: z.array(z.string()).optional().catch(undefined),
+  a: AnalysisSchema.optional().catch(undefined),
+  p: z.string().regex(KEY).optional().catch(undefined),
+});
+const SourceTimeSchema = z.iso.datetime();
 
 export function emptyState(): State {
   return { entries: new Map() };
@@ -125,10 +167,17 @@ export function parseState(text: string): Exclude<StateInspection, { kind: "miss
   const state = emptyState();
   if (file.data.updatedAt !== undefined) state.updatedAt = new Date(file.data.updatedAt);
   if (file.data.briefings !== undefined) state.briefings = file.data.briefings;
+  if (file.data.sources !== undefined) {
+    state.sources = new Map();
+    for (const [id, value] of Object.entries(file.data.sources)) {
+      const time = SourceTimeSchema.safeParse(value);
+      if (time.success) state.sources.set(id, new Date(time.data));
+    }
+  }
   let dropped = 0;
   for (const [key, value] of Object.entries(file.data.entries)) {
     const entry = EntrySchema.safeParse(value);
-    if (KEY.test(key) && entry.success) state.entries.set(key, entry.data);
+    if (KEY.test(key) && entry.success) state.entries.set(key, bounded(entry.data));
     else dropped++;
   }
   return { kind: "ok", state, dropped };
@@ -196,17 +245,32 @@ export function firstSeen(state: State, keys: readonly string[]): string | undef
  * another source) inherit the known entry, so the next run finds it by any of them.
  */
 export function touch(state: State, keys: readonly string[], today: string): void {
-  // r is the weakest status, so recording it keeps whatever the item already had.
-  if (isKnown(state, keys)) record(state, keys, "r", today);
+  // u is the weakest status, so recording it keeps whatever the item already had.
+  if (isKnown(state, keys)) record(state, keys, "u", today);
+}
+
+/** What the entries under the keys hold beyond their status; empty unless the item is r. */
+export function extrasOf(state: State, keys: readonly string[]): EntryExtras {
+  const known = existing(state, keys);
+  if (strongest(known.map((e) => e.s)) !== "r") return {};
+  const { c, a, p } = mergedExtras(known, {});
+  return { ...(c.length > 0 && { c }), ...(a && { a }), ...(p && { p }) };
 }
 
 /**
  * Records a decision under every key. A status is never weakened: a notified item does not become
- * irrelevant, and neither becomes pending again.
+ * irrelevant, neither becomes pending again, and none becomes untriaged. extras matter only to an
+ * item that stays r: its channels are added to those it had, and a new a or p replaces the old one.
  */
-export function record(state: State, keys: readonly string[], status: EntryStatus, today: string): void {
+export function record(
+  state: State,
+  keys: readonly string[],
+  status: EntryStatus,
+  today: string,
+  extras: EntryExtras = {},
+): void {
   const known = existing(state, keys);
-  write(state, keys, merged(known, strongest([status, ...known.map((e) => e.s)])!, today));
+  write(state, keys, merged(known, strongest([status, ...known.map((e) => e.s)])!, today, extras));
 }
 
 export async function saveState(state: State, path: string, opts: { now?: Date } = {}): Promise<void> {
@@ -214,7 +278,8 @@ export async function saveState(state: State, path: string, opts: { now?: Date }
   const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   try {
     await mkdir(dirname(path), { recursive: true });
-    const fh = await open(tmp, "wx");
+    // Owner only, like the config files: what a project follows is not for other local users.
+    const fh = await open(tmp, "wx", 0o600);
     try {
       await fh.writeFile(serializeState(state, updatedAt));
       // Without this a crash after the rename can leave an empty file under the real name. The
@@ -236,12 +301,17 @@ export async function saveState(state: State, path: string, opts: { now?: Date }
 export function serializeState(state: State, updatedAt: Date): string {
   const keys = [...state.entries.keys()].sort();
   const lines = keys.map((k, i) => {
-    const { s, f, l } = state.entries.get(k)!;
-    return `    ${JSON.stringify(k)}: ${JSON.stringify({ s, f, l })}${i < keys.length - 1 ? "," : ""}`;
+    // Fields left undefined are not written, so most entries stay {s, f, l}.
+    const { s, f, l, c, a, p } = state.entries.get(k)!;
+    return `    ${JSON.stringify(k)}: ${JSON.stringify({ s, f, l, c, a, p })}${i < keys.length - 1 ? "," : ""}`;
   });
   const entries = lines.length > 0 ? `{\n${lines.join("\n")}\n  }` : "{}";
   const briefings = state.briefings === undefined ? "" : `  "briefings": ${state.briefings},\n`;
-  return `{\n  "version": 1,\n  "updatedAt": ${JSON.stringify(toIsoSeconds(updatedAt))},\n${briefings}  "entries": ${entries}\n}\n`;
+  const sourceLines = [...(state.sources ?? [])]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([id, time]) => `    ${JSON.stringify(id)}: ${JSON.stringify(toIsoSeconds(time))}`);
+  const sources = sourceLines.length > 0 ? `  "sources": {\n${sourceLines.join(",\n")}\n  },\n` : "";
+  return `{\n  "version": 1,\n  "updatedAt": ${JSON.stringify(toIsoSeconds(updatedAt))},\n${briefings}${sources}  "entries": ${entries}\n}\n`;
 }
 
 function parseJson(text: string): unknown {
@@ -260,9 +330,38 @@ function existing(state: State, keys: readonly string[]): StateEntry[] {
   return keys.flatMap((k) => state.entries.get(k) ?? []);
 }
 
-function merged(known: StateEntry[], s: EntryStatus, today: string): StateEntry {
+function merged(known: StateEntry[], s: EntryStatus, today: string, extras: EntryExtras): StateEntry {
   const f = known.reduce((min, e) => (e.f < min ? e.f : min), today);
-  return { s, f, l: today };
+  return bounded({ s, f, l: today, ...mergedExtras(known, extras) });
+}
+
+function mergedExtras(known: StateEntry[], extras: EntryExtras): { c: string[]; a?: StoredAnalysis; p?: string } {
+  const c = [...new Set([...known.flatMap((e) => e.c ?? []), ...(extras.c ?? [])])].sort();
+  if (extras.a !== undefined || extras.p !== undefined) return { c, a: extras.a, p: extras.p };
+  const a = known.find((e) => e.a !== undefined)?.a;
+  return { c, a, p: a === undefined ? known.find((e) => e.p !== undefined)?.p : undefined };
+}
+
+// Only r keeps extras (delivered everywhere or judged irrelevant, they are of no more use); empty
+// ones are not kept, and the stored text is cut, so the file stays bounded.
+function bounded(entry: StateEntry): StateEntry {
+  const { s, f, l, c, a, p } = entry;
+  if (s !== "r") return { s, f, l };
+  return {
+    s,
+    f,
+    l,
+    ...(c !== undefined && c.length > 0 && { c }),
+    ...(a !== undefined && {
+      a: {
+        title: truncate(a.title, STORED_TITLE_CHARS),
+        summary: truncate(a.summary, STORED_TEXT_CHARS),
+        impact: a.impact,
+        action: truncate(a.action, STORED_TEXT_CHARS),
+      },
+    }),
+    ...(a === undefined && p !== undefined && { p }),
+  };
 }
 
 function write(state: State, keys: readonly string[], entry: StateEntry): void {
