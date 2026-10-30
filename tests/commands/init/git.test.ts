@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { gitCheckIgnored } from "../../../src/commands/init/shell.js";
+import { gitCheckIgnored } from "../../../src/commands/init/git.js";
 
 describe("gitCheckIgnored", () => {
   it("tells ignored, not ignored and unknown paths apart in one call", async () => {
