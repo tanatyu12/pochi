@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { styleText } from "node:util";
 import { Command } from "commander";
 import { ConfigError, type LoadedConfig, loadConfig } from "../config/load.js";
 import { ExitCode, type ExitCodeValue, PochiError } from "../errors.js";
@@ -11,6 +12,7 @@ import { fetchEach, type SourceConfig, sourceConfigs, sourceInfo } from "../sour
 import { tavilyApiKey } from "../sources/tavily.js";
 import { inspectState, pruneState, resolveStatePath, StateError } from "../state/store.js";
 import { configureLog, redact } from "../util/log.js";
+import { isFancy, purple } from "../util/pochi-art.js";
 import { displayLine, plural } from "../util/text.js";
 import { toIsoDate } from "../util/time.js";
 import { VERSION } from "../version.js";
@@ -73,9 +75,10 @@ export interface DoctorResult {
  */
 export async function doctor(opts: DoctorOptions = {}, deps: DoctorDeps = {}): Promise<DoctorResult> {
   const write = deps.write ?? ((line: string) => void process.stdout.write(`${line}\n`));
-  const report = new Report((line) => write(redact(line)));
+  // Colored only on the real stdout; a write passed in gets the plain report.
+  const report = new Report((line) => write(redact(line)), deps.write === undefined && isFancy());
   const { signal } = deps;
-  report.title(`pochi ${VERSION} doctor`);
+  report.title(report.fancy ? `${purple("pochi")} ${VERSION} doctor` : `pochi ${VERSION} doctor`);
   const interrupted = () => ({ checks: report.checks, exitCode: ExitCode.INTERRUPTED });
   try {
     const config = await checkConfig(report, opts.configDir);
@@ -296,11 +299,22 @@ async function checkSources(
   }
 }
 
+const STATUS_STYLE: Record<CheckStatus, "green" | "yellow" | "red" | "dim"> = {
+  ok: "green",
+  warn: "yellow",
+  fail: "red",
+  skip: "dim",
+  "-": "dim",
+};
+
 class Report {
   readonly checks: Check[] = [];
   private section: Section | undefined;
 
-  constructor(private readonly out: (line: string) => void) {}
+  constructor(
+    private readonly out: (line: string) => void,
+    readonly fancy = false,
+  ) {}
 
   title(text: string): void {
     this.out(text);
@@ -338,19 +352,21 @@ class Report {
       ...(warned > 0 ? [plural(warned, "warning")] : []),
     ];
     this.out("");
-    this.out(counts.join(", "));
+    this.out(counts.join(", ") + (this.fancy && failed.length === 0 ? `. ${purple("Pochi is ready to fetch.")}` : ""));
     return failed[0]?.exitCode ?? ExitCode.OK;
   }
 
   private add(check: Check): void {
     if (check.section !== this.section) {
       this.section = check.section;
-      this.out(check.section === "Sources" ? "Sources (--fetch)" : check.section);
+      const heading = check.section === "Sources" ? "Sources (--fetch)" : check.section;
+      this.out(this.fancy ? styleText("bold", heading) : heading);
     }
     this.checks.push(check);
     // A multi-line detail (a ConfigError's issues) continues under the detail column.
     const [first = "", ...rest] = check.detail.split("\n").map(oneLine);
-    this.out(`  ${check.status.padEnd(5)} ${oneLine(check.label).padEnd(20)} ${first}`);
+    const status = check.status.padEnd(5);
+    this.out(`  ${this.fancy ? styleText(STATUS_STYLE[check.status], status) : status} ${oneLine(check.label).padEnd(20)} ${first}`);
     for (const line of rest) this.out(`  ${"".padEnd(5)} ${"".padEnd(20)} ${line}`);
   }
 }

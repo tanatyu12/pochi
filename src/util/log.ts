@@ -1,3 +1,6 @@
+import { styleText } from "node:util";
+import { isFancy, purple } from "./pochi-art.js";
+
 const PATTERNS: readonly [RegExp, string][] = [
   [/https:\/\/hooks\.slack\.com\/[^\s"'<>]+/g, "https://hooks.slack.com/***"],
   [/tvly-[\w-]+/g, "tvly-***"],
@@ -51,10 +54,21 @@ export function resetLog(): void {
   write = defaultWrite;
 }
 
+// On a terminal a person reads, the severity is a mark rather than a word.
+const MARKS: Record<Severity, (text: string) => string> = {
+  debug: (text) => styleText("dim", `  · ${text}`),
+  info: (text) => `  ${purple("›")} ${text}`,
+  warn: (text) => `  ${styleText("yellow", "!")} ${text}`,
+  error: (text) => `  ${styleText("red", "×")} ${text}`,
+};
+
 function emit(severity: Severity, message: string, err?: unknown): void {
   if (RANK[severity] < threshold) return;
   const detail = err === undefined ? "" : `: ${err instanceof Error ? err.message : String(err)}`;
-  write(`${redact(`pochi: ${severity}: ${message}${detail}`)}\n`);
+  const text = redact(`${message}${detail}`);
+  // Only on the real stderr: a write passed in (a test, init's spinner) gets the plain line.
+  const fancy = write === defaultWrite && isFancy(process.stderr);
+  write(`${fancy ? MARKS[severity](text) : `pochi: ${severity}: ${text}`}\n`);
 }
 
 export const log = {
