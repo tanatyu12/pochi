@@ -82,4 +82,9 @@ Values are never printed: `pochi doctor` shows only whether each one is set.
 
 ## The state file
 
-`state/notified.json` remembers every item Pochi has seen and what it decided: notified, irrelevant, or relevant but not yet written up. That is why the same story never reaches you twice, and why an item judged irrelevant is not paid for again. `run --dry-run` reads it but never writes it; `--no-state` ignores it altogether.
+`state/notified.json` remembers every item Pochi has seen and what it decided: notified, irrelevant, relevant but not yet delivered everywhere, or not yet triaged. That is why the same story never reaches you twice, and why an item judged irrelevant is not paid for again. `run --dry-run` reads it but never writes it; `--no-state` ignores it altogether. Only you can read it (mode `600`).
+
+- An item left untriaged (a failed batch, or more than `llm.maxItemsPerRun`) is triaged on the next run.
+- An update analyzed but not delivered to every channel keeps its write-up and the channels that already have it. The next run sends it only to the channels that missed it, without asking the model again. An item still waiting this way 14 days (or `maxItemAgeDays`, if longer) after Pochi first saw it is given up on.
+- Each source keeps its own starting point: the last run that fetched it. A source that was down picks up where it left off, and one with items still waiting starts early enough to return them again.
+- Dates in the briefing (and the date the model is told) are on the clock of `schedule.timezone`, or the machine's time zone when it is not set. Days in the state file are UTC.

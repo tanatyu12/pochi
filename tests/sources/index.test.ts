@@ -143,8 +143,21 @@ describe("collectAll", () => {
     mockFetch({});
     const result = await collectAll(config([], ["q1"]));
 
-    expect(result).toEqual({ items: [], attempted: 0, failures: [], skipped: ["q1"] });
+    expect(result).toEqual({ items: [], attempted: 0, failures: [], fetched: [], skipped: ["q1"] });
     expect(logged.filter((l) => l.includes("warn: TAVILY_API_KEY is not set; skipping 1 query"))).toHaveLength(1);
+  });
+
+  it("gives each source its own since when it has one, and lists the sources fetched", async () => {
+    const mock = mockFetch({ [SEARCH]: tavily(), [feedUrl("a")]: rss(), [feedUrl("b")]: reply.status(404) });
+    const own = new Map([["q1", new Date("2026-10-20T00:00:00Z")]]);
+    const result = await collectAll(config(["a", "b"], ["q1", "q2"]), {
+      since: new Date("2026-10-25T00:00:00Z"),
+      sinceOf: (id) => own.get(id),
+    });
+
+    const dates = mock.callsTo(SEARCH).map((c) => JSON.parse(c.body!).start_date);
+    expect(dates).toEqual(["2026-10-20", "2026-10-25"]);
+    expect(result.fetched).toEqual(["a", "q1", "q2"]);
   });
 
   it("searches Tavily when the key is set", async () => {
