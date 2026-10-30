@@ -164,6 +164,8 @@ Dos archivos en `config/`, ambos generados por `pochi init`:
 - **`context.yml`**: de qué trata tu proyecto, los problemas que te importan, qué excluir, el idioma del resumen y adónde enviarlo.
 - **`sources.yml`**: los repositorios de GitHub, feeds, búsquedas de Google News y consultas de Tavily que se vigilan.
 
+El resumen puede escribirse en cualquier idioma. `pochi init` ofrece inglés, japonés, chino, español, francés, alemán, portugués y coreano, y sus búsquedas de noticias usan la edición de Google News de ese idioma. Las etiquetas como High y Action se mantienen en inglés ([docs/configuration.md](docs/configuration.md)).
+
 <details>
 <summary>Un ejemplo mínimo</summary>
 
