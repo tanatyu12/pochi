@@ -9,6 +9,7 @@ import {
   type LlmTier,
 } from "../llm/schema.js";
 import type { Insight, Item } from "../types.js";
+import { pLimit } from "../util/concurrency.js";
 import { log } from "../util/log.js";
 import { plural } from "../util/text.js";
 import { parseDate, sleep } from "../util/time.js";
@@ -33,6 +34,9 @@ export const RETRY_DELAY_MS = 10_000;
 const SIZE_KINDS: ReadonlySet<LlmErrorKind> = new Set(["too_large", "max_tokens"]);
 // Batches in a row that got no answer at all (after retries and splitting); then the run stops.
 const MAX_FAILED_IN_A_ROW = 2;
+// Batches of one stage in flight at once. A call can take minutes, so one at a time makes a long
+// run; more would mostly meet rate limits (and in the CLI mode, each is a process of its own).
+const STAGE_CONCURRENCY: Record<LlmClient["mode"], number> = { api: 3, cli: 2 };
 
 export interface FilterResult {
   /** To notify: by impact (High first), then newest first. */
@@ -72,11 +76,27 @@ export interface FilterResult {
 }
 
 /**
+ * Thrown by filterAndAnalyze for an error that is not an LlmError (a bug, say), once every call in
+ * flight has settled. partial holds what was decided before it, the rest in undecided or pending
+ * as after an abort, so the caller can record the answers already paid for; cause is the error.
+ */
+export class FilterFailure extends Error {
+  constructor(
+    readonly partial: FilterResult,
+    cause: unknown,
+  ) {
+    super("filtering stopped on an unexpected error", { cause });
+    this.name = "FilterFailure";
+  }
+}
+
+/**
  * Triage in batches of maxItemsPerCall, group the relevant items, and the pretriaged ones (state
- * r), by story, then Analyze one of each story in batches of ANALYZE_BATCH_SIZE, one batch at a time;
- * the analyzed ones (state r with a stored analysis) join the insights as they are. A batch that fails transiently
- * is retried once after retryDelayMs; one that fails because of its content is split to find the
- * item causing it. Throws only errors that are not LlmErrors.
+ * r), by story, then Analyze one of each story in batches of ANALYZE_BATCH_SIZE; each stage sends a
+ * few batches at a time (STAGE_CONCURRENCY). The analyzed ones (state r with a stored analysis)
+ * join the insights as they are. A batch that fails transiently is retried once after
+ * retryDelayMs; one that fails because of its content is split to find the item causing it.
+ * Throws only a FilterFailure, for an error that is not an LlmError.
  */
 export async function filterAndAnalyze(
   llm: LlmClient,
@@ -88,9 +108,12 @@ export async function filterAndAnalyze(
     pretriaged = [],
     analyzed = [],
     today,
+    concurrency = STAGE_CONCURRENCY[llm.mode],
   }: {
     signal?: AbortSignal;
     retryDelayMs?: number;
+    /** Batches of a stage in flight at once; STAGE_CONCURRENCY for the client's mode when left out. */
+    concurrency?: number;
     pretriaged?: readonly Item[];
     /** Insights analyzed by an earlier run and not yet delivered everywhere; no LLM call is made for them. */
     analyzed?: readonly Insight[];
@@ -136,77 +159,105 @@ export async function filterAndAnalyze(
     llm,
     signal,
     retryDelayMs,
+    concurrency,
     dropped: result.irrelevant,
     aborted: false,
     answered: false,
     failedInARow: 0,
+    broken: false,
   };
   const relevant: Item[] = [...analyzeFirst];
-  const triage = await runStage(
-    run,
-    "triage",
-    chunk(selected, context.llm.maxItemsPerCall),
-    result.undecided,
-    (batch) => triageRequest(context, batch, { today }),
-    (batch, reply) => {
-      const decisions = byShortId(batch, reply.decisions, "triage");
-      return batch.filter((item, i) => {
-        const decision = decisions.get(i);
-        if (!decision) return true;
-        (decision.relevant ? relevant : result.irrelevant).push(item);
-        log.debug(
-          `triage ${item.sourceId}/${item.id}: ${decision.relevant ? "relevant" : "not relevant"}: ${decision.reason}`,
-        );
-        return false;
-      });
-    },
-  );
+  let primaries: Item[] = relevant;
+  let members = new Map<Item, Item[]>();
+  let triage: StageOutcome = { batches: 0, failed: 0, dropped: 0 };
+  let analyze: StageOutcome = { batches: 0, failed: 0, dropped: 0 };
 
-  // Reports of one story are analyzed once; the others go where that one goes.
-  const { primaries, members } = await groupStories(run, context, relevant);
-  const analyze = await runStage(
-    run,
-    "analyze",
-    chunk(primaries, ANALYZE_BATCH_SIZE),
-    result.pending,
-    (batch) => analyzeRequest(context, batch, { today }),
-    (batch, reply) => {
-      const insights = byShortId(batch, reply.insights, "analyze");
-      return batch.filter((item, i) => {
-        const insight = insights.get(i);
-        if (!insight) return true;
-        if (IMPACT_RANK[insight.impact] > threshold) {
-          result.irrelevant.push(item);
-        } else {
-          result.insights.push({
-            item,
-            title: insight.title.trim() || item.title,
-            summary: insight.summary.trim(),
-            impact: insight.impact,
-            action: insight.action.trim(),
-          });
-        }
-        return false;
-      });
-    },
-  );
+  const stages = async () => {
+    const triaged = inInputOrder(selected, [relevant, result.irrelevant, result.undecided], []);
+    triage = await runStage(
+      run,
+      "triage",
+      chunk(selected, context.llm.maxItemsPerCall),
+      result.undecided,
+      (batch) => triageRequest(context, batch, { today }),
+      (batch, reply) => {
+        const decisions = byShortId(batch, reply.decisions, "triage");
+        return batch.filter((item, i) => {
+          const decision = decisions.get(i);
+          if (!decision) return true;
+          (decision.relevant ? relevant : result.irrelevant).push(item);
+          log.debug(
+            `triage ${item.sourceId}/${item.id}: ${decision.relevant ? "relevant" : "not relevant"}: ${decision.reason}`,
+          );
+          return false;
+        });
+      },
+    ).finally(triaged);
 
-  for (const insight of result.insights) {
-    const others = members.get(insight.item);
-    if (others) insight.related = [...others].sort(byNewest);
-  }
-  for (const list of [result.irrelevant, result.pending]) {
-    for (const item of [...list]) list.push(...(members.get(item) ?? []));
-  }
-
-  result.stats = {
-    triageBatches: triage.batches,
-    triageFailed: triage.failed,
-    analyzeBatches: analyze.batches,
-    analyzeFailed: analyze.failed,
-    dropped: triage.dropped + analyze.dropped,
+    // Reports of one story are analyzed once; the others go where that one goes.
+    ({ primaries, members } = await groupStories(run, context, relevant));
+    const analyzed = inInputOrder(primaries, [result.irrelevant, result.pending], [result.insights]);
+    analyze = await runStage(
+      run,
+      "analyze",
+      chunk(primaries, ANALYZE_BATCH_SIZE),
+      result.pending,
+      (batch) => analyzeRequest(context, batch, { today }),
+      (batch, reply) => {
+        const insights = byShortId(batch, reply.insights, "analyze");
+        return batch.filter((item, i) => {
+          const insight = insights.get(i);
+          if (!insight) return true;
+          if (IMPACT_RANK[insight.impact] > threshold) {
+            result.irrelevant.push(item);
+          } else {
+            result.insights.push({
+              item,
+              title: insight.title.trim() || item.title,
+              summary: insight.summary.trim(),
+              impact: insight.impact,
+              action: insight.action.trim(),
+            });
+          }
+          return false;
+        });
+      },
+    ).finally(analyzed);
   };
-  result.aborted = run.aborted;
+
+  const finish = (): FilterResult => {
+    for (const insight of result.insights) {
+      const others = members.get(insight.item);
+      if (others) insight.related = [...others].sort(byNewest);
+    }
+    for (const list of [result.irrelevant, result.pending]) {
+      for (const item of [...list]) list.push(...(members.get(item) ?? []));
+    }
+    result.stats = {
+      triageBatches: triage.batches,
+      triageFailed: triage.failed,
+      analyzeBatches: analyze.batches,
+      analyzeFailed: analyze.failed,
+      dropped: triage.dropped + analyze.dropped,
+    };
+    result.aborted = run.aborted;
+    result.insights.sort(byImpact);
+    return result;
+  };
+
+  try {
+    await stages();
+  } catch (err) {
+    // What was not decided waits for the next run, as after an abort: untriaged items in
+    // undecided, relevant ones not analyzed in pending.
+    const triaged = new Set([...relevant, ...result.irrelevant, ...result.undecided]);
+    result.undecided.push(...selected.filter((item) => !triaged.has(item)));
+    const analyzed = new Set([...result.irrelevant, ...result.pending, ...result.insights.map((f) => f.item)]);
+    result.pending.push(...primaries.filter((item) => !analyzed.has(item)));
+    throw new FilterFailure(finish(), err);
+  }
+
+  finish();
   // After an abort, failed batches say nothing about the LLM.
   if (!run.aborted) {
     result.error = stageError("triage", triage) ?? stageError("analyze", analyze);
@@ -214,9 +265,28 @@ export async function filterAndAnalyze(
       result.error = new LlmError(run.fatal.kind, `stopped after: ${run.fatal.message}`);
     }
   }
-
-  result.insights.sort(byImpact);
   return result;
+}
+
+/**
+ * Concurrent batches finish in any order. This puts what a stage appends to each list back in the
+ * order of the stage's input, as running the batches one after another would, so the prompts
+ * built from those lists and the order of equal insights do not depend on timing. Call the
+ * returned function once the stage is over.
+ */
+function inInputOrder(input: readonly Item[], lists: Item[][], insightLists: Insight[][]): () => void {
+  const rank = new Map(input.map((item, i) => [item, i]));
+  const at = (item: Item) => rank.get(item) ?? input.length;
+  const starts = lists.map((list) => list.length);
+  const insightStarts = insightLists.map((list) => list.length);
+  return () => {
+    for (const [i, list] of lists.entries()) {
+      list.push(...list.splice(starts[i] ?? list.length).sort((a, b) => at(a) - at(b)));
+    }
+    for (const [i, list] of insightLists.entries()) {
+      list.push(...list.splice(insightStarts[i] ?? list.length).sort((a, b) => at(a.item) - at(b.item)));
+    }
+  };
 }
 
 /**
@@ -231,7 +301,7 @@ async function groupStories(
 ): Promise<{ primaries: Item[]; members: Map<Item, Item[]> }> {
   const members = new Map<Item, Item[]>();
   const alone = { primaries: items, members };
-  if (items.length < 2 || run.fatal || run.aborted) return alone;
+  if (items.length < 2 || run.fatal || run.aborted || run.broken) return alone;
   let reply: GroupingOutput;
   try {
     reply = await run.llm.generate(groupingRequest(context, items), { signal: run.signal });
@@ -278,6 +348,7 @@ interface StageRun {
   llm: LlmClient;
   signal: AbortSignal | undefined;
   retryDelayMs: number;
+  concurrency: number;
   /** Where an item goes that alone made its batch fail. */
   dropped: Item[];
   /**
@@ -289,8 +360,10 @@ interface StageRun {
   aborted: boolean;
   /** Some call in this run got an answer, so the model and the request format work. */
   answered: boolean;
-  /** Batches in a row that got no answer at all. */
+  /** Batches in a row that got no answer at all, counted as they finish. */
   failedInARow: number;
+  /** Set by an error that is not an LlmError; nothing more is sent, and it is rethrown. */
+  broken: boolean;
 }
 
 interface StageOutcome {
@@ -311,9 +384,9 @@ const onSize = (a: Attempt): boolean => a instanceof LlmError && SIZE_KINDS.has(
 const splitBudget = (size: number) => 2 + 4 * Math.ceil(Math.log2(size));
 
 /**
- * Runs the batches one after another; items without an answer go to leftover. apply takes a
- * reply and returns the items it had no answer for. A reply answering none of them counts as
- * invalid output.
+ * Runs the batches, up to run.concurrency at a time; items without an answer go to leftover.
+ * apply takes a reply and returns the items it had no answer for. A reply answering none of them
+ * counts as invalid output.
  */
 async function runStage<T>(
   run: StageRun,
@@ -331,7 +404,7 @@ async function runStage<T>(
    */
   const attempt = async (batch: Item[], label: string): Promise<Attempt> => {
     if (run.signal?.aborted) run.aborted = true;
-    if (run.fatal || run.aborted) {
+    if (run.fatal || run.aborted || run.broken) {
       leftover.push(...batch);
       return "stopped";
     }
@@ -419,11 +492,10 @@ async function runStage<T>(
     return settled;
   };
 
-  for (const [n, batch] of batches.entries()) {
-    const label = `${stage} batch ${n + 1}/${batches.length}`;
+  const one = async (batch: Item[], label: string): Promise<void> => {
     const first = await attempt(batch, label);
     // Skipped after a stop or an abort: not sent, so not a failure.
-    if (first === "stopped") continue;
+    if (first === "stopped") return;
     let settled = first === undefined;
     if (onContent(first)) {
       const budget = { calls: splitBudget(batch.length) };
@@ -431,12 +503,28 @@ async function runStage<T>(
     }
     if (settled) {
       run.failedInARow = 0;
-      continue;
+      return;
     }
     outcome.failed++;
-    // Two batches in a row with nothing answered: a lasting outage, or a request that is wrong.
+    // Two batches in a row (as they finish) with nothing answered: a lasting outage, or a request
+    // that is wrong. Batches already in flight finish and keep their answers; no more are sent.
     if (++run.failedInARow >= MAX_FAILED_IN_A_ROW && outcome.last) run.fatal ??= outcome.last;
-  }
+  };
+
+  const limit = pLimit(run.concurrency);
+  const done = await Promise.allSettled(
+    batches.map((batch, n) =>
+      limit(() =>
+        one(batch, `${stage} batch ${n + 1}/${batches.length}`).catch((err: unknown) => {
+          run.broken = true;
+          throw err;
+        }),
+      ),
+    ),
+  );
+  // Rethrown only once every batch has settled, so none is still running and what they decided is in.
+  const thrown = done.find((d): d is PromiseRejectedResult => d.status === "rejected");
+  if (thrown) throw thrown.reason;
   return outcome;
 }
 

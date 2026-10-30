@@ -18,7 +18,7 @@ import {
 import type { Insight, Item } from "../types.js";
 import { log } from "../util/log.js";
 import { DAY_MS, daysBetween, parseDate, toIsoDate } from "../util/time.js";
-import { type FilterResult, filterAndAnalyze } from "./filter.js";
+import { FilterFailure, type FilterResult, filterAndAnalyze } from "./filter.js";
 
 /**
  * What a briefing runs on, already built and checked by the caller (the CLI, or anything else that
@@ -67,7 +67,8 @@ export interface BriefingResult {
  * Check the LLM → load state → collect → drop known items → triage → analyze → deliver → save
  * state. Returns what happened, also when the LLM or a channel failed (briefingError turns that
  * into the error to report); throws a PochiError when the LLM is unusable, sources all fail, the
- * state cannot be saved, or the run is interrupted before delivery.
+ * state cannot be saved, or the run is interrupted before delivery. An unexpected error while
+ * filtering is rethrown after what was decided before it has been saved.
  */
 export async function runBriefing(input: BriefingInput, deps: BriefingDeps = {}): Promise<BriefingResult> {
   const { sources, llm, notifiers, store, dryRun } = input;
@@ -116,24 +117,40 @@ export async function runBriefing(input: BriefingInput, deps: BriefingDeps = {})
     `collected ${collected.items.length} items: ${fresh.length} new, ${pretriaged.length + analyzed.length} awaiting delivery`,
   );
 
-  const filtered = await filterAndAnalyze(llm, context, fresh, {
-    signal,
-    pretriaged,
-    analyzed,
-    retryDelayMs: deps.retryDelayMs,
-    today: date,
-  });
   const channels = notifiers.map((n) => n.name);
   // Channels each insight had before this run, read before anything is recorded.
-  const had = new Map(filtered.insights.map((f) => [f.item.id, extrasOf(state, stateKeys(f.item)).c ?? []]));
+  const hadOf = (f: FilterResult) =>
+    new Map(f.insights.map((one) => [one.item.id, extrasOf(state, stateKeys(one.item)).c ?? []]));
   // The saved time is where the next run's since starts. It always moves on: what is left waiting
   // is in the state, and holds back only the since of its own source.
-  const save = async (reached: ReadonlyMap<string, readonly string[]>) => {
+  const saveFor = async (f: FilterResult, reached: ReadonlyMap<string, readonly string[]>) => {
     if (dryRun) return;
-    const waiting = recordFiltered(state, filtered, reached, channels, today);
+    const waiting = recordFiltered(state, f, reached, channels, today);
     state.sources = sourceTimes(state, sources, collected, waiting, window, now);
     await store.save(state, { now });
   };
+
+  let filtered: FilterResult;
+  try {
+    filtered = await filterAndAnalyze(llm, context, fresh, {
+      signal,
+      pretriaged,
+      analyzed,
+      retryDelayMs: deps.retryDelayMs,
+      today: date,
+    });
+  } catch (err) {
+    if (!(err instanceof FilterFailure)) throw err;
+    // The answers before the error are paid for, so they are kept; the error is what is reported,
+    // so a failed save is only logged.
+    await saveFor(err.partial, hadOf(err.partial)).catch((saveErr: unknown) => {
+      log.warn("could not save what the run decided before the error", saveErr);
+    });
+    if (signal?.aborted) throw interrupted();
+    throw err.cause;
+  }
+  const had = hadOf(filtered);
+  const save = (reached: ReadonlyMap<string, readonly string[]>) => saveFor(filtered, reached);
 
   if (filtered.aborted) {
     // The answers so far are paid for, and the analyses are kept for the next run to deliver.
