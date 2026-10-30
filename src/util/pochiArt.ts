@@ -4,8 +4,11 @@ import { styleText } from "node:util";
  * Pochi the shiba, drawn on the terminal. Only for a terminal that shows color: logs, reports
  * and anything piped stay plain. POCHI_PLAIN (any value) turns it off, as NO_COLOR does.
  */
-export function isFancy(stream: NodeJS.WriteStream = process.stdout): boolean {
-  return Boolean(stream.isTTY) && !process.env.NO_COLOR && !process.env.POCHI_PLAIN;
+export function isFancy(
+  stream: Pick<NodeJS.WriteStream, "isTTY"> = process.stdout,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return Boolean(stream.isTTY) && !env.NO_COLOR && !env.POCHI_PLAIN;
 }
 
 // A light purple, as a 256-color code since Terminal.app has no truecolor.
@@ -66,7 +69,7 @@ export function renderSprite(rows: readonly string[]): string[] {
   for (let y = 0; y < rows.length; y += 2) {
     let line = "";
     for (let x = 0; x < width; x++) {
-      const top = (rows[y]![x] ?? ".") !== ".";
+      const top = (rows[y]?.[x] ?? ".") !== ".";
       const bottom = (rows[y + 1]?.[x] ?? ".") !== ".";
       line += top && bottom ? "█" : top ? "▀" : bottom ? "▄" : " ";
     }

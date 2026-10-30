@@ -1,5 +1,5 @@
 import { styleText } from "node:util";
-import { isFancy, purple } from "./pochi-art.js";
+import { isFancy, purple } from "./pochiArt.js";
 import { stripControlChars } from "./text.js";
 
 const PATTERNS: readonly [RegExp, string][] = [
@@ -15,7 +15,8 @@ const PATTERNS: readonly [RegExp, string][] = [
 
 // Fallback for secrets whose format the patterns above do not know.
 // The LLM tokens matter too: claude's and codex's stderr is logged with --verbose.
-const SECRET_ENV = [
+// Also the one list of secret names that doctor and the generated workflow name theirs from.
+export const SECRET_ENV = [
   "SLACK_WEBHOOK_URL",
   "TAVILY_API_KEY",
   "ANTHROPIC_API_KEY",
@@ -25,6 +26,7 @@ const SECRET_ENV = [
   "CODEX_API_KEY",
   "GITHUB_TOKEN",
 ] as const;
+export type SecretEnvName = (typeof SECRET_ENV)[number];
 const MIN_SECRET_LENGTH = 8;
 
 // Values a host passes in through deps.env rather than process.env.
@@ -49,7 +51,7 @@ type Severity = "debug" | "info" | "warn" | "error";
 const RANK: Record<Severity, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 const THRESHOLD: Record<LogLevel, number> = { verbose: 0, normal: 1, quiet: 2 };
 
-// stdout is reserved for --dry-run and --json output, so logs always go to stderr.
+// stdout carries the commands' own output (a briefing, JSON, a report), so logs always go to stderr.
 const defaultWrite = (s: string) => {
   process.stderr.write(s);
 };

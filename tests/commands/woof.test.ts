@@ -42,6 +42,13 @@ describe("woof", () => {
     expect(out.endsWith("\x1b[?25h")).toBe(true);
   });
 
+  it("does read POCHI_STATE_PATH and POCHI_PLAIN from the env it is given", async () => {
+    const path = join(dir, "elsewhere.json");
+    await writeFile(path, JSON.stringify({ version: 1, briefings: 3, entries: {} }));
+    await woof({ write: (s) => (out += s), env: { POCHI_STATE_PATH: path, POCHI_PLAIN: "1" }, wagMs: 0 });
+    expect(out).toBe("Woof. 3 briefings fetched so far\n");
+  });
+
   it("is left out of --help", () => {
     expect(createProgram().helpInformation()).not.toContain("woof");
   });

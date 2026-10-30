@@ -99,7 +99,7 @@ pochi init --from /tmp/proposal.md
 **2. 確認して、試しに動かす。** どちらも何も送信しません。
 
 ```sh
-pochi doctor          # 設定・LLM・キー・状態ファイルを確認する。モデルを呼ばないので無料
+pochi doctor          # 設定・LLM のキーやログイン・キー・状態ファイルを確認する。プロンプトを送らないので無料
 pochi run --dry-run   # 今日のブリーフィングを画面に出す
 ```
 
@@ -140,7 +140,7 @@ LLM が読むのは初めて見る記事だけで、大きなモデルが読む�
 | コマンド | できること |
 | --- | --- |
 | `pochi init` | 対話で設定を作る。`--from` でエージェントの提案から作る |
-| `pochi doctor` | 設定・LLM・キー・状態ファイルを確認する。モデルの呼び出しも送信もしない |
+| `pochi doctor` | 設定・LLM のキーやログインが使えるか・キー・状態ファイルを確認する。プロンプトも通知も送らない |
 | `pochi run` | 見張っている情報源から新着を取得し、今日のブリーフィングを届ける。`--dry-run` なら画面に出すだけ |
 | `pochi schedule install` | `context.yml` のスケジュールどおりに、launchd・cron・GitHub Actions で定期実行する |
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isFancy, renderSprite, SITTING } from "../../src/util/pochi-art.js";
+import { isFancy, renderSprite, SITTING } from "../../src/util/pochiArt.js";
 
 const tty = { isTTY: true } as NodeJS.WriteStream;
 
@@ -18,6 +18,14 @@ describe("isFancy", () => {
     vi.stubEnv("POCHI_PLAIN", "");
     vi.stubEnv("NO_COLOR", "1");
     expect(isFancy(tty)).toBe(false);
+  });
+
+  it("does read the env it is given instead of process.env", () => {
+    vi.stubEnv("POCHI_PLAIN", "1");
+    expect(isFancy(tty, {})).toBe(true);
+    vi.stubEnv("POCHI_PLAIN", "");
+    expect(isFancy(tty, { NO_COLOR: "1" })).toBe(false);
+    expect(isFancy(tty, { POCHI_PLAIN: "yes" })).toBe(false);
   });
 });
 

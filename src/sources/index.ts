@@ -82,11 +82,22 @@ export function sourceInfo(source: SourceConfig): { id: string; name: string; ki
       return { id: source.query.id, name: source.query.query, kind: "tavily" };
     case "googlenews":
       return { id: source.feed.id, name: googleNewsName(source.feed), kind: "googlenews" };
-    default:
+    case "rss":
+    case "github":
       return { id: source.feed.id, name: source.feed.name, kind: source.kind };
   }
 }
 
+/** How fetching one source ended, tagged by kind for an exhaustive switch. */
+export type FetchOutcome =
+  | { kind: "items"; source: SourceConfig; items: Item[] }
+  | { kind: "error"; source: SourceConfig; error: unknown }
+  | { kind: "aborted"; source: SourceConfig; aborted: true };
+
+/**
+ * FetchOutcome without the tag, which every FetchOutcome still is. Kept only for init, which
+ * builds these and tells them apart with `in`; remove once it switches on kind.
+ */
 export type SourceOutcome =
   | { source: SourceConfig; items: Item[] }
   | { source: SourceConfig; error: unknown }
@@ -101,21 +112,21 @@ export async function fetchEach(
   configs: SourceConfig[],
   defaults: FetchDefaults | ((source: SourceConfig) => FetchDefaults),
   opts: { signal?: AbortSignal; concurrency?: number } = {},
-): Promise<SourceOutcome[]> {
+): Promise<FetchOutcome[]> {
   const { signal } = opts;
   const limit = pLimit(opts.concurrency ?? DEFAULT_CONCURRENCY);
   const defaultsOf = typeof defaults === "function" ? defaults : () => defaults;
   // Indexed by source, so the result does not depend on which fetch finishes first.
   return Promise.all(
     configs.map((source) =>
-      limit(async (): Promise<SourceOutcome> => {
-        if (signal?.aborted) return { source, aborted: true };
+      limit(async (): Promise<FetchOutcome> => {
+        if (signal?.aborted) return { kind: "aborted", source, aborted: true };
         try {
-          return { source, items: await fetchSource(source, defaultsOf(source), signal) };
+          return { kind: "items", source, items: await fetchSource(source, defaultsOf(source), signal) };
         } catch (error) {
           // An abort is not the source's fault.
-          if (isAbort(error, signal)) return { source, aborted: true };
-          return { source, error };
+          if (isAbort(error, signal)) return { kind: "aborted", source, aborted: true };
+          return { kind: "error", source, error };
         }
       }),
     ),
@@ -150,20 +161,26 @@ export async function collectAll(sources: Sources, opts: CollectOptions = {}): P
   const fetched: string[] = [];
   for (const outcome of outcomes) {
     const info = sourceInfo(outcome.source);
-    if ("items" in outcome) {
-      log.debug(`source ${info.id}: ${plural(outcome.items.length, "item")}`);
-      fetched.push(info.id);
-    } else if ("error" in outcome) {
-      log.warn(`source ${info.id} failed`, outcome.error);
-      failures.push({ sourceId: info.id, sourceName: info.name, kind: info.kind, error: outcome.error });
+    switch (outcome.kind) {
+      case "items":
+        log.debug(`source ${info.id}: ${plural(outcome.items.length, "item")}`);
+        fetched.push(info.id);
+        break;
+      case "error":
+        log.warn(`source ${info.id} failed`, outcome.error);
+        failures.push({ sourceId: info.id, sourceName: info.name, kind: info.kind, error: outcome.error });
+        break;
+      case "aborted":
+        // Rethrown below, once every outcome is logged.
+        break;
     }
   }
   // Otherwise an interrupted run would look like one where every source failed. An abort
   // that arrives after every fetch has finished cut nothing short, so the results stand.
-  if (signal && outcomes.some((o) => "aborted" in o)) throw signal.reason;
+  if (signal && outcomes.some((o) => o.kind === "aborted")) throw signal.reason;
 
   return {
-    items: dedupe(outcomes.flatMap((o) => ("items" in o ? o.items : []))),
+    items: dedupe(outcomes.flatMap((o) => (o.kind === "items" ? o.items : []))),
     attempted: configs.length,
     failures,
     fetched,

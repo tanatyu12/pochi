@@ -30,7 +30,7 @@ Vitest's global setup (`tests/setup/build.ts`) builds the bundle before every ru
 
 ## Contracts that are easy to break
 
-- stdout is reserved for `--dry-run` and `--json` output. All logging goes through `log` in `src/util/log.ts`, which writes to stderr and passes everything through `redact()`.
+- stdout carries only a command's own output: the briefing of `run --dry-run`, the JSON of `run --json`, the report of `doctor`, what `schedule` prints, `woof`, and the prompt of `init --print-prompt` (so it can be piped). A plain `run` prints nothing there. All logging goes through `log` in `src/util/log.ts`, which writes to stderr and passes everything through `redact()`.
 - When adding a secret env var, add it to `SECRET_ENV` (and a pattern to `PATTERNS` if its value has a recognizable prefix) in `src/util/log.ts`.
 - Expected failures throw a `PochiError` subclass carrying an exit code from `src/errors.ts` (2 config, 3 LLM, 4 delivery, 5 sources, 130 interrupted). Anything else is reported as an internal error (exit 1). These codes are documented in `docs/troubleshooting.md`; keep them stable.
 - Error messages never include config values or secrets.

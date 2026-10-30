@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
-// Node 22.18 strips the types; pochi-art.ts imports nothing relative, so it loads as is.
-import { SITTING } from "../src/util/pochi-art.ts";
+// Node 22.18 strips the types; pochiArt.ts imports nothing relative, so it loads as is.
+import { SITTING } from "../src/util/pochiArt.ts";
 
 // Writes docs/pochi.svg (and fixed-color dark and light copies), Pochi as the terminal draws it, for the README. Run after changing SITTING.
 const PIXEL = 16;

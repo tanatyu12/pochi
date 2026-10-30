@@ -77,10 +77,12 @@ export async function discoverFeeds(url: string, signal?: AbortSignal): Promise<
   const seen = new Set<string>();
   const found: DiscoveredFeed[] = [];
   checks.forEach((check, i) => {
-    if (check instanceof HttpError) failed.push(new FeedCheckError(links[i]!.url, true, check));
+    const link = links[i];
+    if (link === undefined) return;
+    if (check instanceof HttpError) failed.push(new FeedCheckError(link.url, true, check));
     else if (check !== undefined && !seen.has(check)) {
       seen.add(check);
-      found.push({ ...links[i]!, url: check });
+      found.push({ ...link, url: check });
     }
   });
   if (found.length > 0) {
@@ -167,7 +169,7 @@ function parseAttrs(tag: string): Map<string, string> {
   const attrs = new Map<string, string>();
   const inner = tag.replace(/^<[a-z]+/i, "");
   for (const m of inner.matchAll(/([^\s"'=<>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
-    const name = m[1]!.toLowerCase();
+    const name = (m[1] ?? "").toLowerCase();
     if (!attrs.has(name)) attrs.set(name, decodeHTMLAttribute(m[2] ?? m[3] ?? m[4] ?? ""));
   }
   return attrs;

@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import * as z from "zod";
 import { type Impact, ImpactSchema } from "../config/schema.js";
 import { ExitCode, PochiError } from "../errors.js";
+import { isEnoent } from "../util/fs.js";
 import { log } from "../util/log.js";
 import { truncate } from "../util/text.js";
 import { daysBetween, toIsoSeconds } from "../util/time.js";
@@ -135,9 +136,12 @@ export function memoryStateStore(): StateStore {
   };
 }
 
+/** Replaces the default state path when --state is not given. */
+export const STATE_PATH_ENV = "POCHI_STATE_PATH";
+
 export function resolveStatePath(opts: { flag?: string; env?: NodeJS.ProcessEnv } = {}): string {
   const fromFlag = opts.flag?.trim();
-  const fromEnv = (opts.env ?? process.env).POCHI_STATE_PATH?.trim();
+  const fromEnv = (opts.env ?? process.env)[STATE_PATH_ENV]?.trim();
   return fromFlag || fromEnv || DEFAULT_STATE_PATH;
 }
 
@@ -153,7 +157,7 @@ export async function inspectState(path: string): Promise<StateInspection> {
   try {
     text = await readFile(path, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+    if (isEnoent(err)) return { kind: "missing" };
     throw new StateError(`cannot read ${path}`, { cause: err });
   }
   return parseState(text);
@@ -270,7 +274,7 @@ export function record(
   extras: EntryExtras = {},
 ): void {
   const known = existing(state, keys);
-  write(state, keys, merged(known, strongest([status, ...known.map((e) => e.s)])!, today, extras));
+  write(state, keys, merged(known, strongest([status, ...known.map((e) => e.s)]) ?? status, today, extras));
 }
 
 export async function saveState(state: State, path: string, opts: { now?: Date } = {}): Promise<void> {
@@ -299,11 +303,10 @@ export async function saveState(state: State, path: string, opts: { now?: Date }
 // One entry per line keeps the daily commit's diff to the entries that changed; pretty-printing
 // would spend five lines on each of tens of thousands of entries.
 export function serializeState(state: State, updatedAt: Date): string {
-  const keys = [...state.entries.keys()].sort();
-  const lines = keys.map((k, i) => {
+  const sorted = [...state.entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const lines = sorted.map(([k, { s, f, l, c, a, p }], i) => {
     // Fields left undefined are not written, so most entries stay {s, f, l}.
-    const { s, f, l, c, a, p } = state.entries.get(k)!;
-    return `    ${JSON.stringify(k)}: ${JSON.stringify({ s, f, l, c, a, p })}${i < keys.length - 1 ? "," : ""}`;
+    return `    ${JSON.stringify(k)}: ${JSON.stringify({ s, f, l, c, a, p })}${i < sorted.length - 1 ? "," : ""}`;
   });
   const entries = lines.length > 0 ? `{\n${lines.join("\n")}\n  }` : "{}";
   const briefings = state.briefings === undefined ? "" : `  "briefings": ${state.briefings},\n`;
