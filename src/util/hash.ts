@@ -26,10 +26,20 @@ export function parseHttpUrl(raw: string, base?: string | URL): URL | undefined 
   return url.protocol === "http:" || url.protocol === "https:" ? url : undefined;
 }
 
-export function normalizeUrl(raw: string, base?: string | URL): string | undefined {
+export interface NormalizeUrlOptions {
+  /** Keep a plain anchor (#section) too, for telling apart entries that link into one page. */
+  keepFragment?: boolean;
+}
+
+/**
+ * Drops tracking params, a trailing slash and the fragment, so the same page has one form.
+ * A route-like fragment (#/news/1, #!/news/1) is the page on a hash-routed site, so it stays.
+ * A URL without a fragment normalizes as it always has, so keys already in state stay valid.
+ */
+export function normalizeUrl(raw: string, base?: string | URL, opts: NormalizeUrlOptions = {}): string | undefined {
   const url = parseHttpUrl(raw.trim(), base);
   if (!url) return undefined;
-  url.hash = "";
+  if (!opts.keepFragment && !isRouteFragment(url.hash)) url.hash = "";
   // Filter the raw pairs: URLSearchParams would re-encode the whole query (%20 -> +),
   // so the same URL would normalize differently depending on whether it had a utm_ param.
   const kept = url.search
@@ -41,6 +51,10 @@ export function normalizeUrl(raw: string, base?: string | URL): string | undefin
     url.pathname = url.pathname.replace(/\/+$/, "") || "/";
   }
   return url.toString();
+}
+
+function isRouteFragment(hash: string): boolean {
+  return hash.startsWith("#/") || hash.startsWith("#!");
 }
 
 function isTrackingParam(key: string): boolean {

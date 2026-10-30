@@ -74,6 +74,48 @@ describe("fetchText", () => {
       expect((await fetchText(URL_A)).text).toBe("日本");
     });
 
+    // "日本" in Shift_JIS.
+    const sjis = [0x93, 0xfa, 0x96, 0x7b];
+    const utf8 = (s: string) => [...new TextEncoder().encode(s)];
+
+    it("decodes the encoding in the XML declaration when Content-Type has no charset", async () => {
+      const body = new Uint8Array([...utf8('<?xml version="1.0" encoding="Shift_JIS"?><rss>'), ...sjis, ...utf8("</rss>")]);
+      mockFetch({ [URL_A]: reply.bytes(body, { headers: { "content-type": "application/rss+xml" } }) });
+      expect((await fetchText(URL_A)).text).toBe('<?xml version="1.0" encoding="Shift_JIS"?><rss>日本</rss>');
+    });
+
+    it("decodes the charset in an HTML meta tag when Content-Type has none", async () => {
+      const head = '<html><head><meta http-equiv="Content-Type" content="text/html; charset=shift_jis"></head><p>';
+      mockFetch({ [URL_A]: reply.bytes(new Uint8Array([...utf8(head), ...sjis]), { headers: { "content-type": "text/html" } }) });
+      expect((await fetchText(URL_A)).text).toBe(`${head}日本`);
+      mockFetch({ [URL_A]: reply.bytes(new Uint8Array([...utf8("<meta charset=Shift_JIS><p>"), ...sjis])) });
+      expect((await fetchText(URL_A)).text).toBe("<meta charset=Shift_JIS><p>日本");
+    });
+
+    it("prefers the Content-Type charset over the declaration, and a BOM over both", async () => {
+      const declared = utf8('<?xml version="1.0" encoding="Shift_JIS"?>');
+      mockFetch({
+        [URL_A]: reply.bytes(new Uint8Array([...declared, ...utf8("日本")]), {
+          headers: { "content-type": "application/xml; charset=utf-8" },
+        }),
+      });
+      expect((await fetchText(URL_A)).text).toBe('<?xml version="1.0" encoding="Shift_JIS"?>日本');
+      mockFetch({
+        [URL_A]: reply.bytes(new Uint8Array([0xef, 0xbb, 0xbf, ...utf8("日本")]), {
+          headers: { "content-type": "text/html; charset=Shift_JIS" },
+        }),
+      });
+      expect((await fetchText(URL_A)).text).toBe("日本");
+    });
+
+    it("falls back to UTF-8 for an unknown or impossible declared encoding", async () => {
+      for (const label of ["bogus", "UTF-16"]) {
+        const xml = `<?xml version="1.0" encoding="${label}"?><rss>日本</rss>`;
+        mockFetch({ [URL_A]: reply.text(xml, { headers: { "content-type": "application/xml" } }) });
+        expect((await fetchText(URL_A)).text).toBe(xml);
+      }
+    });
+
     it("falls back to UTF-8 for an unknown charset", async () => {
       mockFetch({ [URL_A]: reply.text("日本", { headers: { "content-type": "text/html; charset=bogus" } }) });
       expect((await fetchText(URL_A)).text).toBe("日本");

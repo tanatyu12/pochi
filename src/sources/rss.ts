@@ -165,16 +165,18 @@ export interface ToItemsOptions {
 }
 
 /**
- * Keeps the newest `itemsPerFeed` entries that have a usable link, one per guid or URL, and with
- * `since` also every newer dated one up to `maxItemsPerFeed`, so a feed that posted more than
- * itemsPerFeed since the last run loses none. Undated entries go last.
+ * Keeps the newest `itemsPerFeed` entries that have a usable link, one per guid or URL (anchor
+ * included, so a changelog's #2026-10-29 and #2026-10-30 are two entries), and with `since` also
+ * every newer dated one up to `maxItemsPerFeed`, so a feed that posted more than itemsPerFeed
+ * since the last run loses none. Undated entries go last.
  */
 export function toItems(entries: RawEntry[], source: ItemSource, opts: ToItemsOptions): Item[] {
   const linked = entries.flatMap((entry, pos) => {
     const url = entry.link ? parseHttpUrl(entry.link, opts.baseUrl)?.toString() : undefined;
     if (!url) return [];
     const normalized = normalizeUrl(url) ?? url;
-    return [{ entry, url, normalized, key: entry.guid ?? normalized, pos, date: parseDate(entry.published) }];
+    const anchored = normalizeUrl(url, undefined, { keepFragment: true }) ?? url;
+    return [{ entry, url, normalized, anchored, pos, date: parseDate(entry.published) }];
   });
   linked.sort((a, b) => {
     if (a.date && b.date) return b.date.getTime() - a.date.getTime() || a.pos - b.pos;
@@ -182,24 +184,35 @@ export function toItems(entries: RawEntry[], source: ItemSource, opts: ToItemsOp
     return a.pos - b.pos;
   });
   // After sorting, so the newest copy of a repeated entry is the one kept.
-  const seen = new Set<string>();
-  const unique = linked.filter(({ key, normalized }) => {
-    if (seen.has(key) || seen.has(normalized)) return false;
-    seen.add(key).add(normalized);
+  const seenGuids = new Set<string>();
+  const seenUrls = new Set<string>();
+  const deduped = linked.filter(({ entry, anchored }) => {
+    if ((entry.guid !== undefined && seenGuids.has(entry.guid)) || seenUrls.has(anchored)) return false;
+    if (entry.guid !== undefined) seenGuids.add(entry.guid);
+    seenUrls.add(anchored);
     return true;
+  });
+  // Entries that point at anchors in one page are keyed by their anchor, or the state file would
+  // know them all by the first one's URL and drop the rest. An entry alone on its page keeps the
+  // key it always had.
+  const perPage = new Map<string, number>();
+  for (const { normalized } of deduped) perPage.set(normalized, (perPage.get(normalized) ?? 0) + 1);
+  const unique = deduped.map((e) => {
+    const page = (perPage.get(e.normalized) ?? 0) > 1 ? e.anchored : e.normalized;
+    return { ...e, page, key: e.entry.guid ?? page };
   });
   // Dated entries come first, newest first, so those since the last run are a prefix.
   const since = opts.since?.getTime();
   const recent = since === undefined ? 0 : unique.findIndex(({ date }) => !date || date.getTime() < since);
   const extra = Math.min(recent === -1 ? unique.length : recent, opts.maxItemsPerFeed ?? 0);
-  return unique.slice(0, Math.max(0, opts.itemsPerFeed, extra)).map(({ entry, url, normalized, key, date }) => ({
+  return unique.slice(0, Math.max(0, opts.itemsPerFeed, extra)).map(({ entry, url, page, key, date }) => ({
     id: itemId(source.id, key),
     sourceId: source.id,
     sourceName: source.name,
     kind: source.kind ?? "rss",
     title: toTitle(entry.title) || truncate(url, TITLE_MAX_CHARS),
     url,
-    urlKey: urlKey(normalized),
+    urlKey: urlKey(page),
     publishedAt: date?.toISOString(),
     content: entry.html
       ? htmlToText(entry.html, opts.maxContentChars)

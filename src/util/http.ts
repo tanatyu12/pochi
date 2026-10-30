@@ -167,21 +167,45 @@ async function readText(res: Response, maxBytes: number, safeUrl: string): Promi
       chunks.push(value);
     }
   }
+  const bytes = Buffer.concat(chunks);
   // TextDecoder drops a leading BOM by default.
-  return decoderFor(res.headers.get("content-type")).decode(Buffer.concat(chunks));
+  return decoderFor(res.headers.get("content-type"), bytes).decode(bytes);
 }
 
-// Honour the declared charset (e.g. Shift_JIS blogs); fall back to UTF-8 for unknown labels.
-function decoderFor(contentType: string | null): TextDecoder {
-  const charset = contentType?.match(/charset\s*=\s*"?([\w.:-]+)"?/i)?.[1];
-  if (charset) {
+const SNIFF_BYTES = 1024;
+
+// Honour the declared charset (e.g. Shift_JIS blogs). As in browsers a BOM wins, then the
+// Content-Type header, then the XML declaration or an HTML <meta> near the start. Unknown
+// labels fall back to UTF-8.
+function decoderFor(contentType: string | null, bytes: Uint8Array): TextDecoder {
+  const fromHeader = contentType?.match(/charset\s*=\s*"?([\w.:-]+)"?/i)?.[1];
+  for (const label of [bomCharset(bytes), fromHeader, declaredCharset(bytes)]) {
+    if (!label) continue;
     try {
-      return new TextDecoder(charset);
+      return new TextDecoder(label);
     } catch {
       // Unknown label.
     }
   }
   return new TextDecoder("utf-8");
+}
+
+function bomCharset(bytes: Uint8Array): string | undefined {
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return "utf-8";
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return "utf-16be";
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return "utf-16le";
+  return undefined;
+}
+
+function declaredCharset(bytes: Uint8Array): string | undefined {
+  // The declaration is ASCII, and so is everything before it in any encoding it can name
+  // without a BOM, so latin1 reads the head safely whatever the real encoding is.
+  const head = Buffer.from(bytes.buffer, bytes.byteOffset, Math.min(bytes.byteLength, SNIFF_BYTES)).toString("latin1");
+  const label =
+    head.match(/^\s*<\?xml\s[^>]*?\bencoding\s*=\s*["']([\w.:-]+)["']/i)?.[1] ??
+    head.match(/<meta\s[^>]*?\bcharset\s*=\s*["']?([\w.:-]+)/i)?.[1];
+  // Text readable as ASCII is not UTF-16, whatever it claims; HTML treats the label as UTF-8 too.
+  return label && /^utf-?16/i.test(label) ? undefined : label;
 }
 
 /** Retry-After is either delay-seconds or an HTTP-date. */

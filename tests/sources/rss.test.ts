@@ -239,6 +239,51 @@ describe("toItems", () => {
     ]);
   });
 
+  it("keeps entries that link to different anchors of one page, keyed by the anchor", () => {
+    const withGuids = toItems(
+      [
+        entry({ guid: "c30", link: "/changelog#2026-10-30", published: "2026-10-30T00:00:00Z" }),
+        entry({ guid: "c29", link: "/changelog#2026-10-29", published: "2026-10-29T00:00:00Z" }),
+      ],
+      source,
+      opts,
+    );
+    expect(withGuids.map((i) => [i.id, i.urlKey])).toEqual([
+      [itemId("blog", "c30"), urlKey("https://blog.example.com/changelog#2026-10-30")],
+      [itemId("blog", "c29"), urlKey("https://blog.example.com/changelog#2026-10-29")],
+    ]);
+    const withoutGuids = toItems(
+      [entry({ link: "/changelog#2026-10-30" }), entry({ link: "/changelog/#2026-10-29" })],
+      source,
+      opts,
+    );
+    expect(withoutGuids.map((i) => i.id)).toEqual([
+      itemId("blog", "https://blog.example.com/changelog#2026-10-30"),
+      itemId("blog", "https://blog.example.com/changelog#2026-10-29"),
+    ]);
+  });
+
+  it("still keeps one item for the same anchor or the same guid", () => {
+    const items = toItems(
+      [
+        entry({ guid: "a", link: "/changelog#x" }),
+        entry({ guid: "b", link: "/changelog?utm_source=rss#x" }),
+        entry({ guid: "a", link: "/changelog#y" }),
+      ],
+      source,
+      opts,
+    );
+    expect(items.map((i) => [i.id, i.urlKey])).toEqual([[itemId("blog", "a"), urlKey("https://blog.example.com/changelog")]]);
+  });
+
+  it("keeps entries on hash-routed sites apart", () => {
+    const items = toItems([entry({ link: "/#/news/2" }), entry({ link: "/#/news/1" })], source, opts);
+    expect(items.map((i) => i.urlKey)).toEqual([
+      urlKey("https://blog.example.com/#/news/2"),
+      urlKey("https://blog.example.com/#/news/1"),
+    ]);
+  });
+
   it("keys the item by its normalized URL as well", () => {
     const [item] = toItems([entry({ guid: "g", link: "/post/?utm_source=rss#top" })], source, opts);
     expect(item?.url).toBe("https://blog.example.com/post/?utm_source=rss#top");
