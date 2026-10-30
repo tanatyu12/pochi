@@ -134,6 +134,12 @@ describe("fetchTavilyItems", () => {
     expect(items[2]!.title).toBe("https://forum.example.net/t/qwen-4");
   });
 
+  it("drops control characters from titles", async () => {
+    const results = [{ title: "Qwen\u001b[2J 4\u009b", url: "https://example.com/a", content: "x" }];
+    mockFetch({ [SEARCH]: reply.json({ results }) });
+    expect((await fetchTavilyItems(query, defaults))[0]?.title).toBe("Qwen[2J 4");
+  });
+
   it("skips results without a URL and keeps the rest", async () => {
     const results = [{ title: "no url", url: null }, { title: "missing url" }, ...fixture.results];
     mockFetch({ [SEARCH]: reply.json({ results }) });

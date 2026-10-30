@@ -22,6 +22,16 @@ describe("githubScheduler", () => {
     expect(githubScheduler().render(job, parseCron("17 21 * * 0,3"), "weekly on Monday and Thursday at 06:17 (Asia/Tokyo)")).toMatchSnapshot();
   });
 
+  it("keeps the token out of .git/config and dependency scripts, and gives it only to the push", () => {
+    const yml = githubScheduler().render(job, parseCron("17 21 * * *"), "daily");
+    expect(yml).toContain("persist-credentials: false");
+    expect(yml).toContain("npm ci --ignore-scripts");
+    const commitStep = yml.slice(yml.indexOf("- name: Commit the state file"));
+    expect(commitStep).toContain("GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}");
+    expect(commitStep).toContain("GIT_CONFIG_VALUE_0=");
+    expect(commitStep).not.toContain("git remote");
+  });
+
   it("writes, inspects and removes the workflow file", async () => {
     const scheduler = githubScheduler();
     expect(await scheduler.inspect(job)).toEqual({ content: undefined });

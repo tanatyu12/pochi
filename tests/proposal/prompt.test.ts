@@ -55,6 +55,13 @@ describe("discoveryPrompt", () => {
     expect(parseProposal(prompt, "prompt").repos).toEqual([{ repo: "owner/repo", evidence: "" }]);
   });
 
+  it("inserts a name holding $' or $& as written", () => {
+    const prompt = discoveryPrompt({ competitors: ["A$'B", "C$&D"], adopters: [], newsSites: [] });
+    expect(prompt).toContain('- Competitors: "A$\'B", "C$&D".');
+    expect(prompt.split("## Output").length).toBe(2);
+    expect(prompt.endsWith(DISCOVERY_PROMPT.slice(DISCOVERY_PROMPT.indexOf("## Output")))).toBe(true);
+  });
+
   it("leaves out the lines for lists that are empty", () => {
     const prompt = discoveryPrompt({ competitors: [], adopters: ["ペット保険会社"], newsSites: [] });
     expect(prompt).not.toContain("Competitors:");

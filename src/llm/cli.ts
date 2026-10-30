@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from "node:child_process";
 import { spawn as nodeSpawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as z from "zod";
@@ -26,6 +26,7 @@ const KILL_GRACE_MS = 5_000;
 const EXIT_DRAIN_MS = 1_000;
 const MAX_STDOUT_BYTES = 10 * 1024 * 1024;
 const STDERR_TAIL_BYTES = 8 * 1024;
+const SYSTEM_FILE = "system.md";
 
 /** node:child_process spawn, narrowed to what the CLI mode uses so tests can pass a fake. */
 export type SpawnFn = (
@@ -35,11 +36,11 @@ export type SpawnFn = (
 ) => ChildProcessWithoutNullStreams;
 
 /**
- * The prompt goes through stdin, not here: argv has a length limit and shows up in process lists.
- * No tools and no MCP servers, so fetched text cannot make claude act, only answer. --safe-mode
+ * The prompt goes through stdin and the system prompt (the project's details) through systemFile,
+ * not here: argv has a length limit and shows up in process lists. No tools and no MCP servers, so fetched text cannot make claude act, only answer. --safe-mode
  * turns off CLAUDE.md, hooks, plugins and skills, so no local configuration runs or steers it.
  */
-export function buildCliArgs(req: GenerateRequest<unknown>, model: string): string[] {
+export function buildCliArgs(req: GenerateRequest<unknown>, model: string, systemFile: string): string[] {
   return [
     "-p",
     "--output-format",
@@ -55,8 +56,8 @@ export function buildCliArgs(req: GenerateRequest<unknown>, model: string): stri
     "--safe-mode",
     "--model",
     model,
-    "--system-prompt",
-    req.system,
+    "--system-prompt-file",
+    systemFile,
   ];
 }
 
@@ -94,7 +95,11 @@ export function createCliLlm(opts: {
     async generate<T>(req: GenerateRequest<T>, { signal }: { signal?: AbortSignal } = {}): Promise<T> {
       const model = opts.models[req.tier];
       const started = Date.now();
-      const exit = await runClaude(run, buildCliArgs(req, model), req.prompt, model, signal);
+      const exit = await withPrivateDir("pochi-claude-", run.command, signal, async (cwd) => {
+        const systemFile = join(cwd, SYSTEM_FILE);
+        await writeFile(systemFile, req.system, { mode: 0o600 });
+        return runIn(cwd, run, buildCliArgs(req, model, systemFile), req.prompt, model, signal);
+      });
       const envelope = readEnvelope(exit.stdout);
       if (!envelope) {
         if (exit.stderr) log.debug(`claude stderr: ${exit.stderr}`);
@@ -128,20 +133,6 @@ export interface Exit {
 }
 
 /**
- * Resolves once claude has exited, also when it was stopped, so no process outlives the call.
- * label (the model, or what the run is for) goes in error messages.
- */
-export function runClaude(
-  run: RunOptions,
-  args: string[],
-  input: string,
-  label: string,
-  signal: AbortSignal | undefined,
-): Promise<Exit> {
-  return withPrivateDir("pochi-claude-", run.command, signal, (cwd) => runIn(cwd, run, args, input, label, signal));
-}
-
-/**
  * Runs fn in a private directory, removed afterwards: outside the project and not the shared temp
  * directory, where anyone could leave a .claude, CLAUDE.md or AGENTS.md for the CLI to pick up.
  */
@@ -164,6 +155,10 @@ export async function withPrivateDir<T>(
   }
 }
 
+/**
+ * Resolves once the command has exited, also when it was stopped, so no process outlives the call.
+ * label (the model, or what the run is for) goes in error messages.
+ */
 export function runIn(
   cwd: string,
   run: RunOptions,
@@ -182,7 +177,7 @@ export function runIn(
       child = run.spawn(run.command, args, { cwd, env: run.env, shell: false, windowsHide: true });
     } catch (err) {
       // Thrown before a process exists, such as ERR_INVALID_ARG_VALUE for a NUL byte in an
-      // argument. Its message quotes the argument (the system prompt), so only the code is kept.
+      // argument. Its message quotes the argument, so only the code is kept.
       const code = (err as NodeJS.ErrnoException).code ?? (err instanceof Error ? err.name : "error");
       reject(new LlmError("unavailable", `could not run ${run.command}: ${code} (${label})`));
       return;

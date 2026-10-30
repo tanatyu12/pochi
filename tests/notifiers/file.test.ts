@@ -1,9 +1,9 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fileNotifier } from "../../src/notifiers/file.js";
-import { toMarkdown, toText } from "../../src/notifiers/text.js";
+import { escapeMarkdown, toMarkdown, toText } from "../../src/notifiers/text.js";
 import type { Briefing } from "../../src/notifiers/types.js";
 import type { Insight, Item } from "../../src/types.js";
 import { configureLog, resetLog } from "../../src/util/log.js";
@@ -87,8 +87,38 @@ describe("toMarkdown", () => {
     expect(md).toContain("\n\nFirst --- - item\n\n**Action:** Do 1. this\n");
   });
 
+  it("escapes a list item, rule or code fence at the start of a line", () => {
+    const md = toMarkdown(
+      briefing([
+        insight(1, { summary: "- not a list", action: "1. not a list" }),
+        insight(2, { summary: "---", action: "+ x" }),
+        insight(3, { summary: "~~~ not code", action: "2) no" }),
+      ]),
+    );
+    expect(md).toContain("\n\n\\- not a list\n\n**Action:** 1\\. not a list\n");
+    expect(md).toContain("\n\n\\---\n\n**Action:** \\+ x\n");
+    expect(md).toContain("\n\n\\~~~ not code\n\n**Action:** 2\\) no\n");
+    expect(escapeMarkdown("a - b 1. c")).toBe("a - b 1. c");
+  });
+
   it("says so when nothing is relevant", () => {
     expect(toMarkdown(briefing([]))).toContain("No relevant updates today.");
+  });
+});
+
+describe("toText", () => {
+  it("drops control characters from feed and model text, keeping the layout", () => {
+    const evil = insight(1, {
+      title: "Title\u001b]8;;https://evil.example\u0007",
+      summary: "Sum\u009bmary",
+      action: "Act\u0007ion",
+    });
+    evil.item.sourceName = "Blog\u001b[31m";
+    const related: Item = { ...evil.item, id: "r1", title: "Also\u001b[0m" };
+    const text = toText(briefing([{ ...evil, related: [related] }]));
+    expect(text).not.toMatch(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/);
+    expect(text).toContain("[Medium] Title]8;;https://evil.example\n");
+    expect(text).toContain("  Summary\n  Action: Action\n  Source: Blog[31m\n  Also: Also[0m ");
   });
 });
 
@@ -122,6 +152,19 @@ describe("fileNotifier", () => {
     expect(result).toEqual({ deliveredIds: ["id1", "id2"], failures: [], aborted: false });
     expect(await readFile(join(dir, "2026-10-26.md"), "utf8")).toBe(toMarkdown(briefing([insight(1), insight(2)])));
     expect(logs).toContain("2026-10-26.md");
+  });
+
+  it("writes the report readable by the owner only", async () => {
+    await fileNotifier({ dir, postWhenEmpty: false }).deliver(briefing([insight(1)]), {});
+    const { mode } = await stat(join(dir, "2026-10-26.md"));
+    if (process.platform !== "win32") expect(mode & 0o777).toBe(0o600);
+  });
+
+  it("writes the report owner-only also without hard links", async () => {
+    fsMock.linkError = "EPERM";
+    await fileNotifier({ dir, postWhenEmpty: false }).deliver(briefing([insight(1)]), {});
+    const { mode } = await stat(join(dir, "2026-10-26.md"));
+    if (process.platform !== "win32") expect(mode & 0o777).toBe(0o600);
   });
 
   it("creates the directory and never overwrites an earlier report", async () => {
