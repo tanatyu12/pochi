@@ -82,11 +82,13 @@ describe("buildCliArgs", () => {
   ]);
 
   it("builds the arguments in this exact order", () => {
-    expect(buildCliArgs(req, "haiku")).toMatchSnapshot();
+    expect(buildCliArgs(req, "haiku", "/tmp/d/system.md")).toMatchSnapshot();
   });
 
-  it("disables tools, MCP servers and local configuration and keeps the prompt out of argv", () => {
-    const args = buildCliArgs(req, "haiku");
+  it("disables tools, MCP servers and local configuration and keeps the prompts out of argv", () => {
+    const args = buildCliArgs(req, "haiku", "/tmp/d/system.md");
+    expect(args[args.indexOf("--system-prompt-file") + 1]).toBe("/tmp/d/system.md");
+    expect(args.join("\n")).not.toContain("A Next.js SaaS app");
     expect(args[args.indexOf("--tools") + 1]).toBe("");
     expect(args).toContain("--strict-mcp-config");
     expect(args).toContain("--safe-mode");
@@ -104,10 +106,12 @@ describe("createCliLlm", () => {
     await expect(client.generate(request)).resolves.toEqual(structured.structured_output);
   });
 
-  it("passes the prompt on stdin and runs claude without a shell in a private temp directory", async () => {
+  it("passes the prompt on stdin and the system prompt as a file, without a shell in a private temp directory", async () => {
     let cwdExisted = false;
+    let system = "";
     const { spawn, calls } = fakeSpawn((child) => {
       cwdExisted = existsSync(String(child.call.options.cwd));
+      system = readFileSync(join(String(child.call.options.cwd), "system.md"), "utf8");
       run.fixture("structured.json")(child);
     });
     await llm(spawn).generate(request);
@@ -120,8 +124,9 @@ describe("createCliLlm", () => {
     expect(cwd.startsWith(join(tmpdir(), "pochi-claude-"))).toBe(true);
     expect(cwdExisted).toBe(true);
     expect(existsSync(cwd)).toBe(false);
-    expect(call.args).toEqual(buildCliArgs(request, "haiku"));
-    expect(call.args).not.toContain(request.prompt);
+    expect(call.args).toEqual(buildCliArgs(request, "haiku", join(cwd, "system.md")));
+    expect(system).toBe(request.system);
+    expect(call.args.join("\n")).not.toContain(SECRET);
   });
 
   it.each([
