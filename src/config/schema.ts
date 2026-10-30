@@ -84,6 +84,7 @@ export const ContextSchema = z
       .strictObject({
         minImpact: ImpactSchema.default("Low"),
         postWhenEmpty: z.boolean().default(false),
+        personality: z.boolean().default(true),
         channels: z
           .array(z.discriminatedUnion("type", [SlackChannelSchema, FileChannelSchema]))
           .min(1)
