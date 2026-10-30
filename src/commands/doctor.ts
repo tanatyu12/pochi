@@ -9,6 +9,7 @@ import { resolveLlm } from "../llm/adapter.js";
 import type { SpawnFn } from "../llm/cli.js";
 import { LlmError } from "../llm/schema.js";
 import { fetchEach, type SourceConfig, sourceConfigs, sourceInfo } from "../sources/index.js";
+import { slackWebhookUrl } from "../notifiers/slack.js";
 import { tavilyApiKey } from "../sources/tavily.js";
 import { type EntryStatus, inspectState, pruneState, resolveStatePath, StateError } from "../state/store.js";
 import { configureLog, redact } from "../util/log.js";
@@ -54,6 +55,8 @@ export interface DoctorOptions {
 }
 
 export interface DoctorDeps {
+  /** Where secrets and POCHI_* overrides come from; process.env when left out. */
+  env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   spawn?: SpawnFn;
   command?: string;
@@ -78,21 +81,22 @@ export async function doctor(opts: DoctorOptions = {}, deps: DoctorDeps = {}): P
   // Colored only on the real stdout; a write passed in gets the plain report.
   const report = new Report((line) => write(redact(line)), deps.write === undefined && isFancy());
   const { signal } = deps;
+  const env = deps.env ?? process.env;
   report.title(report.fancy ? `${purple("pochi")} ${VERSION} doctor` : `pochi ${VERSION} doctor`);
   const interrupted = () => ({ checks: report.checks, exitCode: ExitCode.INTERRUPTED });
   try {
-    const config = await checkConfig(report, opts.configDir);
+    const config = await checkConfig(report, opts.configDir, env);
     signal?.throwIfAborted();
     // Read while the LLM probe (up to 10 seconds) runs; it is still reported after it.
-    const statePath = resolveStatePath({ flag: opts.state });
+    const statePath = resolveStatePath({ flag: opts.state, env });
     const stateRead = readState(statePath);
-    await checkLlm(report, config, deps);
+    await checkLlm(report, config, deps, env);
     signal?.throwIfAborted();
-    checkEnv(report);
-    await checkNotify(report, config);
+    checkEnv(report, env);
+    await checkNotify(report, config, env);
     await checkState(report, config, statePath, stateRead, deps.now ?? new Date());
     signal?.throwIfAborted();
-    if (opts.fetch) await checkSources(report, config, signal);
+    if (opts.fetch) await checkSources(report, config, signal, env);
   } catch (err) {
     if (signal?.aborted) return interrupted();
     throw err;
@@ -102,10 +106,14 @@ export async function doctor(opts: DoctorOptions = {}, deps: DoctorDeps = {}): P
   return { checks: report.checks, exitCode: report.summary() };
 }
 
-async function checkConfig(report: Report, configDir: string | undefined): Promise<LoadedConfig | undefined> {
+async function checkConfig(
+  report: Report,
+  configDir: string | undefined,
+  env: NodeJS.ProcessEnv,
+): Promise<LoadedConfig | undefined> {
   let config: LoadedConfig;
   try {
-    config = await loadConfig({ configDir });
+    config = await loadConfig({ configDir, env });
   } catch (err) {
     if (!(err instanceof ConfigError)) throw err;
     // Validation messages name paths only, never values. One file with several issues is one problem.
@@ -120,7 +128,7 @@ async function checkConfig(report: Report, configDir: string | undefined): Promi
     `${originText(origins.sources)} (${plural(sources.feeds.length, "feed")}, ${plural(sources.queries.length, "query", "queries")})`,
   );
   const queries = sources.queries.length;
-  if (queries > 0 && !tavilyApiKey()) {
+  if (queries > 0 && !tavilyApiKey(env)) {
     // Same check as run: with no feeds, nothing would be fetched at all.
     if (sources.feeds.length === 0) {
       report.fail("Config", "queries", "no feeds, and the queries need TAVILY_API_KEY", ExitCode.CONFIG);
@@ -131,13 +139,19 @@ async function checkConfig(report: Report, configDir: string | undefined): Promi
   return config;
 }
 
-async function checkLlm(report: Report, config: LoadedConfig | undefined, deps: DoctorDeps): Promise<void> {
+async function checkLlm(
+  report: Report,
+  config: LoadedConfig | undefined,
+  deps: DoctorDeps,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
   if (!config) {
     report.skip("LLM", "llm", "config is invalid");
     return;
   }
   try {
     const { client, models, cliVersion } = await resolveLlm(config.context.llm, {
+      env,
       platform: deps.platform,
       spawn: deps.spawn,
       command: deps.command,
@@ -157,9 +171,9 @@ async function checkLlm(report: Report, config: LoadedConfig | undefined, deps: 
   }
 }
 
-function checkEnv(report: Report): void {
+function checkEnv(report: Report, env: NodeJS.ProcessEnv): void {
   for (const name of ENV_NAMES) {
-    const raw = process.env[name];
+    const raw = env[name];
     const value = raw?.trim();
     // Whether SLACK_WEBHOOK_URL is needed depends on the channels, so Notify judges it.
     if (raw === undefined) {
@@ -173,7 +187,7 @@ function checkEnv(report: Report): void {
   }
 }
 
-async function checkNotify(report: Report, config: LoadedConfig | undefined): Promise<void> {
+async function checkNotify(report: Report, config: LoadedConfig | undefined, env: NodeJS.ProcessEnv): Promise<void> {
   if (!config) {
     report.skip("Notify", "channels", "config is invalid");
     return;
@@ -181,9 +195,11 @@ async function checkNotify(report: Report, config: LoadedConfig | undefined): Pr
   for (const channel of config.context.notify.channels) {
     switch (channel.type) {
       case "slack": {
-        const webhook = process.env.SLACK_WEBHOOK_URL?.trim();
-        if (!webhook) report.warn("Notify", "slack", "SLACK_WEBHOOK_URL is not set (run needs it unless --dry-run)");
-        else if (!webhook.startsWith(SLACK_WEBHOOK_PREFIX)) {
+        const webhook = slackWebhookUrl(env);
+        // run stops with 2 before fetching (createNotifiers); --dry-run delivers nothing and does not need it.
+        if (!webhook) {
+          report.fail("Notify", "slack", "SLACK_WEBHOOK_URL is not set (run --dry-run does not need it)", ExitCode.CONFIG);
+        } else if (!webhook.startsWith(SLACK_WEBHOOK_PREFIX)) {
           report.warn("Notify", "slack", `SLACK_WEBHOOK_URL is not a ${SLACK_WEBHOOK_PREFIX} URL`);
         } else report.ok("Notify", "slack", "posts to SLACK_WEBHOOK_URL");
         break;
@@ -270,15 +286,16 @@ async function checkSources(
   report: Report,
   config: LoadedConfig | undefined,
   signal: AbortSignal | undefined,
+  env: NodeJS.ProcessEnv,
 ): Promise<void> {
   if (!config) {
     report.skip("Sources", "sources", "config is invalid");
     return;
   }
   const { sources } = config;
-  const withQueries = tavilyApiKey() !== undefined;
+  const withQueries = tavilyApiKey(env) !== undefined;
   const configs = sourceConfigs(sources, withQueries);
-  const outcomes = await fetchEach(configs, sources.defaults, { signal });
+  const outcomes = await fetchEach(configs, { ...sources.defaults, env }, { signal });
   if (signal && outcomes.some((o) => "aborted" in o)) throw signal.reason;
   for (const outcome of outcomes) {
     const label = sourceLabel(outcome.source);

@@ -23,6 +23,11 @@ export const MAX_URL_CHARS = 1000;
 /** Extra posts allowed for retrying rejected messages in smaller pieces, per sendSlack. */
 export const MAX_FALLBACK_POSTS = 20;
 
+/** Actions expands an unset secret to "", so blank counts as unset. */
+export function slackWebhookUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return env.SLACK_WEBHOOK_URL?.trim() || undefined;
+}
+
 const MAX_HEADER_CHARS = 150;
 const MAX_CONTEXT_CHARS = 3000;
 const MAX_TITLE_CHARS = 300;
