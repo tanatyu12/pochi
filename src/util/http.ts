@@ -217,7 +217,8 @@ export function parseRetryAfter(value: string | null, now = Date.now()): number 
   return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
 
-function isServerSide(err: HttpError): boolean {
+/** A failure on the server's side or on the way there, which a retry may get past. */
+export function isServerSide(err: HttpError): boolean {
   return err.kind === "network" || err.kind === "timeout" || (err.status ?? 0) >= 500;
 }
 

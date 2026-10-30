@@ -316,6 +316,15 @@ describe("fetchGithubItems", () => {
     expect(items[0]?.content).toContain("Fixes");
   });
 
+  it("falls back to markdown bodies when GitHub drops the connection instead", async () => {
+    const markdown = releases.map(({ body_html, ...r }) => ({ ...r, body: "Fixes" }));
+    const dropped = () => Promise.reject(new TypeError("fetch failed", { cause: new Error("other side closed") }));
+    const fm = mockFetch({ [releasesApi(next.repo)]: [dropped, reply.json(markdown)] });
+    const items = await fetchGithubItems(next, defaults);
+    expect(fm.calls).toHaveLength(2);
+    expect(items.map((i) => i.title)).toEqual(["Next.js 16.1", "v16.0.0"]);
+  });
+
   it("passes a client error through without falling back", async () => {
     const fm = mockFetch({ [releasesApi(next.repo)]: reply.status(403) });
     await expect(fetchGithubItems(next, defaults)).rejects.toBeInstanceOf(HttpError);
