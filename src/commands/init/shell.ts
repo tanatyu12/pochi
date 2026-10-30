@@ -2,11 +2,6 @@ import { execFile } from "node:child_process";
 import { basename, dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
-/** Quotes a value for a POSIX shell, leaving plain paths as they are. */
-export function shellQuote(value: string): string {
-  return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 // One git call for paths that share a directory. It runs in that directory so a --config-dir
 // inside another repository is checked against that one.
 export async function gitCheckIgnored(paths: string[]): Promise<(boolean | undefined)[]> {

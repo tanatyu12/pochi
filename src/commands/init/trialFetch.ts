@@ -1,5 +1,5 @@
 import { SourcesSchema } from "../../config/schema.js";
-import { type SourceConfig, type SourceOutcome, fetchEach, sourceConfigs, sourceInfo } from "../../sources/index.js";
+import { type FetchOutcome, type SourceConfig, fetchEach, sourceConfigs, sourceInfo } from "../../sources/index.js";
 import { PromptCancelled } from "../../util/prompter.js";
 import { displayLine, plural } from "../../util/text.js";
 import { type FeedInput, type QueryInput, keyOf } from "./keys.js";
@@ -31,17 +31,17 @@ export async function trialFetch(
           () => fetchEach(toFetch, sources.defaults, { signal }),
           signal,
         );
-  if (signal?.aborted || fetched.some((o) => "aborted" in o)) throw new PromptCancelled();
+  if (signal?.aborted || fetched.some((o) => o.kind === "aborted")) throw new PromptCancelled();
   // Each outcome carries the config it was fetched for.
   const byConfig = new Map(fetched.map((o) => [o.source, o]));
-  const outcomes = configs.flatMap((source): SourceOutcome[] => {
+  const outcomes = configs.flatMap((source): FetchOutcome[] => {
     const feed = checkedFeed(source);
     if (!feed) {
       const outcome = byConfig.get(source);
       return outcome ? [outcome] : [];
     }
     const latest = s.checked.get(feed);
-    return [{ source, items: latest ? [latest] : [] }];
+    return [{ kind: "items", source, items: latest ? [latest] : [] }];
   });
 
   const rejected = new Set<string>();
@@ -49,23 +49,30 @@ export async function trialFetch(
     const { id, name, kind } = sourceInfo(outcome.source);
     const label = displayLine(name, SHOWN_MAX_CHARS);
     let ok = true;
-    if ("error" in outcome) {
-      ok = false;
-      p.warn(`${label} (${kind}) failed: ${errorLine(outcome.error)}`);
-    } else if ("items" in outcome) {
-      const item = outcome.items[0];
-      p.note(
-        item
-          ? [
-              displayLine(item.title, SHOWN_MAX_CHARS),
-              ...(item.publishedAt ? [item.publishedAt.slice(0, 10)] : []),
-              displayLine(item.url, SHOWN_MAX_CHARS),
-            ].join("\n")
-          : "No items yet.",
-        `${label} (${kind})`,
-      );
-      // The user just picked it, so only one that brought nothing is asked about again.
-      if (item) continue;
+    switch (outcome.kind) {
+      case "error":
+        ok = false;
+        p.warn(`${label} (${kind}) failed: ${errorLine(outcome.error)}`);
+        break;
+      // Thrown above as a cancel before any of them is shown.
+      case "aborted":
+        break;
+      case "items": {
+        const item = outcome.items[0];
+        p.note(
+          item
+            ? [
+                displayLine(item.title, SHOWN_MAX_CHARS),
+                ...(item.publishedAt ? [item.publishedAt.slice(0, 10)] : []),
+                displayLine(item.url, SHOWN_MAX_CHARS),
+              ].join("\n")
+            : "No items yet.",
+          `${label} (${kind})`,
+        );
+        // The user just picked it, so only one that brought nothing is asked about again.
+        if (item) continue;
+        break;
+      }
     }
     if (!(await p.confirm({ message: `Watch ${label} anyway?`, initialValue: ok }))) rejected.add(id);
   }

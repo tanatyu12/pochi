@@ -95,15 +95,6 @@ export type FetchOutcome =
   | { kind: "aborted"; source: SourceConfig; aborted: true };
 
 /**
- * FetchOutcome without the tag, which every FetchOutcome still is. Kept only for init, which
- * builds these and tells them apart with `in`; remove once it switches on kind.
- */
-export type SourceOutcome =
-  | { source: SourceConfig; items: Item[] }
-  | { source: SourceConfig; error: unknown }
-  | { source: SourceConfig; aborted: true };
-
-/**
  * Fetches each source, at most `concurrency` at a time, and settles every one in input order.
  * Never throws: once `signal` is aborted, queued sources are not started and a fetch the abort
  * cut short is `aborted`, not an error. What an abort means is left to the caller.
