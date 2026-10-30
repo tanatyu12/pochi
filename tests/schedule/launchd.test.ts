@@ -49,6 +49,17 @@ describe("launchdScheduler", () => {
     expect(scheduler.render(job, parseCron("17 6 * * 1,4"), "weekly -- on Monday and Thursday")).toMatchSnapshot();
   });
 
+  it("keeps any run of dashes in the summary from ending or breaking the XML comment", () => {
+    const scheduler = launchdScheduler({ exec: fakeExec().exec, home, uid: 501 });
+    for (const summary of ["a---b", "ends with-", "--"]) {
+      const plist = scheduler.render(job, parseCron("17 6 * * *"), summary);
+      const inner = /<!-- (.*) -->/.exec(plist)?.[1];
+      expect(inner).toBeDefined();
+      expect(inner).not.toContain("--");
+      expect(inner).not.toMatch(/-$/);
+    }
+  });
+
   it("boots out the old job, writes the plist and bootstraps it", async () => {
     const { exec, calls } = fakeExec((c) => (c.args[0] === "bootout" ? { code: 3 } : undefined));
     const scheduler = launchdScheduler({ exec, home, uid: 501 });

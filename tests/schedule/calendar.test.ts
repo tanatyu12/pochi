@@ -62,6 +62,8 @@ describe("parseCron", () => {
     ["0 6-2 * * *", "backwards range"],
     ["*/0 6 * * *", "zero step"],
     ["*-5 6 * * *", "not valid"],
+    ["0 6 * *\n* *", "on one line"],
+    ["0 6\r* * *", "on one line"],
   ])("rejects %s", (expr, message) => {
     expect(() => parseCron(expr)).toThrow(CalendarError);
     expect(() => parseCron(expr)).toThrow(message);
@@ -152,6 +154,18 @@ describe("offsetMinutes and describeSchedule", () => {
     expect(offsetMinutes("Asia/Kathmandu", NOW)).toBe(345);
     expect(offsetMinutes("America/New_York", NOW)).toBe(-240);
     expect(offsetMinutes("UTC", NOW)).toBe(0);
+  });
+
+  it("accepts tabs and surrounding newlines in a cron expression", () => {
+    expect(parseCron("\t0\t6 * * *\n").hour).toEqual([6]);
+  });
+
+  it("describes a cron expression on one line, normalized", () => {
+    // Not through the schema, which rejects the newline already.
+    const raw = { ...schedule({ interval: "cron", cronjob: "0 8 * * 1-5" }), cronjob: " 0  8\t* *\n1-5 " };
+    expect(describeSchedule(raw, "UTC")).toBe(
+      'cron "0 8 * * 1-5" (UTC)',
+    );
   });
 
   it("describes each interval", () => {
