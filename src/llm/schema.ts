@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { ImpactSchema } from "../config/schema.js";
 import { ExitCode, PochiError } from "../errors.js";
 
@@ -104,7 +104,7 @@ export function statusKind(status: number | undefined): StatusKind {
   if (status === 429) return "rate_limit";
   // The request was too large; smaller batches get through.
   if (status === 413) return "too_large";
-  // 408 / 409 and 5xx are transient: the SDK and claude have already retried them.
+  // 408 / 409 and 5xx are transient: api.ts and claude have already retried them.
   if (status === 408) return "timeout";
   if (status === 409 || (status !== undefined && status >= 500)) return "transport";
   // A 400 can come from one item's content, so the batch is split; a configuration error shows up

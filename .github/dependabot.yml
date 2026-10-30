@@ -12,6 +12,11 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # Kept on the major feedsmith depends on, so only one copy is installed and bundled.
+      # Move it when feedsmith does.
+      - dependency-name: entities
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

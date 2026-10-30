@@ -3,7 +3,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
+import * as z from "zod";
 import { log } from "../util/log.js";
 import {
   type GenerateRequest,

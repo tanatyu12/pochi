@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import type { GithubFeed } from "../config/schema.js";
 import type { FetchDefaults, Item } from "../types.js";
 import { fetchText, HttpError } from "../util/http.js";

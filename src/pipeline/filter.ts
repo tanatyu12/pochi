@@ -27,7 +27,7 @@ const SPLIT_KINDS: ReadonlySet<LlmErrorKind> = new Set([
   "too_large",
   "bad_request",
 ]);
-// The SDK and claude have already retried with their own backoff; this gives a limit time to pass.
+// api.ts and claude have already retried with their own backoff; this gives a limit time to pass.
 export const RETRY_DELAY_MS = 10_000;
 // Too large for the context window or the output limit: halves can get through even when both failed.
 const SIZE_KINDS: ReadonlySet<LlmErrorKind> = new Set(["too_large", "max_tokens"]);

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
-import { z } from "zod";
+import * as z from "zod";
 import { ExitCode, PochiError } from "../errors.js";
 import { log } from "../util/log.js";
 import { daysBetween, toIsoSeconds } from "../util/time.js";
