@@ -35,6 +35,8 @@ export interface RunDeps {
   resolveLlm?: typeof defaultResolveLlm;
   retryDelayMs?: number;
   slackIntervalMs?: number;
+  /** Read only for GITHUB_ACTIONS; process.env when left out. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -75,8 +77,10 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   const store =
     opts.state === false ? memoryStateStore() : fileStateStore(resolveStatePath({ flag: opts.state }), { readOnly: dryRun });
 
+  // The generated workflow commits the state file, so on Actions it holds no briefing text.
+  const storeAnalyses = (deps.env ?? process.env).GITHUB_ACTIONS?.trim() !== "true";
   const result = await runBriefing(
-    { context, sources, llm: client, notifiers, store, dryRun },
+    { context, sources, llm: client, notifiers, store, dryRun, storeAnalyses },
     { now: () => now, timeZone: deps.timeZone, signal, retryDelayMs: deps.retryDelayMs },
   );
   const { briefing, filtered, sent, delivered } = result;

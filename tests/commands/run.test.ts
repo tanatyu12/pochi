@@ -321,6 +321,17 @@ describe("runCommand", () => {
     expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
   });
 
+  it("keeps no analysis text in the state on GitHub Actions, where the file is committed", async () => {
+    const reports = join(dir, "reports");
+    await writeFile(join(dir, "config", "context.yml"), withChannels(`[{ type: slack }, { type: file, dir: "${reports}" }]`));
+    routes({ slack: reply.status(404) });
+    expect(await exitOf(run(fakeLlm(), {}, { env: { GITHUB_ACTIONS: "true" } }))).toBe(ExitCode.DELIVERY);
+    const entries = Object.values(await readState()) as { s: string; c?: string[]; a?: unknown }[];
+    const waiting = entries.filter((e) => e.s === "r");
+    expect(waiting.length).toBeGreaterThan(0);
+    expect(waiting.every((e) => e.c?.join() === "file" && e.a === undefined)).toBe(true);
+  });
+
   it("names the file channel when only it fails, keeping the items for tomorrow", async () => {
     const blocker = join(dir, "not-a-dir");
     await writeFile(blocker, "");
