@@ -230,6 +230,33 @@ describe("buildSlackMessages", () => {
   });
 });
 
+describe("buildSlackMessages: other reports of a story", () => {
+  const report = (n: number, url = `https://news.example.com/${n}`) => ({
+    ...insight(n).item,
+    id: `r${n}`,
+    title: `Report ${n}`,
+    url,
+  });
+
+  it("links up to three under the insight and counts the rest", () => {
+    const f = insight(1, { related: [1, 2, 3, 4].map((n) => report(n)) });
+    const [text] = sections(only(briefing([f])));
+    expect(text!.split("\n").at(-1)).toBe(
+      "_Also:_ <https://news.example.com/1|Report 1> · <https://news.example.com/2|Report 2> · <https://news.example.com/3|Report 3> · and 1 more",
+    );
+  });
+
+  it("counts the links that do not fit instead of linking them, within the section", () => {
+    const long = (n: number) => report(n, `https://news.example.com/${n}?${"q".repeat(600)}`);
+    const f = insight(1, { related: [long(1), long(2), long(3)], summary: "s".repeat(5000) });
+    const [text] = sections(only(briefing([f])));
+    const last = text!.split("\n").at(-1)!;
+    expect(last.startsWith("_Also:_ <https://news.example.com/1?")).toBe(true);
+    expect(last.endsWith("· and 2 more")).toBe(true);
+    expect(text!.length).toBeLessThanOrEqual(MAX_SECTION_CHARS);
+  });
+});
+
 describe("sendSlack", () => {
   const messages = () => buildSlackMessages(briefing(many(100)), { postWhenEmpty: false });
   const ids = (from: number, to: number) => many(to).slice(from).map((f) => f.item.id);

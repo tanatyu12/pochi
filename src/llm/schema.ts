@@ -18,6 +18,11 @@ export const AnalysisOutputSchema = z.object({
 });
 export type AnalysisOutput = z.output<typeof AnalysisOutputSchema>;
 
+export const GroupingOutputSchema = z.object({
+  groups: z.array(z.object({ ids: z.array(z.string()), primary: z.string() })),
+});
+export type GroupingOutput = z.output<typeof GroupingOutputSchema>;
+
 export const RepoInferenceOutputSchema = z.object({
   results: z.array(
     z.object({ id: z.string(), candidates: z.array(z.object({ repo: z.string(), note: z.string() })) }),

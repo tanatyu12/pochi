@@ -4,6 +4,7 @@ import { HttpError, postJson } from "../util/http.js";
 import { log } from "../util/log.js";
 import { collapseWhitespace, plural, truncate, truncateUnits } from "../util/text.js";
 import { sleep } from "../util/time.js";
+import { relatedShown } from "./text.js";
 import type { Briefing, Delivery, DeliveryFailure, Notifier } from "./types.js";
 
 export const MAX_ITEMS_PER_MESSAGE = 45;
@@ -25,6 +26,9 @@ const MAX_HEADER_CHARS = 150;
 const MAX_CONTEXT_CHARS = 3000;
 const MAX_TITLE_CHARS = 300;
 const MAX_SOURCE_CHARS = 200;
+const MAX_RELATED_TITLE_CHARS = 80;
+/** The other reports of a story; links that do not fit are only counted. */
+const MAX_RELATED_CHARS = 900;
 const SEND_INTERVAL_MS = 1_100;
 
 // Labels are English whatever the configured language; only the model's text follows it.
@@ -226,19 +230,44 @@ function insightText(f: Insight): string {
   const url = linkUrl(f.item.url);
   const head = `${impactLabel(f)} ${url === undefined ? `*${title}*` : `<${url}|${title}>`}`;
   const source = sourceText(f);
+  const related = relatedLine(f);
   const actionPrefix = "*Action:* ";
   const summary = escapeUnits(f.summary.trim());
   const action = escapeUnits(f.action.trim());
-  const lines = 2 + (summary.length > 0 ? 1 : 0) + (action.length > 0 ? 1 : 0);
+  const lines = 2 + (summary.length > 0 ? 1 : 0) + (action.length > 0 ? 1 : 0) + (related ? 1 : 0);
   const rest = Math.max(
     0,
-    MAX_SECTION_CHARS - head.length - source.length - (lines - 1) - (action.length > 0 ? actionPrefix.length : 0),
+    MAX_SECTION_CHARS -
+      head.length -
+      source.length -
+      related.length -
+      (lines - 1) -
+      (action.length > 0 ? actionPrefix.length : 0),
   );
   // The action keeps at least half of the room, or all that the summary leaves.
   const actionText =
     action.length > 0 ? truncateUnits(action, Math.max(Math.floor(rest / 2), rest - summary.join("").length)) : "";
   const summaryText = truncateUnits(summary, rest - actionText.length);
-  return [head, summaryText, actionText && actionPrefix + actionText, source].filter((s) => s !== "").join("\n");
+  return [head, summaryText, actionText && actionPrefix + actionText, source, related]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+/** The other reports of a story, as many linked as fit in MAX_RELATED_CHARS; "" without any. */
+function relatedLine(f: Insight): string {
+  const { shown, more } = relatedShown(f);
+  if (shown.length === 0) return "";
+  const links = shown.map((r) => {
+    const title = fitEscaped(collapseWhitespace(r.title).replaceAll("|", "｜"), MAX_RELATED_TITLE_CHARS);
+    const url = linkUrl(r.url);
+    return url === undefined ? title : `<${url}|${title}>`;
+  });
+  for (let n = links.length; ; n--) {
+    const rest = more + links.length - n;
+    const parts = [...links.slice(0, n), ...(rest > 0 ? [`and ${rest} more`] : [])];
+    const line = `_Also:_ ${parts.join(" · ")}`;
+    if (line.length <= MAX_RELATED_CHARS || n === 0) return line;
+  }
 }
 
 function impactLabel(f: Insight): string {
