@@ -378,7 +378,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 - レポート（`notify.personality`、既定 true。false なら従来の文面）：タイトルは変えない。フッターを `Fetched by Pochi · <n> items from <m> sources`（失敗は `; couldn't fetch: ...`、Slack は ` · Couldn't fetch: ...`）にし、0件の日は3つの文から日付の SHA-256 で1つ選ぶ（同じ日の通知先はすべて同じ文になる）
 - 通算回数：1件以上届けた実行の数を状態ファイルの `briefings` に数える（届けられなかった実行は数えない。読めない値は無視する）。今回が 10・50・100・200・300・365・500・1000 回目で、届ける記事があれば、フッターに ` · <n>th briefing` を足す
 - `pochi woof`（--help に出さない）：TTY では絵の尻尾を6回振り（`SITTING` と `WAGGING` を 160ms ごとに描き直す）、`<n> briefings fetched so far` を添える。TTY でなければ `Woof. ...` を1行出す。状態ファイルは読むだけ
-- README 用の素材：`node scripts/logo.mjs` が `SITTING` から `docs/pochi.svg` を作る（ライトテーマでは濃い紫）。`npm run demo`（`scripts/demo.sh`）が `docs/demo.tape` を Docker の vhs（`docs/demo/Dockerfile`。公式イメージに Node を足しただけ）で録り、`docs/demo.gif` を作る。手元に vhs・ttyd・ffmpeg を入れない。デモは Pochi 自身が使う技術を追う設定（`docs/demo/*.yml`）で woof、doctor、run --dry-run を見せる。コンテナからは手元の claude / codex のログインを使えないので、ANTHROPIC_API_KEY がなければ録らずに終了コード2で止める
+- README 用の素材：`node scripts/logo.mjs` が `SITTING` から `docs/pochi.svg` を作る（ライトテーマでは濃い紫）。README は GitHub のテーマで切り替えるため、色を固定した `docs/pochi-dark.svg` と `docs/pochi-light.svg` も書き出す。`npm run demo`（`scripts/demo.sh`）が `docs/demo.tape` を Docker の vhs（`docs/demo/Dockerfile`。公式イメージに Node を足しただけ）で録り、`docs/demo.gif` を作る。手元に vhs・ttyd・ffmpeg を入れない。デモはサンプルのヘルプデスク SaaS の設定（`docs/demo/*.yml`。README の届くものの例も同じ設定から作る）で woof、doctor、run --dry-run を見せる。dry run は結果をファイルに出して more で先頭から見せ、LLM を待つ間は Hide で録らない。コンテナからは手元の claude / codex のログインを使えないので、ANTHROPIC_API_KEY がなければ録らずに終了コード2で止める
 
 ### 定期実行（schedule/、commands/schedule.ts）
 
@@ -456,7 +456,7 @@ README に書く注意点：
 | T19 | M4 init | init のソース特定と Trial Fetch | T18, T6, T7, T8, T13 | 存在を確認できないリポジトリは提示しない。owner/repo は LLM を通さない。LLM なしでも完了する。複数フィードは選ばせる。却下されたソースは除外する | 完了 |
 | T20 | M5 CI・文書 | daily_briefing.yml（T25 の github バックエンドとして生成する） | T16, T25 | actionlint が通る。dry_run ではコミットしない。秘密情報を echo しない | 確認待ち（actionlint 未実行） |
 | T21 | M5 CI・文書 | ci.yml と dependabot | T1 | 最初の push で CI が通る | 未着手 |
-| T22 | M5 CI・文書 | README と SECURITY.md | T16, T19 | README だけを見て clone から最初の dry-run まで進める。`init --print-prompt` から `--from` までの手順も載せる | 未着手 |
+| T22 | M5 CI・文書 | README と SECURITY.md | T16, T19 | README だけを見て clone から最初の dry-run まで進める。`init --print-prompt` から `--from` までの手順も載せる | 完了 |
 | T23 | M5 CI・文書 | 手動 E2E とリリース準備 | すべて | 検証計画の12項目を通す。npm audit で high 以上がない | 未着手 |
 | T24 | M4 init | 提案の取り込み（`init --from`、`--print-prompt`、探索プロンプト） | T19 | 提案の JSON を前後の説明文ごと読める。不正なエントリだけを捨てる。存在しない repo は書き出さない。案の queries があれば LLM に提案を求めない。読めないファイルなら質問の前に2。手元の claude で pochi 自身から作った案を読める | 完了 |
 | T25 | M5 CI・文書 | 定期実行の抽象化（`pochi schedule`、launchd / cron / github） | T16 | dependabot 形式の頻度を各バックエンドに変換できる。タイムゾーンの移動と移せない場合のエラー。crontab の他の行を壊さない。plist が plutil -lint を通る。手元の Mac で dry-run のジョブが動く | 確認待ち（実機未確認） |
