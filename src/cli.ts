@@ -10,7 +10,7 @@ import { woofCommand } from "./commands/woof.js";
 import { DEFAULT_CONFIG_DIR } from "./config/load.js";
 import { ExitCode, PochiError, exitCodeOf } from "./errors.js";
 import { redact } from "./util/log.js";
-import { isFancy } from "./util/pochi-art.js";
+import { isFancy } from "./util/pochiArt.js";
 import { VERSION } from "./version.js";
 
 export function createProgram(opts: { signal?: AbortSignal } = {}): Command {

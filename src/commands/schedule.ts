@@ -14,6 +14,7 @@ import {
   offsetMinutes,
   parseTime,
   toCron,
+  wallTime,
 } from "../schedule/calendar.js";
 import {
   type BackendName,
@@ -30,7 +31,6 @@ import { fsStep, unlessMissing } from "../schedule/fs.js";
 import { redact } from "../util/log.js";
 
 const NEXT_RUNS = 3;
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export interface ScheduleOptions {
   backend?: string;
@@ -262,12 +262,6 @@ function checkGithub(config: LoadedConfig): string[] {
       ? [`llm.provider is ${provider}, but the Actions runner has no CLI to run; use auto or api there`]
       : []),
   ];
-}
-
-/** "Mon 2026-11-02 06:17", on the machine's clock. */
-function wallTime(at: Date, timeZone: string): string {
-  const local = new Date(at.getTime() + offsetMinutes(timeZone, at) * 60_000);
-  return `${DAY_NAMES[local.getUTCDay()]} ${local.toISOString().slice(0, 16).replace("T", " ")}`;
 }
 
 function display(s: Setup, path: string): string {

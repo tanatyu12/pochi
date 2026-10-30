@@ -3,7 +3,7 @@ import { access, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { styleText } from "node:util";
 import { Command } from "commander";
-import { ConfigError, type LoadedConfig, loadConfig } from "../config/load.js";
+import { CONFIG_ENV_NAMES, type ConfigEnvName, ConfigError, type LoadedConfig, loadConfig } from "../config/load.js";
 import { ExitCode, type ExitCodeValue, PochiError } from "../errors.js";
 import { resolveLlm } from "../llm/adapter.js";
 import type { SpawnFn } from "../llm/cli.js";
@@ -11,9 +11,19 @@ import { LlmError } from "../llm/schema.js";
 import { fetchEach, type SourceConfig, sourceConfigs, sourceInfo } from "../sources/index.js";
 import { slackWebhookUrl } from "../notifiers/slack.js";
 import { tavilyApiKey } from "../sources/tavily.js";
-import { type EntryStatus, inspectState, pruneState, resolveStatePath, StateError } from "../state/store.js";
-import { configureLog, redact } from "../util/log.js";
-import { isFancy, purple } from "../util/pochi-art.js";
+import {
+  type EntryStatus,
+  inspectState,
+  pruneState,
+  resolveStatePath,
+  STATE_PATH_ENV,
+  type StateInspection,
+  StateError,
+} from "../state/store.js";
+import { isEnoent } from "../util/fs.js";
+import { configureLog, redact, type SecretEnvName } from "../util/log.js";
+import { isFancy, purple } from "../util/pochiArt.js";
+import { settle } from "../util/settle.js";
 import { displayLine, plural } from "../util/text.js";
 import { toIsoDate } from "../util/time.js";
 import { VERSION } from "../version.js";
@@ -21,17 +31,17 @@ import { VERSION } from "../version.js";
 // Feed titles and error messages come from outside; one long one should not flood the report.
 const DETAIL_MAX_CHARS = 200;
 
-// Only whether each is set is shown, never the value.
-const ENV_NAMES = [
+// Only whether each is set is shown, never the value. Typed against the lists they are read
+// by, so a renamed variable cannot leave a stale name here.
+const ENV_NAMES: readonly (SecretEnvName | ConfigEnvName | typeof STATE_PATH_ENV | "ANTHROPIC_BASE_URL")[] = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_BASE_URL",
   "TAVILY_API_KEY",
   "SLACK_WEBHOOK_URL",
   "GITHUB_TOKEN",
-  "POCHI_CONTEXT_YAML",
-  "POCHI_SOURCES_YAML",
-  "POCHI_STATE_PATH",
-] as const;
+  ...CONFIG_ENV_NAMES,
+  STATE_PATH_ENV,
+];
 const SLACK_WEBHOOK_PREFIX = "https://hooks.slack.com/";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip" | "-";
@@ -79,17 +89,18 @@ export interface DoctorResult {
 export async function doctor(opts: DoctorOptions = {}, deps: DoctorDeps = {}): Promise<DoctorResult> {
   const write = deps.write ?? ((line: string) => void process.stdout.write(`${line}\n`));
   // Colored only on the real stdout; a write passed in gets the plain report.
-  const report = new Report((line) => write(redact(line)), deps.write === undefined && isFancy());
   const { signal } = deps;
   const env = deps.env ?? process.env;
+  const report = new Report((line) => write(redact(line)), deps.write === undefined && isFancy(process.stdout, env));
   report.title(report.fancy ? `${purple("pochi")} ${VERSION} doctor` : `pochi ${VERSION} doctor`);
   const interrupted = () => ({ checks: report.checks, exitCode: ExitCode.INTERRUPTED });
   try {
     const config = await checkConfig(report, opts.configDir, env);
     signal?.throwIfAborted();
-    // Read while the LLM probe (up to 10 seconds) runs; it is still reported after it.
+    // Read while the LLM probe (up to 10 seconds) runs; it is still reported after it. Settled,
+    // so a failure is never an unhandled rejection meanwhile.
     const statePath = resolveStatePath({ flag: opts.state, env });
-    const stateRead = readState(statePath);
+    const stateRead = settle(inspectState(statePath));
     await checkLlm(report, config, deps, env);
     signal?.throwIfAborted();
     checkEnv(report, env);
@@ -220,7 +231,7 @@ async function unwritableDir(dir: string): Promise<string | undefined> {
     try {
       if (!(await stat(path)).isDirectory()) return path === resolve(dir) ? "not a directory" : "cannot be created";
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT" && dirname(path) !== path) continue;
+      if (isEnoent(err) && dirname(path) !== path) continue;
       return "cannot be read";
     }
     try {
@@ -232,31 +243,21 @@ async function unwritableDir(dir: string): Promise<string | undefined> {
   }
 }
 
-type StateRead = { found: Awaited<ReturnType<typeof inspectState>> } | { error: unknown };
-
-// Settled, so a failure is never an unhandled rejection while the LLM probe runs.
-function readState(path: string): Promise<StateRead> {
-  return inspectState(path).then(
-    (found) => ({ found }),
-    (error: unknown) => ({ error }),
-  );
-}
-
 async function checkState(
   report: Report,
   config: LoadedConfig | undefined,
   path: string,
-  pending: Promise<StateRead>,
+  pending: Promise<PromiseSettledResult<StateInspection>>,
   now: Date,
 ): Promise<void> {
   const read = await pending;
-  if ("error" in read) {
-    const err = read.error;
+  if (read.status === "rejected") {
+    const err = read.reason;
     if (!(err instanceof StateError)) throw err;
     report.fail("State", path, withCause(err.message, err.cause), ExitCode.INTERNAL);
     return;
   }
-  const { found } = read;
+  const found = read.value;
   if (found.kind === "missing") {
     report.ok("State", path, "not found (the first run starts empty)");
     return;
@@ -296,22 +297,29 @@ async function checkSources(
   const withQueries = tavilyApiKey(env) !== undefined;
   const configs = sourceConfigs(sources, withQueries);
   const outcomes = await fetchEach(configs, { ...sources.defaults, env }, { signal });
-  if (signal && outcomes.some((o) => "aborted" in o)) throw signal.reason;
+  if (signal && outcomes.some((o) => o.kind === "aborted")) throw signal.reason;
   for (const outcome of outcomes) {
     const label = sourceLabel(outcome.source);
-    if ("error" in outcome) {
-      report.fail("Sources", label, errorText(outcome.error));
-    } else if ("items" in outcome) {
-      const title = outcome.items[0]?.title;
-      if (title === undefined) report.warn("Sources", label, "no items");
-      else report.ok("Sources", label, title);
+    switch (outcome.kind) {
+      case "error":
+        report.fail("Sources", label, errorText(outcome.error));
+        break;
+      case "items": {
+        const title = outcome.items[0]?.title;
+        if (title === undefined) report.warn("Sources", label, "no items");
+        else report.ok("Sources", label, title);
+        break;
+      }
+      case "aborted":
+        // Only without a signal to rethrow, where nothing can abort; nothing to report.
+        break;
     }
   }
   if (!withQueries) {
     for (const q of sources.queries) report.skip("Sources", `${q.id} (tavily)`, "TAVILY_API_KEY is not set");
   }
   // Like run: some failing sources is fine, all of them is not.
-  if (configs.length > 0 && outcomes.every((o) => "error" in o)) {
+  if (configs.length > 0 && outcomes.every((o) => o.kind === "error")) {
     report.fail("Sources", "sources", `all ${plural(configs.length, "source")} failed`, ExitCode.SOURCES);
   }
 }

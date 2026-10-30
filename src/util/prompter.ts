@@ -3,7 +3,7 @@ import { styleText } from "node:util";
 import * as clack from "@clack/prompts";
 import { ExitCode, PochiError } from "../errors.js";
 import { configureLog } from "./log.js";
-import { greeting, isFancy } from "./pochi-art.js";
+import { greeting, isFancy } from "./pochiArt.js";
 
 export interface TextPrompt {
   message: string;
@@ -124,7 +124,7 @@ function startSpinner(message: string): () => void {
     const width = output.columns || Infinity;
     const shown = message.length + 3 > width ? `${message.slice(0, Math.max(0, width - 4))}…` : message;
     let frame = 0;
-    const draw = () => output.write(`\r\x1b[2K${styleText("magenta", FRAMES[frame++ % FRAMES.length]!)}  ${shown}`);
+    const draw = () => output.write(`\r\x1b[2K${styleText("magenta", FRAMES[frame++ % FRAMES.length] ?? "")}  ${shown}`);
     output.write("\x1b[?25l");
     draw();
     timer = setInterval(draw, FRAME_MS);

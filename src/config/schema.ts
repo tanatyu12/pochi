@@ -12,6 +12,8 @@ export const REPO_PATTERN = /^[\w-]+\/(?!\.\.?$)[\w.-]+$/;
 
 // Every interest goes into each LLM prompt, but at a line each 50 is still about 1,000 tokens.
 export const MAX_PROBLEMS = 50;
+// Also in every prompt; things to leave out are short.
+export const MAX_EXCLUDE = 30;
 
 export const ImpactSchema = z.enum(["High", "Medium", "Low"]);
 export type Impact = z.output<typeof ImpactSchema>;
@@ -66,7 +68,7 @@ export const ContextSchema = z
     version: z.literal(1),
     project: z.strictObject({ name: text, description: z.string() }),
     problems: z.array(text).min(1).max(MAX_PROBLEMS),
-    exclude: z.array(text).max(30).default([]),
+    exclude: z.array(text).max(MAX_EXCLUDE).default([]),
     language: text.default("English"),
     llm: z
       .strictObject({
@@ -239,7 +241,9 @@ function describeIssue(issue: z.core.$ZodIssue): string {
     case "custom":
       // Only our own refinements produce these, and their messages never include the value.
       return issue.message;
-    default:
+    case "not_multiple_of":
+    case "invalid_key":
+    case "invalid_element":
       return "invalid value";
   }
 }

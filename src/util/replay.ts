@@ -36,8 +36,8 @@ export function replayingPrompter(inner: Prompter): ReplayingPrompter {
   async function ask<T>(kind: Kind, message: string, call: (previous: unknown) => Promise<T>): Promise<T> {
     const index = cursor++;
     if (index < replayUntil) {
-      const recorded = log[index]!;
-      if (recorded.kind === kind && recorded.message === message) return recorded.answer as T;
+      const recorded = log[index];
+      if (recorded?.kind === kind && recorded.message === message) return recorded.answer as T;
       // The flow took another path (a fetch that now fails, say): ask from here on.
       replayUntil = index;
     }

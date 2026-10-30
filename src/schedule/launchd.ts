@@ -1,10 +1,10 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ConfigError } from "../config/load.js";
 import { type Calendar, CalendarError, eitherDay, type Field } from "./calendar.js";
 import type { ExecFn } from "./exec.js";
-import { fsStep, unlessMissing } from "./fs.js";
+import { fsStep, readIfExists, removeIfExists } from "./fs.js";
 import type { Job, Scheduler } from "./types.js";
 
 // One dictionary per combination; past this the calendar is better served by cron.
@@ -77,12 +77,12 @@ export function launchdScheduler(deps: { exec: ExecFn; home: string; uid: number
     async uninstall(job) {
       const path = plistPath(job);
       const unloaded = (await deps.exec("launchctl", ["bootout", `${domain}/${job.id}`])).code === 0;
-      const existed = (await unlessMissing("remove", path, () => rm(path).then(() => true))) ?? false;
+      const existed = await removeIfExists(path);
       return unloaded || existed;
     },
     async inspect(job) {
       const path = plistPath(job);
-      const content = await unlessMissing("read", path, () => readFile(path, "utf8"));
+      const content = await readIfExists(path);
       const loaded = (await deps.exec("launchctl", ["print", `${domain}/${job.id}`])).code === 0;
       return { content, loaded };
     },

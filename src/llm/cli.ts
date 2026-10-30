@@ -219,7 +219,9 @@ export function runIn(
       () => stop(new LlmError("timeout", `${run.command} did not answer within ${run.timeoutMs}ms (${label})`)),
       run.timeoutMs,
     );
-    const onAbort = () => stop(abortReason(signal!));
+    const onAbort = () => {
+      if (signal) stop(abortReason(signal));
+    };
     signal?.addEventListener("abort", onAbort, { once: true });
 
     const finish = (settle: () => void) => {
