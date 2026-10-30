@@ -6,7 +6,11 @@ export type SourceKind = "rss" | "github" | "googlenews" | "tavily";
  * What every source is fetched with: the configured defaults and, when the run knows when it last
  * ran, since. Sources then take what was published since rather than only their newest few.
  */
-export type FetchDefaults = Sources["defaults"] & { since?: Date };
+export type FetchDefaults = Sources["defaults"] & {
+  since?: Date;
+  /** Where source secrets (GITHUB_TOKEN, TAVILY_API_KEY) come from; process.env when left out. */
+  env?: NodeJS.ProcessEnv;
+};
 
 /** A collected article, normalized across sources. */
 export interface Item {

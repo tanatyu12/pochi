@@ -35,7 +35,7 @@ export async function fetchTavilyItems(
   defaults: FetchDefaults,
   signal?: AbortSignal,
 ): Promise<Item[]> {
-  const key = tavilyApiKey();
+  const key = tavilyApiKey(defaults.env);
   if (!key) return [];
   const body = {
     query: query.query,

@@ -9,13 +9,17 @@ import {
   type StateEntry,
   StateError,
   emptyState,
+  fileStateStore,
   inspectState,
   isKnown,
   loadState,
+  memoryStateStore,
+  parseState,
   pruneState,
   record,
   resolveStatePath,
   saveState,
+  serializeState,
   statusOf,
   touch,
 } from "../../src/state/store.js";
@@ -378,5 +382,52 @@ describe("saveState", () => {
     const err = await saveState(emptyState(), path).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StateError);
     expect((err as StateError).cause).toBe(ENOSPC);
+  });
+});
+
+describe("parseState and serializeState", () => {
+  it("read back the state they wrote, so another store can keep the same document", () => {
+    const state = { ...stateOf({ [A]: { s: "r", f: "2026-10-20", l: "2026-10-25" } }), briefings: 3 };
+    const parsed = parseState(serializeState(state, NOW));
+    expect(parsed).toEqual({ kind: "ok", dropped: 0, state: { ...state, updatedAt: new Date("2026-10-25T22:17:03Z") } });
+  });
+
+  it("tell a document that is not a state file", () => {
+    expect(parseState("not json")).toEqual({ kind: "invalid" });
+    expect(parseState('{"version":2,"entries":{}}')).toEqual({ kind: "invalid" });
+  });
+});
+
+describe("fileStateStore", () => {
+  it("loads and saves the file at its path", async () => {
+    const store = fileStateStore(path);
+    const state = await store.load({ now: NOW });
+    record(state, [A], "n", "2026-10-25");
+    await store.save(state, { now: NOW });
+    expect(await readFile(path, "utf8")).toBe(serializeState(state, NOW));
+    expect([...(await store.load({ now: NOW })).entries.keys()]).toEqual([A]);
+  });
+
+  it("writes nothing and leaves a corrupt file in place when read-only", async () => {
+    await writeFile(path, "garbage");
+    const store = fileStateStore(path, { readOnly: true });
+    const state = await store.load({ now: NOW });
+    record(state, [A], "n", "2026-10-25");
+    await store.save(state, { now: NOW });
+    expect(await readFile(path, "utf8")).toBe("garbage");
+  });
+});
+
+describe("memoryStateStore", () => {
+  it("starts empty and gives back what was saved, unaffected by later changes", async () => {
+    const store = memoryStateStore();
+    const state = await store.load({ now: NOW });
+    expect(state.entries.size).toBe(0);
+    record(state, [A], "n", "2026-10-25");
+    await store.save(state, { now: NOW });
+    record(state, [B], "i", "2026-10-25");
+    const loaded = await store.load({ now: NOW });
+    expect([...loaded.entries.keys()]).toEqual([A]);
+    expect(loaded.updatedAt).toEqual(new Date("2026-10-25T22:17:03Z"));
   });
 });

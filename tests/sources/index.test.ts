@@ -77,6 +77,14 @@ describe("collectAll", () => {
     expect(result.failures.map((f) => f.sourceId)).toEqual(["a", "b"]);
   });
 
+  it("takes TAVILY_API_KEY from the env it is given", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "");
+    const fm = mockFetch({ [SEARCH]: tavily("https://news.example.com/x") });
+    const result = await collectAll(config([], ["q1"]), { env: { TAVILY_API_KEY: KEY } });
+    expect(result.attempted).toBe(1);
+    expect(fm.calls[0]?.headers.get("authorization")).toBe(`Bearer ${KEY}`);
+  });
+
   it("drops an item another source already returned under the same id", async () => {
     // Tavily ids leave out the query, so two queries finding one page give the same id.
     mockFetch({ [SEARCH]: tavily("https://news.example.com/x", "https://news.example.com/y") });
