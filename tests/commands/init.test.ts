@@ -39,6 +39,7 @@ const SIMON = "https://simonwillison.net/atom/everything/";
 const QUIET = "https://quiet.example.com/feed";
 const TAVILY = "https://api.tavily.com/search";
 
+const CHANNELS = "Where should the briefing go? (space to toggle)";
 const NEWS = "News searches to run (Google News, free; space to select)";
 const WEB = "Web searches to run (Tavily, paid; space to select)";
 // Every day at the default time, asked right after the channels.
@@ -362,6 +363,28 @@ describe("runInit", () => {
     const text = await readFile(join(dir, "context.yml"), "utf8");
     expect(text).not.toContain("exclude");
     expect((await loadConfig({ configDir: dir, env: {} })).context.language).toBe("German");
+  });
+
+  it("starts the channels from files, which need no secret", async () => {
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
+    await runInit({ configDir: dir }, d);
+    expect(prompter.initial[CHANNELS]).toEqual(["file"]);
+  });
+
+  it("starts the channels from the ones being overwritten, keeping their settings", async () => {
+    const old = (channels: string) =>
+      `version: 1\nproject: { name: old, description: "" }\nproblems: [p]\nnotify: { channels: ${channels} }\n`;
+    const answers = ["app", "", "Problem", "", "", "English", ["file"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, false];
+    await writeFile(join(dir, "context.yml"), old("[{ type: file, dir: briefs }]"));
+    const first = deps([true, ...answers]);
+    await runInit({ configDir: dir }, first.deps);
+    expect(first.prompter.initial[CHANNELS]).toEqual(["file"]);
+    expect((await loadConfig({ configDir: dir, env: {} })).context.notify.channels).toEqual([{ type: "file", dir: "briefs" }]);
+
+    await writeFile(join(dir, "context.yml"), old("[{ type: slack }]"));
+    const second = deps([true, ...answers]);
+    await runInit({ configDir: dir }, second.deps);
+    expect(second.prompter.initial[CHANNELS]).toEqual(["slack"]);
   });
 
   it("asks again until a channel is picked, and leaves the Actions steps out for files only", async () => {
