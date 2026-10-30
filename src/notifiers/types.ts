@@ -15,6 +15,8 @@ export interface Briefing {
   failedSources: string[];
   /** Pochi's voice in the footer and quiet-day note (notify.personality). */
   personality?: boolean;
+  /** Which briefing this is, when it is a round number worth a mention (voice.isMilestone). */
+  milestone?: number;
 }
 
 export interface DeliveryFailure {

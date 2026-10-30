@@ -1,0 +1,25 @@
+# The demo in docs/demo.gif: Pochi watching what Pochi itself is built on.
+version: 1
+
+project:
+  name: Pochi.sh
+  description: A CLI that collects releases, feeds and news for a project, has Claude pick what matters, and posts a daily briefing to Slack or Markdown files. Written in TypeScript on Node.js.
+
+problems:
+  - Breaking changes, deprecations and security fixes in Node.js and the libraries Pochi depends on
+  - New Claude models, pricing and API changes in the Anthropic TypeScript SDK
+  - Changes in the Claude Code and Codex CLIs that affect how Pochi runs them
+  - Changes to Slack incoming webhooks or Block Kit
+
+exclude:
+  - Funding news and company acquisitions
+
+language: English
+
+notify:
+  channels:
+    - type: file
+      dir: reports
+
+state:
+  maxItemAgeDays: 14

@@ -1,6 +1,6 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { itemAgeDays, type RunDeps, type RunOptions, runCommand } from "../../src/commands/run.js";
 import { ContextSchema } from "../../src/config/schema.js";
@@ -179,6 +179,19 @@ describe("runCommand", () => {
     expect(llm.titles("analyze")).toEqual(["Security fix in lib"]);
     expect(slackTexts(fetch)).toEqual(["Pochi: 1 update for my-app (1 High)"]);
     expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
+  });
+
+  it("counts the briefings delivered and mentions a round one in the footer", async () => {
+    const fetch = routes();
+    await mkdir(dirname(statePath), { recursive: true });
+    await writeFile(statePath, JSON.stringify({ version: 1, briefings: 9, entries: {} }));
+    expect(await exitOf(run(fakeLlm()))).toBe(ExitCode.OK);
+    expect(JSON.parse(await readFile(statePath, "utf8")).briefings).toBe(10);
+    expect(fetch.callsTo(WEBHOOK)[0]!.body).toContain("Fetched by Pochi · 3 items from 2 sources · 10th briefing");
+
+    // Nothing new to deliver: the count stays.
+    expect(await exitOf(run(fakeLlm()))).toBe(ExitCode.OK);
+    expect(JSON.parse(await readFile(statePath, "utf8")).briefings).toBe(10);
   });
 
   it("does not notify or triage known items again, and analyzes pending ones without triage", async () => {
