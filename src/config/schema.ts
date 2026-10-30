@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { CalendarError, WEEKDAYS, isTimeZone, parseCron, parseTime } from "../schedule/calendar.js";
 import { parseHttpUrl } from "../util/hash.js";
 import { plural } from "../util/text.js";
