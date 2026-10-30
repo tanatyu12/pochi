@@ -29,6 +29,8 @@ export interface State {
   entries: Map<string, StateEntry>;
   /** When the file was last saved, which is when the last run that saved it ran. */
   updatedAt?: Date;
+  /** Runs that delivered at least one update, for the footer's round numbers (notifiers/voice). */
+  briefings?: number;
 }
 
 export class StateError extends PochiError {
@@ -42,6 +44,8 @@ const FileSchema = z.object({
   version: z.literal(1),
   // Only tells sources how far back to look, so a bad value is ignored rather than failing the file.
   updatedAt: z.iso.datetime().optional().catch(undefined),
+  // Only counts for the footer, so likewise.
+  briefings: z.number().int().nonnegative().optional().catch(undefined),
   entries: z.record(z.string(), z.unknown()),
 });
 const KEY = /^[0-9a-f]{32}$/;
@@ -80,6 +84,7 @@ export async function inspectState(path: string): Promise<StateInspection> {
 
   const state = emptyState();
   if (file.data.updatedAt !== undefined) state.updatedAt = new Date(file.data.updatedAt);
+  if (file.data.briefings !== undefined) state.briefings = file.data.briefings;
   let dropped = 0;
   for (const [key, value] of Object.entries(file.data.entries)) {
     const entry = EntrySchema.safeParse(value);
@@ -195,7 +200,8 @@ function serialize(state: State, updatedAt: string): string {
     return `    ${JSON.stringify(k)}: ${JSON.stringify({ s, f, l })}${i < keys.length - 1 ? "," : ""}`;
   });
   const entries = lines.length > 0 ? `{\n${lines.join("\n")}\n  }` : "{}";
-  return `{\n  "version": 1,\n  "updatedAt": ${JSON.stringify(updatedAt)},\n  "entries": ${entries}\n}\n`;
+  const briefings = state.briefings === undefined ? "" : `  "briefings": ${state.briefings},\n`;
+  return `{\n  "version": 1,\n  "updatedAt": ${JSON.stringify(updatedAt)},\n${briefings}  "entries": ${entries}\n}\n`;
 }
 
 function parseJson(text: string): unknown {
