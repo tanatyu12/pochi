@@ -211,6 +211,7 @@ feeds:
 
 - [설정](docs/configuration.md): 모든 항목, 환경 변수, 상태 파일
 - [정기 실행](docs/scheduling.md): launchd, cron, GitHub Actions
+- [업데이트](docs/updating.md): 새 릴리스를 내 사본에 반영하기
 - [문제 해결](docs/troubleshooting.md): `pochi doctor`와 종료 코드
 - [보안](SECURITY.md): 키와 신뢰할 수 없는 텍스트를 다루는 방식, 취약점 보고 방법
 

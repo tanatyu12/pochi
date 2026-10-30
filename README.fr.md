@@ -207,6 +207,7 @@ Toutes les clés sont décrites dans [docs/configuration.md](docs/configuration.
 
 - [Configuration](docs/configuration.md) : toutes les clés, les variables d'environnement, le fichier d'état
 - [Planification](docs/scheduling.md) : launchd, cron et GitHub Actions
+- [Mettre à jour](docs/updating.md) : intégrer une nouvelle version dans votre copie
 - [Dépannage](docs/troubleshooting.md) : `pochi doctor` et les codes de sortie
 - [Sécurité](SECURITY.md) : le traitement des clés et des textes non fiables, et comment signaler une vulnérabilité
 

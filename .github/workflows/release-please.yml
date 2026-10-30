@@ -10,7 +10,14 @@ permissions:
 
 jobs:
   release-please:
+    # Copies made from the template carry this file; releases are cut only here.
+    if: github.repository == 'tanatyu12/pochi'
     runs-on: ubuntu-latest
     steps:
-      # Reads release-please-config.json and .release-please-manifest.json.
+      # Reads release-please-config.json and .release-please-manifest.json. A PR opened with the
+      # default GITHUB_TOKEN starts no workflows, so the release PR would never get the CI checks
+      # main requires; RELEASE_PLEASE_TOKEN is a fine-grained token for this repository with
+      # contents and pull requests write.
       - uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}

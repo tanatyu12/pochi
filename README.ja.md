@@ -209,6 +209,7 @@ feeds:
 
 - [設定](docs/configuration.md)：すべての項目、環境変数、状態ファイル
 - [定期実行](docs/scheduling.md)：launchd、cron、GitHub Actions
+- [アップデート](docs/updating.md)：新しいリリースを自分のコピーに取り込む
 - [困ったときは](docs/troubleshooting.md)：`pochi doctor` の見方と終了コード
 - [セキュリティ](SECURITY.md)：キーや外部の文章の扱い、脆弱性の報告先
 

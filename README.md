@@ -204,6 +204,7 @@ Every key is in [docs/configuration.md](docs/configuration.md) and the commented
 
 - [Configuration](docs/configuration.md): every key, environment variables, the state file
 - [Scheduling](docs/scheduling.md): launchd, cron and GitHub Actions
+- [Updating](docs/updating.md): bringing a new release into your copy
 - [Troubleshooting](docs/troubleshooting.md): `pochi doctor` and exit codes
 - [Security](SECURITY.md): how keys and untrusted text are handled, and how to report a vulnerability
 
