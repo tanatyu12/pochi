@@ -22,6 +22,9 @@ describe("normalizeUrl", () => {
   it.each([
     ["https://Example.COM/Post", "https://example.com/Post"],
     ["https://example.com/post#comments", "https://example.com/post"],
+    ["https://example.com/post/#", "https://example.com/post"],
+    ["https://example.com/#/news/123", "https://example.com/#/news/123"],
+    ["https://example.com/app/?utm_source=x#!/news/123", "https://example.com/app#!/news/123"],
     ["https://example.com/post/", "https://example.com/post"],
     ["https://example.com/", "https://example.com/"],
     ["https://example.com:443/a", "https://example.com/a"],
@@ -48,6 +51,15 @@ describe("normalizeUrl", () => {
       expect(normalizeUrl(`https://example.com/a?utm_source=rss&${query}&fbclid=1`)).toBe(plain);
     },
   );
+
+  it("keeps a plain anchor when asked, and normalizes the rest as usual", () => {
+    expect(normalizeUrl("https://Example.com/changelog/?utm_source=rss#2026-10-30", undefined, { keepFragment: true })).toBe(
+      "https://example.com/changelog#2026-10-30",
+    );
+    expect(normalizeUrl("https://example.com/changelog/", undefined, { keepFragment: true })).toBe(
+      "https://example.com/changelog",
+    );
+  });
 
   it("resolves relative URLs against a base", () => {
     expect(normalizeUrl("../post/", "https://example.com/blog/feed.xml")).toBe("https://example.com/post");
