@@ -89,7 +89,13 @@ async function askRepo(s: SourceSession): Promise<FeedInput | undefined> {
     }
     return checkTypedRepo(s, answer);
   }
-  return lookUpRepo(s, llm!, answer);
+  // validate refuses a name without Claude, but an answer replayed after going back is not
+  // validated again.
+  if (!llm) {
+    s.p.warn("Without Claude, enter the repository as owner/repo.");
+    return undefined;
+  }
+  return lookUpRepo(s, llm, answer);
 }
 
 async function checkTypedRepo(s: SourceSession, repo: string): Promise<FeedInput | undefined> {
@@ -158,20 +164,20 @@ async function lookUpRepo(s: SourceSession, llm: LlmClient, name: string): Promi
       ? []
       : await p.spin(
           `Checking ${plural(valid.length, "candidate")} on GitHub`,
-          () => Promise.allSettled(valid.map((c) => verifyRepo(c.repo, signal))),
+          () => Promise.all(valid.map((c) => settle(verifyRepo(c.repo, signal)).then((result) => ({ ...c, result })))),
           signal,
         );
   throwIfCancelled(signal);
 
   const found: { repo: string; note: string; check: FoundRepo }[] = [];
   const current = new Set<string>();
-  checks.forEach((result, i) => {
-    if (result.status !== "fulfilled" || result.value.status !== "found") return;
+  for (const { repo: candidate, note, result } of checks) {
+    if (result.status !== "fulfilled" || result.value.status !== "found") continue;
     // Two candidates can be one repository under its old and new name.
-    const repo = result.value.movedTo ?? valid[i]!.repo;
-    if (once(current, repo.toLowerCase())) found.push({ repo, note: valid[i]!.note, check: result.value });
-  });
-  const unchecked = checks.filter((r) => r.status === "rejected").length;
+    const repo = result.value.movedTo ?? candidate;
+    if (once(current, repo.toLowerCase())) found.push({ repo, note, check: result.value });
+  }
+  const unchecked = checks.filter((c) => c.result.status === "rejected").length;
   if (found.length === 0) {
     // A rate limit or a network failure says nothing about whether the repository exists.
     p.warn(
@@ -198,7 +204,8 @@ function repoFeed(s: SourceSession, repo: string, check?: FoundRepo): FeedInput 
   // Otherwise nothing would arrive until the first stable release.
   if (check?.onlyPrereleases) s.p.note(`${repo} has only prereleases so far; following them.`);
   const feed: FeedInput = {
-    id: sourceIdFrom(repo.split("/")[1]!, s.ids),
+    // Named after the repository, not its owner.
+    id: sourceIdFrom(repo.split("/")[1] ?? repo, s.ids),
     type: "github",
     name: repo,
     repo,
@@ -218,7 +225,13 @@ async function askSite(s: SourceSession): Promise<FeedInput | undefined> {
     })
   ).trim();
   if (raw === "") return undefined;
-  return resolveSite(s, parseHttpUrl(raw)!.href);
+  // validate refuses anything else, but an answer replayed after going back is not validated again.
+  const url = parseHttpUrl(raw);
+  if (!url) {
+    s.p.warn("Enter an absolute http(s) URL.");
+    return undefined;
+  }
+  return resolveSite(s, url.href);
 }
 
 /** Finds the feed of a page, asking which one when it has several. */
@@ -268,11 +281,12 @@ async function pickSiteFeed(
     return siteFeed(s, url, url);
   }
   const feeds = found.value;
-  if (feeds.length === 0) {
+  const [first, ...others] = feeds;
+  if (!first) {
     p.warn(`No feed found on ${url}${leftOut}.`);
     return undefined;
   }
-  if (feeds.length === 1) return siteFeed(s, url, feeds[0]!.url);
+  if (others.length === 0) return siteFeed(s, url, first.url);
   const choice = await p.select({
     message: `${url} has ${feeds.length} feeds; which one?`,
     options: [
@@ -327,21 +341,23 @@ export async function addProposedFeeds(s: SourceSession, proposal: Pick<Proposal
     const limit = pLimit(GITHUB_CONCURRENCY);
     const checks = await p.spin(
       `Checking ${plural(chosenRepos.length, "repository", "repositories")} on GitHub`,
-      () => Promise.allSettled(chosenRepos.map((repo) => limit(() => verifyRepo(repo, signal)))),
+      () =>
+        Promise.all(
+          chosenRepos.map((repo) => settle(limit(() => verifyRepo(repo, signal))).then((result) => ({ repo, result }))),
+        ),
       signal,
     );
     throwIfCancelled(signal);
     // In the order proposed, one at a time: each id is chosen against the ones claimed before it.
-    chosenRepos.forEach((repo, i) => {
-      const result = checks[i]!;
+    for (const { repo, result } of checks) {
       if (result.status === "rejected") {
         const err: unknown = result.reason;
         if (!(err instanceof HttpError || err instanceof FeedParseError)) throw err;
         p.warn(`Could not check ${repo} on GitHub: ${errorLine(err)}; left out.`);
-        return;
+        continue;
       }
       keep(checkedRepoFeed(s, repo, result.value, "; left out"));
-    });
+    }
   }
 
   const seenSites = new Set<string>();
@@ -362,12 +378,15 @@ export async function addProposedFeeds(s: SourceSession, proposal: Pick<Proposal
     const limit = pLimit(SITE_CONCURRENCY);
     const found = await p.spin(
       `Looking for feeds on ${plural(chosenSites.length, "site")}`,
-      () => Promise.allSettled(chosenSites.map((url) => limit(() => discoverFeeds(url, signal)))),
+      () =>
+        Promise.all(
+          chosenSites.map((url) => settle(limit(() => discoverFeeds(url, signal))).then((result) => ({ url, result }))),
+        ),
       signal,
     );
     throwIfCancelled(signal);
     // In the order proposed, one at a time: a page with several feeds asks which one.
-    for (const [i, url] of chosenSites.entries()) keep(await pickSiteFeed(s, url, found[i]!, false));
+    for (const { url, result } of found) keep(await pickSiteFeed(s, url, result, false));
   }
   return added;
 }
