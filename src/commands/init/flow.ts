@@ -177,7 +177,12 @@ async function init(
     lookup.abort();
   }
   // Nothing touches the disk until every answer is in, so a cancel above leaves no trace.
-  const { contextPath, sourcesPath } = await writeConfig(dir, { context: contextInput, sources }, { overwrite: true });
+  // Only what the user agreed to overwrite: a file that appeared since is refused, not replaced.
+  const { contextPath, sourcesPath } = await writeConfig(
+    dir,
+    { context: contextInput, sources },
+    { overwrite: existing.length > 0 },
+  );
   // Written: going back would change nothing on disk.
   p.freeze?.();
 
