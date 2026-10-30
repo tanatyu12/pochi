@@ -122,6 +122,7 @@ function run(llm: ReturnType<typeof fakeLlm>, opts: RunOptions = {}, deps: RunDe
     { configDir: join(dir, "config"), state: statePath, ...opts },
     {
       now: () => NOW,
+      timeZone: "UTC",
       stdout: (s) => (stdout += s),
       resolveLlm: llm.resolve,
       retryDelayMs: 0,
@@ -176,6 +177,27 @@ describe("runCommand", () => {
     expect(await exitOf(run(llm))).toBe(ExitCode.OK);
     expect(llm.titles("analyze")).toEqual(["Security fix in lib"]);
     expect(slackTexts(fetch)).toEqual(["Pochi: 1 update for my-app (1 High)"]);
+    expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
+  });
+
+  it("delivers a story analyzed earlier with its other reports, without asking the LLM again", async () => {
+    routes({ slack: reply.status(404) });
+    const group = (titles: string[]) => ({
+      groups: [{ ids: ["i1", "i2"], primary: `i${titles.indexOf("Security fix in lib") + 1}` }],
+    });
+    expect(await exitOf(run(fakeLlm({ group })))).toBe(ExitCode.DELIVERY);
+
+    vi.unstubAllGlobals();
+    const fetch = routes();
+    const llm = fakeLlm({ group });
+    expect(await exitOf(run(llm, { json: true }))).toBe(ExitCode.OK);
+    expect(llm.calls).toEqual([]);
+    expect(slackTexts(fetch)).toEqual(["Pochi: 1 update for my-app (1 High)"]);
+    const [insight] = JSON.parse(stdout).insights;
+    expect([insight.title, insight.related.map((r: { title: string }) => r.title)]).toEqual([
+      "Security fix in lib",
+      ["Breaking change in lib"],
+    ]);
     expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
   });
 
@@ -285,6 +307,18 @@ describe("runCommand", () => {
     // The file got them, Slack did not: they stay r, so Slack gets them tomorrow.
     expect(await readdir(reports)).toEqual(["2026-10-26.md"]);
     expect(await statuses()).toEqual(["i", "i", "r", "r", "r", "r"]);
+    const entries = Object.values(await readState()) as { s: string; c?: string[]; a?: { impact: string } }[];
+    expect(entries.filter((e) => e.s === "r").every((e) => e.c?.join() === "file" && e.a?.impact === "High")).toBe(true);
+
+    // Tomorrow Slack gets them, the file is not written again, and nothing is analyzed again.
+    vi.unstubAllGlobals();
+    const fetch = routes();
+    const llm = fakeLlm();
+    expect(await exitOf(run(llm))).toBe(ExitCode.OK);
+    expect(slackTexts(fetch)).toEqual(["Pochi: 2 updates for my-app (2 High)"]);
+    expect(await readdir(reports)).toEqual(["2026-10-26.md"]);
+    expect(llm.calls).toEqual([]);
+    expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
   });
 
   it("names the file channel when only it fails, keeping the items for tomorrow", async () => {
@@ -312,6 +346,14 @@ describe("runCommand", () => {
     expect(await exitOf(run(fakeLlm(), {}, { signal: controller.signal }))).toBe(ExitCode.INTERRUPTED);
     expect(await readdir(dir)).not.toContain("reports");
     expect(await statuses()).toEqual(["i", "i", "r", "r", "r", "r"]);
+
+    // What Slack got before the interrupt is recorded: the next run writes the file only.
+    vi.unstubAllGlobals();
+    const fetch = routes();
+    expect(await exitOf(run(fakeLlm()))).toBe(ExitCode.OK);
+    expect(slackTexts(fetch)).toEqual([]);
+    expect(await readdir(reports)).toEqual(["2026-10-26.md"]);
+    expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
   });
 
   it("exits 5 when every source fails, and 0 when only some do", async () => {
@@ -432,12 +474,40 @@ describe("runCommand", () => {
       expect(llm.titles("triage")).toEqual(["Post 1", "Post 2", "Post 3", "Post 4"]);
     });
 
-    it("keeps the saved time while items are left undecided", async () => {
-      await writeFile(join(dir, "config", "context.yml"), `${CONTEXT}llm: { maxItemsPerRun: 2 }\n`);
+    it("moves the saved time on while items are left undecided, and triages them next time", async () => {
+      await writeFile(
+        join(dir, "config", "context.yml"),
+        `${CONTEXT}llm: { maxItemsPerRun: 2 }\nstate: { maxItemAgeDays: 7 }\n`,
+      );
       await mkdir(join(dir, "state"));
-      await writeFile(statePath, JSON.stringify({ version: 1, updatedAt: "2026-10-23T00:00:00Z", entries: {} }));
-      await run(fakeLlm());
-      expect(await savedAt()).toBe("2026-10-23T00:00:00Z");
+      await writeFile(statePath, JSON.stringify({ version: 1, updatedAt: "2026-10-19T00:00:00Z", entries: {} }));
+      const first = fakeLlm();
+      await run(first);
+      expect(first.titles("triage")).toEqual(["Post 1", "Post 2"]);
+      expect(await savedAt()).toBe("2026-10-26T00:00:00Z");
+      // The three over maxItemsPerRun wait as u, under both keys.
+      expect(await statuses()).toEqual(["n", "n", "n", "n", "u", "u", "u", "u", "u", "u"]);
+      // Feed a is held back to its oldest waiting post, so it still returns it.
+      expect(JSON.parse(await readFile(statePath, "utf8")).sources).toEqual({
+        a: "2026-10-20T00:00:00Z",
+        b: "2026-10-26T00:00:00Z",
+      });
+
+      const second = fakeLlm();
+      await run(second, {}, { now: () => new Date(NOW.getTime() + 86_400_000) });
+      expect(second.titles("triage")).toEqual(["Post 3", "Post 4"]);
+      expect(await statuses()).toEqual(["n", "n", "n", "n", "n", "n", "n", "n", "u", "u"]);
+
+      // One still untriaged 15 days after it was first seen is given up on, as a pending one is.
+      const file = JSON.parse(await readFile(statePath, "utf8"));
+      for (const e of Object.values(file.entries) as { s: string; f: string }[]) {
+        if (e.s === "u") e.f = "2026-10-11";
+      }
+      await writeFile(statePath, JSON.stringify(file));
+      const third = fakeLlm();
+      await run(third, {}, { now: () => new Date(NOW.getTime() + 86_400_000) });
+      expect(third.calls).toEqual([]);
+      expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n", "n", "n", "n", "n"]);
     });
   });
 

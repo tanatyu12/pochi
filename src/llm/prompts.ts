@@ -107,7 +107,7 @@ function renderItems(items: readonly Item[], maxContentChars?: number): string {
   return ["<untrusted_items>", ...blocks, "</untrusted_items>"].join("\n");
 }
 
-/** today: the run's UTC day; without it the model is not told the date. */
+/** today: the run's day on the reader's clock (briefingDate); without it the model is not told the date. */
 export interface ItemRequestOptions {
   today?: string;
 }
