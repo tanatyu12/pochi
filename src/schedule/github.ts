@@ -125,7 +125,9 @@ ${RUN_SECRETS.map((name) => `          ${name}: \${{ secrets.${name} }}`).join("
           git commit -m "chore(state): record notified items [skip ci]"
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0="http.$SERVER_URL/.extraheader"
-          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          # Assigned apart from the export, so a failed base64 stops the step (bash -e).
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
           git pull --rebase
           git push
 `;
