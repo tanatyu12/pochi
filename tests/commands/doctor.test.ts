@@ -91,6 +91,25 @@ function check(opts: DoctorOptions = {}, deps: DoctorDeps = {}) {
 
 const line = (label: string) => out.find((l) => l.trimStart().split(/\s+/)[1] === label);
 
+describe("doctor: on a color terminal", () => {
+  it("colors the report and says Pochi is ready when nothing failed", async () => {
+    vi.stubEnv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T0001/B0001/x");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const wasTTY = process.stdout.isTTY;
+    process.stdout.isTTY = true;
+    let result;
+    try {
+      result = await check({}, { write: undefined });
+    } finally {
+      process.stdout.isTTY = wasTTY;
+    }
+    const text = stdout.mock.calls.map(([s]) => String(s)).join("");
+    expect(result.exitCode).toBe(ExitCode.OK);
+    expect(text).toMatch(/^\x1b\[38;5;183mpochi\x1b\[0m \S+ doctor\n/);
+    expect(text).toContain("Pochi is ready to fetch.");
+  });
+});
+
 describe("doctor: secrets", () => {
   // Values without a known prefix and under redact()'s 8-character fallback are not masked by the
   // logger, so their absence shows doctor never printed them in the first place.

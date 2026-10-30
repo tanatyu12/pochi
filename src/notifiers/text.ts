@@ -1,6 +1,7 @@
 import type { Insight, Item } from "../types.js";
 import { collapseWhitespace, plural } from "../util/text.js";
 import type { Briefing } from "./types.js";
+import { failedLabel, fetchedText, quietLine } from "./voice.js";
 
 /** Other reports of a story shown with it; the rest are only counted. */
 export const MAX_RELATED_SHOWN = 3;
@@ -14,8 +15,9 @@ export function relatedShown(f: Insight): { shown: Item[]; more: number } {
 /** What a dry run prints: plain text for a terminal. */
 export function toText(b: Briefing): string {
   const head = `Pochi · ${b.project} · ${b.date}\n`;
-  const foot = `\n${b.collected} items from ${b.attempted} sources` + failedText(b) + "\n";
-  if (b.insights.length === 0) return `${head}\nNo relevant updates.\n${foot}`;
+  const counts = b.personality ? fetchedText(b) : `${b.collected} items from ${b.attempted} sources`;
+  const foot = `\n${counts}` + failedText(b) + "\n";
+  if (b.insights.length === 0) return `${head}\n${quietLine(b) ?? "No relevant updates."}\n${foot}`;
   const body = b.insights.map((f) =>
     [
       `[${f.impact}] ${f.title}`,
@@ -35,11 +37,8 @@ export function toText(b: Briefing): string {
  */
 export function toMarkdown(b: Briefing): string {
   const head = `# Pochi · ${escapeMarkdown(b.project)} · ${b.date}\n`;
-  const foot =
-    `\n---\n\nCollected ${plural(b.collected, "item")} from ${plural(b.attempted, "source")}` +
-    failedText(b, escapeMarkdown) +
-    "\n";
-  if (b.insights.length === 0) return `${head}\nNo relevant updates today.\n${foot}`;
+  const foot = `\n---\n\n${fetchedText(b)}` + failedText(b, escapeMarkdown) + "\n";
+  if (b.insights.length === 0) return `${head}\n${quietLine(b) ?? "No relevant updates today."}\n${foot}`;
   return `${head}\n${b.insights.map(insightMarkdown).join("\n\n")}\n${foot}`;
 }
 
@@ -73,7 +72,7 @@ function insightMarkdown(f: Insight): string {
 }
 
 function failedText(b: Briefing, escape = (s: string) => s): string {
-  return b.failedSources.length > 0 ? `; failed: ${escape(b.failedSources.join(", "))}` : "";
+  return b.failedSources.length > 0 ? `; ${failedLabel(b)}: ${escape(b.failedSources.join(", "))}` : "";
 }
 
 /**

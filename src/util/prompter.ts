@@ -3,6 +3,7 @@ import { styleText } from "node:util";
 import * as clack from "@clack/prompts";
 import { ExitCode, PochiError } from "../errors.js";
 import { configureLog } from "./log.js";
+import { greeting, isFancy } from "./pochi-art.js";
 
 export interface TextPrompt {
   message: string;
@@ -185,7 +186,10 @@ export function createClackPrompter(): Prompter {
     async confirm(prompt) {
       return withBack((signal) => clack.confirm({ ...prompt, signal }));
     },
-    intro: (title) => clack.intro(title),
+    intro: (title) => {
+      if (isFancy()) process.stdout.write(greeting());
+      clack.intro(title);
+    },
     outro: (message) => clack.outro(message),
     note: (message, title) => clack.note(message, title),
     warn: (message) => clack.log.warn(message),

@@ -1,7 +1,7 @@
 {
   "name": "pochi",
   "version": "0.0.0",
-  "description": "Daily tech briefing for your project, delivered to Slack or Markdown files",
+  "description": "Daily briefing for your project, delivered to Slack or Markdown files",
   "private": true,
   "type": "module",
   "license": "MIT",
