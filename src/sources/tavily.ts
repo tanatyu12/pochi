@@ -5,7 +5,7 @@ import { itemId, normalizeUrl, parseHttpUrl, urlKey } from "../util/hash.js";
 import { HttpError, postJson } from "../util/http.js";
 import { parseDate, toIsoDate } from "../util/time.js";
 import { parseApi } from "./api.js";
-import { collapseWhitespace, truncate } from "../util/text.js";
+import { collapseWhitespace, stripControlChars, truncate } from "../util/text.js";
 import { plainTextToText } from "./html.js";
 
 const SEARCH_URL = "https://api.tavily.com/search";
@@ -79,7 +79,7 @@ function toTavilyItems(results: SearchResult[], query: QueryConfig, defaults: Fe
     const normalized = normalizeUrl(url) ?? url;
     if (seen.has(normalized)) return [];
     seen.add(normalized);
-    const title = truncate(collapseWhitespace(r.title ?? ""), TITLE_MAX_CHARS);
+    const title = truncate(collapseWhitespace(stripControlChars(r.title ?? "")), TITLE_MAX_CHARS);
     return [
       {
         id: itemId("tavily", normalized),

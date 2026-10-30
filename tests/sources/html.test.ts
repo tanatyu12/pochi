@@ -289,6 +289,13 @@ describe("inlineHtmlToLine", () => {
 });
 
 describe("plainTextToText", () => {
+  it("drops C0 and C1 control characters, raw or as entities", () => {
+    expect(plainTextToText("a\u001b[31mb\u009b2Jc\u0085d", 100)).toBe("a[31mb2Jcd");
+    // &#x9d; is one of the C1 references HTML does not remap to Windows-1252 (&#x9b; becomes "›").
+    expect(htmlToText("<p>a&#x9d;2J&#27;[0mb</p>", 100)).toBe("a2J[0mb");
+    expect(htmlToLine("a\u009dx\u0007b")).toBe("axb");
+  });
+
   it("keeps markup literal and normalizes lines", () => {
     expect(plainTextToText(" a &amp; <b>  c \r\n\r\n d ", 100)).toBe("a &amp; <b> c\nd");
   });
