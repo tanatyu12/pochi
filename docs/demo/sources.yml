@@ -1,36 +1,16 @@
 version: 1
 
 feeds:
-  # nodejs/node and openai/codex through GitHub's API time out (their release notes are huge),
-  # so they come from feeds.
-  - id: node
-    type: rss
-    name: Node.js releases
-    url: https://nodejs.org/en/feed/releases.xml
-  - id: anthropic-sdk
-    type: github
-    name: Anthropic TypeScript SDK
-    repo: anthropics/anthropic-sdk-typescript
-    feed: releases
-  - id: claude-code
-    type: github
-    name: Claude Code
-    repo: anthropics/claude-code
-    feed: releases
-  - id: codex
-    type: rss
-    name: Codex CLI
-    url: https://github.com/openai/codex/releases.atom
-  - id: zod
-    type: github
-    name: Zod
-    repo: colinhacks/zod
-    feed: releases
-  - id: simonw
-    type: rss
-    name: Simon Willison
-    url: https://simonwillison.net/atom/everything/
-  - id: claude-news
-    type: googlenews
-    query: Anthropic Claude
-    locale: en-US
+  - { id: nextjs, type: github, name: Next.js releases, repo: vercel/next.js }
+  - { id: react, type: github, name: React releases, repo: facebook/react }
+  - { id: node-security, type: rss, name: Node.js vulnerabilities, url: "https://nodejs.org/en/feed/vulnerability.xml" }
+  - { id: postgres, type: rss, name: PostgreSQL news, url: "https://www.postgresql.org/news.rss" }
+  # Google News searches: free, no key needed.
+  - { id: web-vulns, type: googlenews, name: Security news, query: Next.js vulnerability }
+  - { id: npm-attacks, type: googlenews, name: Supply-chain news, query: npm supply chain attack }
+  - { id: llm-pricing, type: googlenews, name: LLM news, query: Claude API pricing }
+  - { id: zendesk, type: googlenews, name: Zendesk news, query: Zendesk AI agents }
+  - { id: intercom, type: googlenews, name: Intercom news, query: Intercom Fin }
+  - { id: cx-market, type: googlenews, name: Market news, query: AI customer service market }
+  - { id: cx-pricing, type: googlenews, name: Pricing news, query: help desk AI pricing per resolution }
+  - { id: ai-rules, type: googlenews, name: AI regulation, query: EU AI Act customer service }

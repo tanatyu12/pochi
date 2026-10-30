@@ -1,22 +1,26 @@
-# The demo in docs/demo.gif: Pochi watching what Pochi itself is built on.
+# The demo in docs/demo.gif and the README's sample briefing: a help desk SaaS watching its stack,
+# its supply chain, its LLM, its competitors and the rules on AI.
 version: 1
 
 project:
-  name: Pochi.sh
-  description: A CLI that collects releases, feeds and news for a project, has Claude pick what matters, and posts a daily briefing to Slack or Markdown files. Written in TypeScript on Node.js.
+  name: Helpdesk
+  description: A SaaS for customer support teams, built on Next.js and React with a Postgres backend on Node.js, and an AI assistant that drafts replies with Claude.
 
 problems:
-  - Breaking changes, deprecations and security fixes in Node.js and the libraries Pochi depends on
-  - New Claude models, pricing and API changes in the Anthropic TypeScript SDK
-  - Changes in the Claude Code and Codex CLIs that affect how Pochi runs them
-  - Changes to Slack incoming webhooks or Block Kit
+  - Security vulnerabilities in Next.js, React, Node.js, PostgreSQL and npm packages, including supply-chain attacks
+  - Price, model and policy changes in the LLM APIs that draft our replies
+  - Launches, pricing and AI features of competing help desks (Zendesk, Intercom, Freshdesk, Help Scout)
+  - Where the customer service software market is going, from buyer demand and budgets to pricing models such as per-resolution AI pricing and surveys of support teams
+  - Rules on AI in customer service and on customer data (EU AI Act, privacy law)
 
 exclude:
   - Funding news and company acquisitions
+  - Tutorials and opinion pieces
 
 language: English
 
 notify:
+  minImpact: Medium
   channels:
     - type: file
       dir: reports
