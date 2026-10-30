@@ -28,6 +28,19 @@ const FILES = {
   sources: { file: "sources.yml", env: "POCHI_SOURCES_YAML" },
 } as const;
 
+/** The env vars that, when set and not blank, replace the config files. */
+export const CONFIG_ENV_NAMES = [FILES.context.env, FILES.sources.env] as const;
+
+/** Which of CONFIG_ENV_NAMES loadConfig would read instead of the files. */
+export function configEnvOverrides(env: NodeJS.ProcessEnv = process.env): string[] {
+  return CONFIG_ENV_NAMES.filter((name) => isSet(env[name]));
+}
+
+// Actions expands an unset secret to "", so blank counts as unset.
+function isSet(value: string | undefined): value is string {
+  return value !== undefined && value.trim() !== "";
+}
+
 export async function loadConfig(
   opts: { configDir?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<LoadedConfig> {
@@ -64,9 +77,8 @@ async function load<T>(
   schema: z.ZodType<T>,
 ): Promise<Parsed<T> & { origin: ConfigOrigin }> {
   const { file, env: name } = FILES[key];
-  // Actions expands an unset secret to "", so blank counts as unset.
   const fromEnv = env[name];
-  if (fromEnv !== undefined && fromEnv.trim() !== "") {
+  if (isSet(fromEnv)) {
     return { ...parseYaml(fromEnv, name, schema), origin: { kind: "env", name } };
   }
   const path = join(dir, file);
