@@ -16,6 +16,8 @@ pochi run --dry-run --verbose
 
 `pochi run` and `pochi doctor` exit with one of these, so a scheduler or a script can tell what went wrong.
 
+A check that doctor fails exits with the code a run would end with for the same problem. For example, a `slack` channel without `SLACK_WEBHOOK_URL` fails with 2, as `pochi run` would; only `pochi run --dry-run`, which delivers nothing, works without it.
+
 | Code | Meaning |
 | --- | --- |
 | 0 | Success, including a quiet day and some sources or batches failing |

@@ -501,6 +501,41 @@ describe("runInit", () => {
       expect(calls).toEqual([]);
     });
 
+    it("warns and carries on when the job file cannot be written", async () => {
+      const { exec, calls } = fakeExec();
+      // home is a file, so ~/Library/LaunchAgents cannot be created.
+      await writeFile(join(dir, "home"), "");
+      const { prompter, deps: d } = deps(fileOnly(["daily", "06:17"], true), {
+        schedule: { platform: "darwin", cwd: dir, home: join(dir, "home"), uid: 501, exec, scriptPath: "/app/dist/pochi.mjs" },
+      });
+      await runInit({ configDir: dir }, d);
+      expect(prompter.shown.find((s) => s.startsWith("warn: Could not install the schedule: "))).toMatch(
+        /could not create .*LaunchAgents \(E[A-Z]+\)$/,
+      );
+      expect(prompter.shown.find((s) => s.startsWith("note: Next steps: "))).toContain("schedule install");
+      expect(calls).toEqual([]);
+    });
+
+    it("does not install from the files when POCHI_*_YAML would be read instead", async () => {
+      const { exec, calls } = fakeExec();
+      const env = { POCHI_SOURCES_YAML: "version: 1\n" };
+      // The second run is asked to overwrite the files of the first.
+      for (const answers of [fileOnly(["daily", "06:17"]), [true, ...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, "local"]]) {
+        const { prompter, deps: d } = deps(answers, {
+          env,
+          schedule: { platform: "darwin", cwd: dir, home: dir, uid: 501, exec, scriptPath: "/app/dist/pochi.mjs" },
+        });
+        await runInit({ configDir: dir }, d);
+        expect(prompter.remaining).toEqual([]);
+        expect(prompter.asked.some((m) => m.startsWith("Install the schedule"))).toBe(false);
+        expect(prompter.shown).toContain(
+          `warn: The schedule was not installed: POCHI_SOURCES_YAML would be used instead of the files just written. Unset it, then run \`node dist/pochi.mjs schedule install --config-dir ${dir}\`.`,
+        );
+        expect(prompter.shown.find((s) => s.startsWith("note: Next steps: "))).toContain("schedule install");
+      }
+      expect(calls).toEqual([]);
+    });
+
     const WHERE = "Where should pochi run on schedule?";
 
     it("asks where a Slack setup runs, and installs it here without asking again", async () => {
