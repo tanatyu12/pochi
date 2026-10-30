@@ -37,7 +37,7 @@ function localeOf(context: Context): string {
   return LOCALES[context.language] ?? "en-US";
 }
 
-function newsFeed(s: SourceSession, query: string, sites: string[] | undefined): FeedInput | undefined {
+function newsFeed(s: SourceSession, query: string, sites: string[] | undefined): FeedInput {
   const id = queryIdFrom(query, s.ids);
   return { id, type: "googlenews", query, ...(sites && sites.length > 0 && { sites }), locale: localeOf(s.context) };
 }
@@ -117,7 +117,7 @@ export async function askNewsSearches(s: SourceSession): Promise<FeedInput[]> {
   const added: FeedInput[] = [];
   for (const q of offered.filter((o) => picked.includes(o.query))) {
     const feed = newsFeed(s, q.query, q.includeDomains);
-    if (feed && claim(s, keyOf(feed), feed.id)) added.push(feed);
+    if (claim(s, keyOf(feed), feed.id)) added.push(feed);
   }
   return added;
 }

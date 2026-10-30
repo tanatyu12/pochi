@@ -55,7 +55,7 @@ export interface InitOptions {
 }
 
 /** Cleans the names and checks the news sites; ConfigError (exit 2) for a site that is not a domain. */
-export function cleanWatchlist(watch: Partial<Watchlist> = {}): Watchlist {
+function cleanWatchlist(watch: Partial<Watchlist> = {}): Watchlist {
   const names = (list: string[] = [], flag: string) => {
     const seen = new Set<string>();
     const kept = list.map(cleanQuery).filter((n) => n !== "" && once(seen, n.toLowerCase()));
@@ -176,7 +176,6 @@ async function init(
   } finally {
     lookup.abort();
   }
-  context = ContextSchema.parse(contextInput);
   // Nothing touches the disk until every answer is in, so a cancel above leaves no trace.
   const { contextPath, sourcesPath } = await writeConfig(dir, { context: contextInput, sources }, { overwrite: true });
   // Written: going back would change nothing on disk.
