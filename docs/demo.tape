@@ -1,34 +1,40 @@
-# Records docs/demo.gif for the README with vhs (brew install vhs):
-#
-#   npm run build && vhs docs/demo.tape
-#
-# Run it in a copy with config/context.yml and config/sources.yml. The dry run calls the LLM
-# (billed as a normal run) but posts nothing and leaves the state file alone.
+# Records docs/demo.gif: Pochi briefing on what Pochi itself is built on (docs/demo/*.yml).
+# Run `npm run demo`, which runs this in Docker; see scripts/demo.sh.
 
 Output docs/demo.gif
 
-Set Shell zsh
+Set Shell bash
 Set FontSize 16
-Set Width 1100
-Set Height 680
+Set Width 1200
+Set Height 760
 Set Padding 24
 Set Theme "Catppuccin Mocha"
-Set TypingSpeed 60ms
+Set TypingSpeed 50ms
+# The dry run waits on the LLM.
+Set WaitTimeout 5m
 
+# A scratch directory with the demo config, so the commands shown need no flags.
 Hide
-Type "alias pochi='node dist/pochi.mjs' && clear"
+Type `export DEMO=$(mktemp -d) && mkdir $DEMO/config && cp docs/demo/*.yml $DEMO/config/`
+Enter
+Type `alias pochi="node $PWD/dist/pochi.mjs" && cd $DEMO && clear`
 Enter
 Show
 
 Type "pochi woof"
+Sleep 300ms
 Enter
-Sleep 2.5s
+Wait
+Sleep 2s
 
-Type "pochi doctor"
+Type "clear && pochi doctor"
+Sleep 300ms
 Enter
+Wait
 Sleep 4s
 
 Type "clear && pochi run --dry-run"
+Sleep 300ms
 Enter
-# Long enough for the LLM; trim the wait in the GIF afterwards if it drags.
-Sleep 90s
+Wait
+Sleep 8s

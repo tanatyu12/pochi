@@ -1,0 +1,36 @@
+version: 1
+
+feeds:
+  # nodejs/node and openai/codex through GitHub's API time out (their release notes are huge),
+  # so they come from feeds.
+  - id: node
+    type: rss
+    name: Node.js releases
+    url: https://nodejs.org/en/feed/releases.xml
+  - id: anthropic-sdk
+    type: github
+    name: Anthropic TypeScript SDK
+    repo: anthropics/anthropic-sdk-typescript
+    feed: releases
+  - id: claude-code
+    type: github
+    name: Claude Code
+    repo: anthropics/claude-code
+    feed: releases
+  - id: codex
+    type: rss
+    name: Codex CLI
+    url: https://github.com/openai/codex/releases.atom
+  - id: zod
+    type: github
+    name: Zod
+    repo: colinhacks/zod
+    feed: releases
+  - id: simonw
+    type: rss
+    name: Simon Willison
+    url: https://simonwillison.net/atom/everything/
+  - id: claude-news
+    type: googlenews
+    query: Anthropic Claude
+    locale: en-US
