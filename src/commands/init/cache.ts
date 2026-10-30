@@ -1,5 +1,5 @@
-import type { resolveLlm } from "../llm/adapter.js";
-import type { GenerateRequest, LlmClient } from "../llm/schema.js";
+import type { resolveLlm } from "../../llm/adapter.js";
+import type { GenerateRequest, LlmClient } from "../../llm/schema.js";
 
 /**
  * What init fetches and asks Claude, kept across the runs that going back starts (util/replay),
