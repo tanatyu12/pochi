@@ -116,7 +116,7 @@ pochi run --dry-run   # prints today's briefing
 
 ## From your repository to a watchlist
 
-The prompt asks the agent to read your code, docs and config, and nothing secret, along four axes: your tech stack, your business, your market and competitors, and how you operate. Every idea cites its evidence. This is part of what it proposed for Pochi itself (abridged):
+The prompt asks the agent to read your code, docs and config, and nothing secret, along five axes: your tech stack, your design, your business, your market and how you reach it, and how you operate. Every idea cites its evidence. This is part of what it proposed for Pochi itself (abridged):
 
 ```json
 "problems": [

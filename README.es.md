@@ -118,7 +118,7 @@ pochi run --dry-run   # muestra el resumen de hoy
 
 ## De tu repositorio a una lista de vigilancia
 
-El prompt le pide al agente que lea tu código, tu documentación y tu configuración, sin tocar nada secreto, desde cuatro ejes: tu stack técnico, tu negocio, tu mercado y competencia, y tu forma de operar. Cada propuesta cita su evidencia. Esto es parte de lo que propuso para el propio Pochi (abreviado):
+El prompt le pide al agente que lea tu código, tu documentación y tu configuración, sin tocar nada secreto, desde cinco ejes: tu stack técnico, tu diseño, tu negocio, tu mercado y cómo llegas a él, y tu forma de operar. Cada propuesta cita su evidencia. Esto es parte de lo que propuso para el propio Pochi (abreviado):
 
 ```json
 "problems": [
