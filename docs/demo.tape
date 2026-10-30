@@ -1,4 +1,4 @@
-# Records docs/demo.gif: Pochi briefing on what Pochi itself is built on (docs/demo/*.yml).
+# Records docs/demo.gif: a dry run for a sample help desk SaaS (docs/demo/*.yml).
 # Run `npm run demo`, which runs this in Docker; see scripts/demo.sh.
 
 Output docs/demo.gif
@@ -33,8 +33,21 @@ Enter
 Wait
 Sleep 4s
 
-Type "clear && pochi run --dry-run"
+# The briefing goes to a file, so it can be paged from the top: the terminal would only keep the end.
+Type "clear && pochi run --dry-run > briefing.txt"
 Sleep 300ms
 Enter
+# The log lines and the first moments of the wait, then the rest of the wait is cut.
+Sleep 5s
+Hide
 Wait
-Sleep 8s
+Show
+
+Type "clear && more briefing.txt"
+Sleep 300ms
+Enter
+Sleep 7s
+Space
+Sleep 6s
+Space
+Sleep 6s
