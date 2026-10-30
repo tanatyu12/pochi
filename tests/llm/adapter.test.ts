@@ -359,3 +359,84 @@ describe("resolveLlm with codex", () => {
     expect(args[args.indexOf("--model") + 1]).toBe("gpt-big");
   });
 });
+
+describe("preflight", () => {
+  const LOGGED_IN = JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty" });
+  const LOGGED_OUT = JSON.stringify({ loggedIn: false, authMethod: "none", apiProvider: "firstParty" });
+  const cli = { env: {}, platform: "linux" as const };
+
+  it("looks up the API mode's models, and turns a rejected key into auth before anything else is sent", async () => {
+    const models = "https://api.anthropic.com/v1/models";
+    const fetchMock = mockFetch({
+      [`${models}/${DEFAULT_API_MODELS.triage}`]: reply.json({ error: { type: "authentication_error" } }, { status: 401 }),
+      [`${models}/${DEFAULT_API_MODELS.analyze}`]: reply.json({ error: { type: "authentication_error" } }, { status: 401 }),
+    });
+    const { client } = await resolveLlm(llmConfig(), { env: { ANTHROPIC_API_KEY: KEY } });
+    await expectLlmError(client.preflight!(), "auth");
+    expect(fetchMock.calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("asks claude auth status, and passes when claude is logged in", async () => {
+    const mock = fakeSpawn([run.exit("2.1.314 (Claude Code)\n"), run.exit(LOGGED_IN)]);
+    const { client } = await resolveLlm(llmConfig(), { ...cli, spawn: mock.spawn });
+    await client.preflight!();
+    expect(mock.calls[1]?.args).toEqual(["auth", "status", "--json"]);
+    expect(mock.calls[1]?.options.env).toEqual(mock.calls[0]?.options.env);
+    expect(String(mock.calls[1]?.options.cwd)).toContain("pochi-claude-");
+  });
+
+  it("turns a logged-out claude into auth", async () => {
+    const mock = fakeSpawn([run.exit("2.1.41 (Claude Code)\n"), run.exit(LOGGED_OUT, { code: 1 })]);
+    const { client } = await resolveLlm(llmConfig(), { ...cli, spawn: mock.spawn });
+    const err = await expectLlmError(client.preflight!(), "auth");
+    expect(err.message).toContain("/login");
+  });
+
+  it.each([
+    ["prints no JSON", run.exit("error: unknown command 'auth'", { code: 1 })],
+    ["cannot be run", run.spawnError("EACCES")],
+  ])("lets the run go ahead when claude auth status %s", async (_, script) => {
+    const mock = fakeSpawn([run.exit("2.1.314 (Claude Code)\n"), script]);
+    const { client } = await resolveLlm(llmConfig(), { ...cli, spawn: mock.spawn });
+    await expect(client.preflight!()).resolves.toBeUndefined();
+  });
+
+  it("does not ask a claude older than auth status, which might take it for a prompt", async () => {
+    const mock = fakeSpawn([run.exit("2.1.40 (Claude Code)\n")]);
+    const { client } = await resolveLlm(llmConfig(), { ...cli, spawn: mock.spawn });
+    await client.preflight!();
+    expect(mock.calls).toHaveLength(1);
+  });
+
+  it("turns a logged-out codex into auth", async () => {
+    const mock = fakeSpawn([run.exit("codex-cli 0.165.0\n"), run.exit("Not logged in\n", { code: 1 })]);
+    const { client } = await resolveLlm(llmConfig({ provider: "codex" }), { ...cli, spawn: mock.spawn });
+    const err = await expectLlmError(client.preflight!(), "auth");
+    expect(err.message).toContain("codex login");
+    expect(mock.calls[1]?.args).toEqual(["login", "status"]);
+  });
+
+  it("passes a logged-in codex, and lets any other failure of login status go ahead", async () => {
+    const ok = fakeSpawn([run.exit("codex-cli 0.165.0\n"), run.exit("Logged in using ChatGPT\n")]);
+    await (await resolveLlm(llmConfig({ provider: "codex" }), { ...cli, spawn: ok.spawn })).client.preflight!();
+    const odd = fakeSpawn([run.exit("codex-cli 0.165.0\n"), run.exit("", { code: 2, stderr: "unexpected argument" })]);
+    await (await resolveLlm(llmConfig({ provider: "codex" }), { ...cli, spawn: odd.spawn })).client.preflight!();
+  });
+
+  it("does not ask codex login status when codex has an API key it does not count", async () => {
+    const mock = fakeSpawn([run.exit("codex-cli 0.165.0\n")]);
+    const { client } = await resolveLlm(llmConfig({ provider: "codex" }), {
+      env: { CODEX_API_KEY: "sk-test" },
+      platform: "linux",
+      spawn: mock.spawn,
+    });
+    await client.preflight!();
+    expect(mock.calls).toHaveLength(1);
+  });
+
+  it("hints at llm.triageModel when codex triages with its default model", async () => {
+    const mock = fakeSpawn([run.exit("codex-cli 0.165.0\n")]);
+    await resolveLlm(llmConfig({ provider: "codex" }), { ...cli, spawn: mock.spawn });
+    expect(logs.join("")).toContain("llm.triageModel is not set");
+  });
+});

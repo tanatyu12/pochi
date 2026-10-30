@@ -19,6 +19,11 @@ import { type CliBackend, type LlmClient, LlmError, type LlmTier } from "./schem
 const PROBE_TIMEOUT_MS = 10_000;
 const MAX_VERSION_CHARS = 200;
 const MAX_VERSION_BYTES = 4096;
+// claude auth status prints a few hundred bytes of JSON.
+const MAX_STATUS_BYTES = 64 * 1024;
+// claude auth status arrived in 2.1.41 (its changelog). An older claude might take "auth status"
+// for a prompt and answer it, so it is not asked.
+const CLAUDE_AUTH_STATUS_SINCE = [2, 1, 41] as const;
 
 export interface ResolvedLlm {
   client: LlmClient;
@@ -88,11 +93,17 @@ export async function resolveLlm(llm: Context["llm"], opts: ResolveOptions = {})
     if (backend === "claude") {
       const models = resolveModels(llm, DEFAULT_CLI_MODELS);
       log.info(`LLM: cli mode, ${cliVersion} (${models.triage} / ${models.analyze})`);
-      return { client: createCliLlm({ models, spawn, command, env: run.env }), models, cliVersion };
+      const client = createCliLlm({ models, spawn, command, env: run.env });
+      return { client: { ...client, preflight: ({ signal } = {}) => claudeLoggedIn(run, cliVersion, signal) }, models, cliVersion };
     }
     const models = { triage: llm.triageModel ?? undefined, analyze: llm.analyzeModel ?? undefined };
     log.info(`LLM: cli mode, ${cliVersion} (${models.triage ?? "codex default"} / ${models.analyze ?? "codex default"})`);
-    return { client: createCodexLlm({ models, spawn, command, env: run.env }), models, cliVersion };
+    if (!models.triage) {
+      // Which models a codex login offers depends on the account, so no smaller one is assumed here.
+      log.debug("llm.triageModel is not set, so triage uses codex's default model; a smaller model there costs less");
+    }
+    const client = createCodexLlm({ models, spawn, command, env: run.env });
+    return { client: { ...client, preflight: ({ signal } = {}) => codexLoggedIn(run, signal) }, models, cliVersion };
   }
   const probes = tried.map((c) => `${c} --version`).join(" and ");
   throw new LlmError(
@@ -126,4 +137,74 @@ async function probeVersion(run: RunOptions, prefix: string, signal: AbortSignal
     return undefined;
   }
   return line.slice(0, MAX_VERSION_CHARS);
+}
+
+/*
+ * The CLI modes check the login only. Neither CLI can tell whether a model name is known without
+ * sending it a prompt (which costs tokens), so a mistyped model still fails at the first call.
+ * Both checks read the local login and make no request, so a revoked login is not caught either;
+ * anything other than a clear "not logged in" lets the run go ahead, so a check that misreads a
+ * setup never blocks one that works.
+ */
+
+/** claude auth status: JSON with loggedIn, and exit code 1 when logged out (it counts API keys, Bedrock and Vertex). */
+async function claudeLoggedIn(run: RunOptions, cliVersion: string, signal: AbortSignal | undefined): Promise<void> {
+  if (!atLeast(cliVersion, CLAUDE_AUTH_STATUS_SINCE)) {
+    log.debug(`not checking the claude login: ${cliVersion} may not have auth status`);
+    return;
+  }
+  const exit = await runStatus(run, ["auth", "status", "--json"], "pochi-claude-", signal);
+  if (!exit) return;
+  let loggedIn: unknown;
+  try {
+    loggedIn = (JSON.parse(exit.stdout) as { loggedIn?: unknown }).loggedIn;
+  } catch {
+    log.debug(`${run.command} auth status printed no JSON; not checking the login`);
+    return;
+  }
+  if (loggedIn === false) {
+    throw new LlmError("auth", `claude is not logged in; run claude and then /login (${run.command} auth status)`);
+  }
+}
+
+/**
+ * codex login status: "Not logged in" and exit code 1 without a login. codex exec also takes
+ * CODEX_API_KEY (and OPENAI_API_KEY), which login status does not count, so with either set
+ * there is nothing to check.
+ */
+async function codexLoggedIn(run: RunOptions, signal: AbortSignal | undefined): Promise<void> {
+  if (run.env.CODEX_API_KEY?.trim() || run.env.OPENAI_API_KEY?.trim()) return;
+  const exit = await runStatus(run, ["login", "status"], "pochi-codex-", signal);
+  if (exit && exit.code !== 0 && /not logged in/i.test(`${exit.stdout}\n${exit.stderr}`)) {
+    throw new LlmError("auth", `codex is not logged in; run codex login (${run.command} login status)`);
+  }
+}
+
+/** The exit of a status command, or undefined when it did not run; only an abort is thrown. */
+async function runStatus(
+  run: RunOptions,
+  args: string[],
+  prefix: string,
+  signal: AbortSignal | undefined,
+): Promise<Exit | undefined> {
+  const status: RunOptions = { ...run, timeoutMs: PROBE_TIMEOUT_MS, maxBytes: MAX_STATUS_BYTES };
+  try {
+    return await withPrivateDir(prefix, run.command, signal, (cwd) => runIn(cwd, status, args, "", args.join(" "), signal));
+  } catch (err) {
+    if (!(err instanceof LlmError)) throw err;
+    log.debug(`${run.command} ${args.join(" ")} did not run: ${err.message}`);
+    return undefined;
+  }
+}
+
+/** Whether a version line ("2.1.314 (Claude Code)") is at least min; false when it has no version. */
+function atLeast(versionLine: string, min: readonly number[]): boolean {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(versionLine);
+  if (!match) return false;
+  const parts = match.slice(1).map(Number);
+  for (const [i, want] of min.entries()) {
+    const have = parts[i] ?? 0;
+    if (have !== want) return have > want;
+  }
+  return true;
 }

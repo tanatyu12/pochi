@@ -395,3 +395,75 @@ describe("createApiLlm", () => {
     await expect(pending).rejects.toBe(reason);
   });
 });
+
+describe("createApiLlm preflight", () => {
+  const MODELS = "https://api.anthropic.com/v1/models";
+  const haiku = `${MODELS}/${DEFAULT_API_MODELS.triage}`;
+  const sonnet = `${MODELS}/${DEFAULT_API_MODELS.analyze}`;
+  const model = (id: string) => reply.json({ type: "model", id, display_name: id, created_at: "2026-01-01T00:00:00Z" });
+
+  it("looks up both models with the same credentials, without sending a message", async () => {
+    const fetchMock = mockFetch({ [haiku]: model("h"), [sonnet]: model("s") });
+    await llm().preflight!();
+    expect(fetchMock.calls.map((c) => [c.method, c.url])).toEqual([
+      ["GET", haiku],
+      ["GET", sonnet],
+    ]);
+    expect(fetchMock.calls[0]?.headers.get("x-api-key")).toBe("sk-ant-test");
+    expect(fetchMock.calls[0]?.headers.get("anthropic-version")).toBe("2023-06-01");
+    expect(fetchMock.calls[0]?.body).toBeUndefined();
+  });
+
+  it("looks a model up once when both tiers use it", async () => {
+    const fetchMock = mockFetch({ [haiku]: model("h") });
+    await llm({ models: { triage: DEFAULT_API_MODELS.triage, analyze: DEFAULT_API_MODELS.triage } }).preflight!();
+    expect(fetchMock.calls).toHaveLength(1);
+  });
+
+  it.each([401, 403])("turns %i into auth", async (status) => {
+    mockFetch({ [haiku]: apiError(status, "authentication_error"), [sonnet]: apiError(status, "authentication_error") });
+    const err = await expectLlmError(llm().preflight!(), "auth");
+    expect(err.message).toContain(`HTTP ${status}`);
+    expect(err.message).toContain("request req_123");
+  });
+
+  it("names the setting of a model the API does not know", async () => {
+    const typo = `${MODELS}/claude-sonet-5-5`;
+    mockFetch({ [haiku]: model("h"), [typo]: apiError(404, "not_found_error") });
+    const err = await expectLlmError(
+      llm({ models: { triage: DEFAULT_API_MODELS.triage, analyze: "claude-sonet-5-5" } }).preflight!(),
+      "unavailable",
+    );
+    expect(err.message).toContain("llm.analyzeModel");
+    expect(err.message).toContain("claude-sonet-5-5");
+  });
+
+  it("does not trust a 404 from a gateway, which need not serve the models endpoint", async () => {
+    const base = "https://gateway.example.com";
+    mockFetch({
+      [`${base}/v1/models/${DEFAULT_API_MODELS.triage}`]: reply.status(404),
+      [`${base}/v1/models/${DEFAULT_API_MODELS.analyze}`]: reply.status(404),
+    });
+    await expect(llm({ baseUrl: base }).preflight!()).resolves.toBeUndefined();
+  });
+
+  it("leaves a server error or no network to the first call", async () => {
+    mockFetch({ [haiku]: reply.status(529), [sonnet]: reply.networkError() });
+    await expect(llm().preflight!()).resolves.toBeUndefined();
+  });
+
+  it("fails without credentials before sending anything", async () => {
+    const fetchMock = mockFetch({});
+    await expectLlmError(llm({ apiKey: undefined }).preflight!(), "auth");
+    expect(fetchMock.calls).toHaveLength(0);
+  });
+
+  it("rethrows the abort reason", async () => {
+    mockFetch({ [haiku]: reply.hang(), [sonnet]: reply.hang() });
+    const controller = new AbortController();
+    const reason = new Error("stop");
+    const pending = llm().preflight!({ signal: controller.signal });
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+  });
+});

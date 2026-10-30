@@ -6,6 +6,7 @@ import {
   type GenerateRequest,
   GroupingOutputSchema,
   type LlmClient,
+  LlmError,
   type TriageOutput,
 } from "../../src/llm/schema.js";
 import type { Briefing, Delivery, Notifier } from "../../src/notifiers/types.js";
@@ -225,6 +226,50 @@ describe("runBriefing", () => {
     const p = runBriefing(input(memoryStateStore(), []), { ...deps, signal: controller.signal });
     setTimeout(() => controller.abort(), 10);
     await expect(p).rejects.toMatchObject({ exitCode: ExitCode.INTERRUPTED, message: "interrupted" });
+  });
+
+  it("checks the LLM before it loads the state or fetches anything", async () => {
+    const fetches = mockFetch({ [FEED]: feed(["Breaking change in lib"]) });
+    const store = memoryStateStore();
+    const load = vi.spyOn(store, "load");
+    const unusable: LlmClient = {
+      ...llm,
+      preflight: async () => {
+        throw new LlmError("auth", "Anthropic API rejected ANTHROPIC_API_KEY");
+      },
+    };
+    await expect(runBriefing(input(store, [], { llm: unusable }), deps)).rejects.toMatchObject({
+      kind: "auth",
+      exitCode: ExitCode.LLM,
+    });
+    expect(fetches.calls).toEqual([]);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("saves what was decided before an unexpected error, then throws that error", async () => {
+    const store = memoryStateStore();
+    const bug = new TypeError("bug");
+    const broken: LlmClient = {
+      mode: "api",
+      generate: (req, opts) => (req.tier === "analyze" ? Promise.reject(bug) : llm.generate(req, opts)),
+    };
+    await expect(runBriefing(input(store, [fakeNotifier().notifier], { llm: broken }), deps)).rejects.toBe(bug);
+
+    // The triage answers were kept: the next run only analyzes the relevant item.
+    const next = counting();
+    const { notifier, received } = fakeNotifier();
+    await runBriefing(input(store, [notifier], { llm: next.llm }), deps);
+    expect(next.tiers()).toEqual(["analyze"]);
+    expect(received[0]?.insights.map((f) => f.item.title)).toEqual(["Breaking change in lib"]);
+  });
+
+  it("saves nothing after an unexpected error on a dry run", async () => {
+    const store = memoryStateStore();
+    const save = vi.spyOn(store, "save");
+    const bug = new TypeError("bug");
+    const broken: LlmClient = { mode: "api", generate: () => Promise.reject(bug) };
+    await expect(runBriefing(input(store, [], { llm: broken, dryRun: true }), deps)).rejects.toBe(bug);
+    expect(save).not.toHaveBeenCalled();
   });
 
   it("throws when every source fails", async () => {

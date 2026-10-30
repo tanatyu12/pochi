@@ -1,10 +1,19 @@
 import { existsSync, readFileSync } from "node:fs";
+import { chmod, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextSchema } from "../../src/config/schema.js";
 import { ExitCode, exitCodeOf } from "../../src/errors.js";
-import { buildCliArgs, createCliLlm, DEFAULT_CLI_MODELS, findFirstJsonObject, type SpawnFn } from "../../src/llm/cli.js";
+import {
+  buildCliArgs,
+  createCliLlm,
+  DEFAULT_CLI_MODELS,
+  findFirstJsonObject,
+  type SpawnFn,
+  withPrivateDir,
+  writeInput,
+} from "../../src/llm/cli.js";
 import { triageRequest } from "../../src/llm/prompts.js";
 import {
   type GenerateRequest,
@@ -419,5 +428,52 @@ describe("findFirstJsonObject", () => {
     ["an empty string", ""],
   ])("returns undefined for %s", (_label, text) => {
     expect(findFirstJsonObject(text)).toBeUndefined();
+  });
+});
+
+describe("withPrivateDir and writeInput", () => {
+  it("returns what fn returned when the directory cannot be removed afterwards", async () => {
+    let dir = "";
+    try {
+      const value = await withPrivateDir("pochi-test-", "claude", undefined, async (cwd) => {
+        dir = cwd;
+        await writeFile(join(cwd, "inside"), "x");
+        // A read-only directory: what is in it cannot be removed.
+        await chmod(cwd, 0o500);
+        return "answer";
+      });
+      expect(value).toBe("answer");
+    } finally {
+      if (dir) {
+        await chmod(dir, 0o700);
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("keeps the error of fn when the directory cannot be removed either", async () => {
+    let dir = "";
+    const original = new LlmError("timeout", "claude did not answer");
+    try {
+      const promise = withPrivateDir("pochi-test-", "claude", undefined, async (cwd) => {
+        dir = cwd;
+        await writeFile(join(cwd, "inside"), "x");
+        await chmod(cwd, 0o500);
+        throw original;
+      });
+      await expect(promise).rejects.toBe(original);
+    } finally {
+      if (dir) {
+        await chmod(dir, 0o700);
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("turns a failed write into unavailable, naming only the error code", async () => {
+    const missing = join(tmpdir(), `pochi-missing-${process.pid}`, "system.md");
+    const promise = writeInput(missing, "the project's details", "claude");
+    await expect(promise).rejects.toBeInstanceOf(LlmError);
+    await expect(promise).rejects.toMatchObject({ kind: "unavailable", message: "could not write the input for claude: ENOENT" });
   });
 });
