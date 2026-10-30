@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ExitCode } from "../../src/errors.js";
 import { parseCron } from "../../src/schedule/calendar.js";
-import { githubScheduler, WORKFLOW_PATH } from "../../src/schedule/github.js";
+import { ACTIONS, githubScheduler, WORKFLOW_PATH } from "../../src/schedule/github.js";
 import { buildJob, type Job } from "../../src/schedule/index.js";
 
 let job: Job;
@@ -31,6 +31,14 @@ describe("githubScheduler", () => {
     expect(commitStep).toContain("GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}");
     expect(commitStep).toContain("GIT_CONFIG_VALUE_0=");
     expect(commitStep).not.toContain("git remote");
+  });
+
+  it("does use the action versions CI uses, which Dependabot keeps current", async () => {
+    const ci = await readFile(join(import.meta.dirname, "..", "..", ".github", "workflows", "ci.yml"), "utf8");
+    const used = new Set([...ci.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)].map((m) => m[1]));
+    for (const action of Object.values(ACTIONS)) expect(used).toContain(action);
+    const yml = githubScheduler().render(job, parseCron("17 21 * * *"), "daily");
+    for (const action of Object.values(ACTIONS)) expect(yml).toContain(`uses: ${action}\n`);
   });
 
   it("writes, inspects and removes the workflow file", async () => {

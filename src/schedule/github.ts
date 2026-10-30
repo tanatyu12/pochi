@@ -7,6 +7,15 @@ import type { Job, Scheduler } from "./types.js";
 export const WORKFLOW_PATH = ".github/workflows/daily_briefing.yml";
 
 /**
+ * The actions the generated workflow uses. Dependabot cannot see inside this template, so these
+ * follow .github/workflows/ci.yml, which it does update; a test fails when the two differ.
+ */
+export const ACTIONS = {
+  checkout: "actions/checkout@v7",
+  setupNode: "actions/setup-node@v7",
+} as const;
+
+/**
  * A workflow in the checkout. It only takes effect once committed and pushed to the default
  * branch, which is left to the user. Config and keys come from repository secrets.
  */
@@ -71,10 +80,10 @@ jobs:
     timeout-minutes: 20
     steps:
       # The token stays out of .git/config, where install scripts and the build could read it.
-      - uses: actions/checkout@v7
+      - uses: ${ACTIONS.checkout}
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: ${ACTIONS.setupNode}
         with:
           node-version: 24
           cache: npm
