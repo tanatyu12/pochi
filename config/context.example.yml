@@ -19,7 +19,7 @@ exclude:
 language: English
 
 llm:
-  provider: auto        # auto | api | claude | codex (auto uses ANTHROPIC_API_KEY if set, else the claude CLI, else codex)
+  provider: auto        # auto | api | claude | codex (auto uses ANTHROPIC_API_KEY if set, else the claude CLI, else codex; cli is a legacy alias for claude)
   triageModel: ~        # default: claude-haiku-5-5 (api) / haiku (claude) / codex's own model (codex)
   analyzeModel: ~       # default: claude-sonnet-5-5 (api) / sonnet (claude) / codex's own model (codex)
   maxItemsPerCall: 40

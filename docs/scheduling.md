@@ -64,7 +64,7 @@ gh secret set TAVILY_API_KEY              # if you use queries
 git add .github/workflows/daily_briefing.yml && git commit -m "ci: daily briefing" && git push
 ```
 
-The workflow can also be started by hand (Actions → Daily briefing → Run workflow), with a `dry_run` input. After each run it commits `state/notified.json`, so the next run knows what you have seen.
+The workflow can also be started by hand (Actions → Briefing → Run workflow), with a `dry_run` input. After each run it commits `state/notified.json`, so the next run knows what you have seen.
 
 Things to know:
 
