@@ -108,6 +108,23 @@ describe("schedule install", () => {
     expect(out.filter((l) => l.startsWith("warn:"))).toEqual([]);
   });
 
+  it("fails with 2 when .env or the log directory cannot be used, before installing anything", async () => {
+    await setup(context());
+    const { exec, calls } = fakeExec();
+    await mkdir(join(cwd, ".env"));
+    await expect(installSchedule({}, deps({ exec }))).rejects.toMatchObject({
+      exitCode: ExitCode.CONFIG,
+      message: `could not read ${join(cwd, ".env")} (EISDIR)`,
+    });
+    await rm(join(cwd, ".env"), { recursive: true });
+    await writeFile(join(cwd, "logs"), "");
+    await expect(installSchedule({}, deps({ exec }))).rejects.toMatchObject({
+      exitCode: ExitCode.CONFIG,
+      message: expect.stringMatching(/^could not create .*logs \(E[A-Z]+\)$/),
+    });
+    expect(calls).toEqual([]);
+  });
+
   it("installs a dry-run job at another time, which needs no webhook", async () => {
     await setup(context());
     await installSchedule({ at: "12:05", dryRun: true, print: true }, deps());

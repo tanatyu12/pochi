@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ConfigError } from "../config/load.js";
 import { type Calendar, CalendarError, type Field } from "./calendar.js";
 import type { ExecFn } from "./exec.js";
+import { fsStep, unlessMissing } from "./fs.js";
 import type { Job, Scheduler } from "./types.js";
 
 // One dictionary per combination; past this the calendar is better served by cron.
@@ -58,10 +59,10 @@ export function launchdScheduler(deps: { exec: ExecFn; home: string; uid: number
     },
     async install(job, content) {
       const path = plistPath(job);
-      await mkdir(dirname(path), { recursive: true });
+      await fsStep("create", dirname(path), () => mkdir(dirname(path), { recursive: true }));
       // An older version of the job may be loaded; it keeps its old schedule until booted out.
       await deps.exec("launchctl", ["bootout", `${domain}/${job.id}`]);
-      await writeFile(path, content, { mode: 0o644 });
+      await fsStep("write", path, () => writeFile(path, content, { mode: 0o644 }));
       let r = await deps.exec("launchctl", ["bootstrap", domain, path]);
       if (r.code !== 0) {
         // Right after a bootout, launchd can still be tearing the job down (error 5).
@@ -76,20 +77,12 @@ export function launchdScheduler(deps: { exec: ExecFn; home: string; uid: number
     async uninstall(job) {
       const path = plistPath(job);
       const unloaded = (await deps.exec("launchctl", ["bootout", `${domain}/${job.id}`])).code === 0;
-      const existed = await rm(path).then(
-        () => true,
-        (err: NodeJS.ErrnoException) => {
-          if (err.code === "ENOENT") return false;
-          throw err;
-        },
-      );
+      const existed = (await unlessMissing("remove", path, () => rm(path).then(() => true))) ?? false;
       return unloaded || existed;
     },
     async inspect(job) {
-      const content = await readFile(plistPath(job), "utf8").catch((err: NodeJS.ErrnoException) => {
-        if (err.code === "ENOENT") return undefined;
-        throw err;
-      });
+      const path = plistPath(job);
+      const content = await unlessMissing("read", path, () => readFile(path, "utf8"));
       const loaded = (await deps.exec("launchctl", ["print", `${domain}/${job.id}`])).code === 0;
       return { content, loaded };
     },

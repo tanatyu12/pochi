@@ -26,6 +26,7 @@ import {
   type Scheduler,
   type SchedulerDeps,
 } from "../schedule/index.js";
+import { fsStep, unlessMissing } from "../schedule/fs.js";
 import { redact } from "../util/log.js";
 
 const NEXT_RUNS = 3;
@@ -168,7 +169,10 @@ export async function installSchedule(opts: InstallOptions, deps: ScheduleDeps =
   }
   const checks = s.scheduler.zone === "local" ? await checkEnvFile(s.cwd, config, opts.dryRun) : checkGithub(config);
   for (const w of checks) s.write(`warn: ${w}`);
-  if (s.scheduler.zone === "local") await mkdir(dirname(job.logPath), { recursive: true });
+  if (s.scheduler.zone === "local") {
+    const logs = dirname(job.logPath);
+    await fsStep("create", logs, () => mkdir(logs, { recursive: true }));
+  }
   const notes = await s.scheduler.install(job, content);
   s.write(`Installed ${s.scheduler.name} job ${job.id}: ${display(s, s.scheduler.location(job))}`);
   if (s.scheduler.zone === "local") s.write(`Log: ${display(s, job.logPath)}`);
@@ -232,19 +236,14 @@ async function checkEnvFile(cwd: string, config: LoadedConfig, dryRun?: boolean)
     ...(config.context.llm.provider === "api" ? ["ANTHROPIC_API_KEY"] : []),
     ...(config.sources.queries.length > 0 ? ["TAVILY_API_KEY"] : []),
   ];
-  let text: string;
-  try {
-    const st = await stat(path);
-    text = await readFile(path, "utf8");
-    // Keys for Slack and Anthropic should not be readable by other users.
-    if ((st.mode & 0o077) !== 0) {
-      return [`${ENV_FILE} can be read by other users; run chmod 600 ${ENV_FILE}`, ...missing(needed, parseEnv(text))];
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    return needed.length === 0 ? [] : [`no ${ENV_FILE}, and scheduled runs need ${needed.join(", ")} from it`];
+  const read = await unlessMissing("read", path, async () => ({ st: await stat(path), text: await readFile(path, "utf8") }));
+  if (!read) return needed.length === 0 ? [] : [`no ${ENV_FILE}, and scheduled runs need ${needed.join(", ")} from it`];
+  const vars = parseEnv(read.text);
+  // Keys for Slack and Anthropic should not be readable by other users.
+  if ((read.st.mode & 0o077) !== 0) {
+    return [`${ENV_FILE} can be read by other users; run chmod 600 ${ENV_FILE}`, ...missing(needed, vars)];
   }
-  return missing(needed, parseEnv(text));
+  return missing(needed, vars);
 }
 
 function missing(needed: string[], vars: Record<string, string | undefined>): string[] {
