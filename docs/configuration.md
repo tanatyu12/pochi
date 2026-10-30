@@ -70,6 +70,8 @@ Ids must be unique across feeds and queries, and at least one of either is requi
 | Variable | Used for |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | The LLM in `api` mode |
+| `ANTHROPIC_BASE_URL` | A gateway or proxy for the Anthropic API, in `api` mode and for `claude` (default `https://api.anthropic.com`) |
+| `ANTHROPIC_AUTH_TOKEN` | Sent as a bearer token to the gateway in `ANTHROPIC_BASE_URL` |
 | `SLACK_WEBHOOK_URL` | The `slack` channel. Never put it in a yml file |
 | `TAVILY_API_KEY` | `queries` |
 | `GITHUB_TOKEN` | GitHub's API rate limit (optional locally; set for you in Actions) |

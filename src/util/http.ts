@@ -145,7 +145,7 @@ async function attempt(
   }
 }
 
-async function readText(res: Response, maxBytes: number, safeUrl: string): Promise<string> {
+export async function readText(res: Response, maxBytes: number, safeUrl: string): Promise<string> {
   const tooLarge = () =>
     new HttpError("too_large", safeUrl, `response exceeds ${maxBytes} bytes: ${safeUrl}`);
   if (Number(res.headers.get("content-length")) > maxBytes) {
