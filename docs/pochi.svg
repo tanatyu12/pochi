@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="336" viewBox="0 0 320 336" shape-rendering="crispEdges">
+<title>Pochi</title>
+<style>g { fill: #d7afff; } @media (prefers-color-scheme: light) { g { fill: #9a6fd8; } }</style>
+<g>
+<rect x="160" y="0" width="32" height="16"/>
+<rect x="224" y="0" width="32" height="16"/>
+<rect x="160" y="16" width="48" height="16"/>
+<rect x="224" y="16" width="48" height="16"/>
+<rect x="160" y="32" width="112" height="16"/>
+<rect x="144" y="48" width="128" height="16"/>
+<rect x="144" y="64" width="128" height="16"/>
+<rect x="144" y="80" width="176" height="16"/>
+<rect x="144" y="96" width="176" height="16"/>
+<rect x="144" y="112" width="128" height="16"/>
+<rect x="288" y="112" width="16" height="16"/>
+<rect x="160" y="128" width="112" height="16"/>
+<rect x="176" y="144" width="80" height="16"/>
+<rect x="16" y="176" width="48" height="16"/>
+<rect x="176" y="176" width="80" height="16"/>
+<rect x="0" y="192" width="16" height="16"/>
+<rect x="64" y="192" width="16" height="16"/>
+<rect x="160" y="192" width="96" height="16"/>
+<rect x="0" y="208" width="16" height="16"/>
+<rect x="48" y="208" width="32" height="16"/>
+<rect x="144" y="208" width="112" height="16"/>
+<rect x="16" y="224" width="256" height="16"/>
+<rect x="32" y="240" width="240" height="16"/>
+<rect x="32" y="256" width="192" height="16"/>
+<rect x="240" y="256" width="32" height="16"/>
+<rect x="32" y="272" width="176" height="16"/>
+<rect x="240" y="272" width="32" height="16"/>
+<rect x="32" y="288" width="176" height="16"/>
+<rect x="240" y="288" width="32" height="16"/>
+<rect x="32" y="304" width="160" height="16"/>
+<rect x="240" y="304" width="32" height="16"/>
+<rect x="16" y="320" width="160" height="16"/>
+<rect x="224" y="320" width="48" height="16"/>
+</g>
+</svg>
