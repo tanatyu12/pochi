@@ -25,6 +25,8 @@ exclude:             # what to drop even if it looks related (0-30)
 language: English    # the language of the summaries
 ```
 
+`language` is free text: any language the model writes works. `pochi init` lists English, Japanese, Chinese (Simplified), Chinese (Traditional), Spanish, French, German, Portuguese and Korean, and the news searches it adds use that language's Google News edition (`ja-JP`, `zh-CN`, `zh-TW`, `es-ES`, `fr-FR`, `de-DE`, `pt-BR`, `ko-KR`; `en-US` for any other language). Labels such as High and Action stay in English.
+
 `problems` is the heart of Pochi. An item reaches you only when it bears on one of them, so write them as concerns ("Cheaper LLMs for support chat"), not as topics ("LLMs").
 
 | Key | Default | Notes |
@@ -62,6 +64,8 @@ Ids must be unique across feeds and queries, and at least one of either is requi
 | `rss` | nothing | `url` (RSS, Atom, RDF or JSON Feed) |
 | `googlenews` | nothing, free | `query`, `sites` (domains), `locale` (default `en-US`) |
 | `queries` (Tavily) | `TAVILY_API_KEY`; skipped without it | `query`, `topic: news \| general`, `maxResults` (1-20), `requireDate`, `includeDomains`, `excludeDomains` |
+
+A `googlenews` feed's `locale` picks the edition, language and region: `es-MX` searches the Mexican edition rather than Spain's, `en-GB` the British one.
 
 `defaults` sets how much each feed contributes: `itemsPerFeed` (3, the newest every run), `maxItemsPerFeed` (20, everything since the last run up to this many) and `maxContentChars` (2000).
 

@@ -1,10 +1,9 @@
 import { type ChannelConfig, type ContextInput, MAX_EXCLUDE, MAX_PROBLEMS } from "../../config/schema.js";
+import { LANGUAGES, findLanguage } from "../../config/languages.js";
 import type { Proposal } from "../../proposal/parse.js";
 import type { Prompter } from "../../util/prompter.js";
 import { plural } from "../../util/text.js";
 import { askListWithProposals, required } from "./lists.js";
-
-const LANGUAGES = ["English", "Japanese"] as const;
 
 type ChannelInput = NonNullable<NonNullable<ContextInput["notify"]>["channels"]>[number];
 
@@ -56,10 +55,13 @@ export async function askContext(
     max: MAX_EXCLUDE,
   });
   const proposed = proposal?.language;
-  const known = LANGUAGES.find((l) => l.toLowerCase() === proposed?.toLowerCase());
+  const known = findLanguage(proposed)?.name;
   const choice = await p.select({
     message: "Language for the summaries",
-    options: [...LANGUAGES.map((l) => ({ value: l, label: l })), { value: "other", label: "Other" }],
+    options: [
+      ...LANGUAGES.map((l) => ({ value: l.name, label: l.name, hint: l.native === l.name ? undefined : l.native })),
+      { value: "other", label: "Other" },
+    ],
     initialValue: known ?? (proposed ? "other" : "English"),
   });
   const language =
@@ -67,7 +69,7 @@ export async function askContext(
       ? (
           await p.text({
             message: "Language",
-            placeholder: "German",
+            placeholder: "Italian",
             initialValue: known ? undefined : proposed,
             validate: required,
           })
