@@ -35,7 +35,9 @@ notify:
 
 state:
   ttlDays: 45           # must be greater than maxItemAgeDays
-  maxItemAgeDays: 14
+  # How many days back a run looks. Omit to follow the schedule: its longest gap between
+  # runs and a day (daily: 2, weekly: 8, monthly: 32), or back to the last run if one was missed.
+  # maxItemAgeDays: 14
 
 # When `pochi schedule install` runs pochi (dependabot-style). Omit for daily at 06:17.
 schedule:

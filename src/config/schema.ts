@@ -101,11 +101,12 @@ export const ContextSchema = z
     state: z
       .strictObject({
         ttlDays: positiveInt.default(45),
-        maxItemAgeDays: positiveInt.default(14),
+        /** Unset, a run looks back as far as the schedule's longest gap between runs (run's itemAgeDays). */
+        maxItemAgeDays: positiveInt.optional(),
       })
       .prefault({})
       // Otherwise an expired entry could reappear as a new item while still in its feed window.
-      .refine((s) => s.ttlDays > s.maxItemAgeDays, {
+      .refine((s) => s.maxItemAgeDays === undefined || s.ttlDays > s.maxItemAgeDays, {
         error: "must be greater than maxItemAgeDays",
         path: ["ttlDays"],
       }),

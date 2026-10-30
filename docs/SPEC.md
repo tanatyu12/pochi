@@ -93,7 +93,7 @@ notify:
   channels:                  # 既定は [{ type: slack }]。届ける順
     - { type: slack }        # Webhook は SLACK_WEBHOOK_URL から
     - { type: file, dir: reports }   # <dir>/<YYYY-MM-DD>.md に Markdown で書く
-state: { ttlDays: 45, maxItemAgeDays: 14 }   # ttlDays > maxItemAgeDays であること
+state: { ttlDays: 45 }      # maxItemAgeDays は省略でスケジュールに合わせる（下記）。書くなら ttlDays > maxItemAgeDays
 schedule:                    # pochi schedule install が使う。キーと意味は dependabot の schedule に合わせる
   interval: daily            # daily | weekly | monthly（毎月1日）| cron。既定 daily
   day: [monday, thursday]    # weekly のみ。1つなら文字列でもよい。既定 monday
@@ -146,7 +146,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 ```
 
 - キーは記事の `stateKeys(item)`（id と urlKey）。どれか1つでも entries にあれば既知とみなし、l の更新や状態の記録は全キーに対して行う。id だけで引くと、収集時に URL の重複として落とした側や、別の日に別のソースから来た同じページが再通知される
-- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う。初めて見てから maxItemAgeDays を過ぎても r のままなら i にして打ち切る。touch で l が更新され続けて期限切れにならず、通知先に拒否され続ける記事を毎日解析し直してしまうため）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
+- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う。初めて見てから maxItemAgeDays（最低14日）を過ぎても r のままなら i にして打ち切る。touch で l が更新され続けて期限切れにならず、通知先に拒否され続ける記事を毎日解析し直してしまうため）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
 - f は初めて見た日、l は最後にフィード上で見た日
 - updatedAt は保存した時刻で、次の実行はここから収集の起点 since を決める（run の手順5）。そのため、未決の記事（Triage の失敗や maxItemsPerRun のあふれ。状態に記録されない）を残した実行では、前回の updatedAt（なければ maxItemAgeDays 前）を書き直して起点を進めない。進めると、それらの記事が次の実行の取得範囲から外れてしまう。読めない値は無視する（since なしで動く）
 - 古いエントリは l を基準に ttlDays で削除する。更新の止まったブログの記事はフィードに残り続けるため、通知日を基準にすると期限後に再通知されてしまう
@@ -321,8 +321,8 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   2. dry-run でなければ `createNotifiers` で通知先を作る（slack で SLACK_WEBHOOK_URL がなければ2。空白だけは未設定扱い）。feeds が空で queries があり、TAVILY_API_KEY がなければ2（取得するソースがない）
   3. LLM を解決する（失敗すれば3）。手順2と3は記事の取得や LLM の課金より前に済ませる
   4. 状態ファイルを読み、期限切れのエントリを削除する。dry-run では `readOnly` で読む（壊れたファイルを退避しない）。`--no-state` なら読まずに空の状態から始め、保存もしない
-  5. 記事を収集する（全ソースが失敗すれば5）。状態ファイルに updatedAt があれば、その1日前（未来の時刻なら今から1日前。時差と公開日のずれの分の重なりで、重複は状態で除く）を since とし、ただし maxItemAgeDays より前には遡らない。updatedAt がなければ since なし（各フィードの最新 itemsPerFeed 件と Tavily の直近1週間）
-  6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が r の記事は除外せず、`pretriaged` として手順7に渡す。ただし r のうち初めて見た日（全キーの f の最小値、`firstSeen`）から maxItemAgeDays を超えたものは渡さず、状態 i にして打ち切る。新規で maxItemAgeDays より古い記事は状態 i にする（日付のない記事は新しいものとして扱う）
+  5. 記事を収集する（全ソースが失敗すれば5）。まず遡る日数（以下 maxItemAgeDays。`itemAgeDays`）を決める：context.yml に maxItemAgeDays があればそれ。なければスケジュールの実行間隔の最長（`longestGapDays`。日単位で四捨五入、最小1日。毎日なら1、金・土なら6、週1なら7、月1なら31）に1日足した日数で、前回の実行（updatedAt）からそれ以上空いていれば、その日数（切り上げ）に1日足した日数。5年以内に2回の実行がなければ14日。いずれも ttlDays - 1 を超えない（期限切れの状態の記事が新規に戻らないように）。状態ファイルに updatedAt があれば、その1日前（未来の時刻なら今から1日前。時差と公開日のずれの分の重なりで、重複は状態で除く）を since とし、ただし maxItemAgeDays より前には遡らない。updatedAt がなければ（初回）maxItemAgeDays 前を since とする（各フィードは itemsPerFeed 件に加え、その間の記事を maxItemsPerFeed 件まで取る。Tavily は start_date）
+  6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が r の記事は除外せず、`pretriaged` として手順7に渡す。ただし r のうち初めて見た日（全キーの f の最小値、`firstSeen`）から maxItemAgeDays（ただし最低14日。毎日の実行で通知先が週末止まっても失わないように）を超えたものは渡さず、状態 i にして打ち切る。新規で maxItemAgeDays より古い記事は状態 i にする（日付のない記事は新しいものとして扱う）
   7. Triage と Analyze を実行する（状態 r の記事は `pretriaged` として渡す）。結果が `aborted` なら通知せず、irrelevant を i、pending と insights を r として記録して保存し、130 で終える
   8. channels の順に各通知先へ届ける（filter の結果に error があっても届ける）。中断されたら残りの通知先には届けない（各通知先の前に signal を確かめる。ファイルの書き込みは中断できないため）。dry-run のときは stdout に出し、状態は書かない（filter の error があれば出力後に3）
   9. 状態を保存する。irrelevant は i、pending は r、全通知先に届いた insights は n、どれかに届かなかった insights は r（翌日は Triage を払い直さずに Analyze から送り直す。届いた側には重複して届く）として記録する。保存に失敗すれば1（送信済みの記事が翌日また届くため、ほかの失敗より優先する）。保存の後、通知が中断されていれば130、filter の結果に error があれば3、どれかの通知先で失敗していれば4（`delivery failed: slack (2 updates not delivered)`）。3 を 4 より優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
