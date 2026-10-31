@@ -19,7 +19,7 @@ const query: QueryConfig = {
   maxResults: 5,
   requireDate: false,
 };
-const defaults = { itemsPerFeed: 3, maxContentChars: 2000 };
+const defaults = { itemsPerFeed: 3, maxItemsPerFeed: 20, maxContentChars: 2000 };
 
 beforeEach(() => {
   vi.stubEnv("TAVILY_API_KEY", KEY);
@@ -73,6 +73,14 @@ describe("fetchTavilyItems", () => {
     const body = JSON.parse(mock.calls[0]!.body!);
     expect(body).toMatchObject({ topic: "general", max_results: 12 });
     expect(body).not.toHaveProperty("days");
+  });
+
+  it("searches from since in place of the one-week range", async () => {
+    const mock = mockFetch({ [SEARCH]: reply.json({ results: [] }) });
+    await fetchTavilyItems(query, { ...defaults, since: new Date("2026-10-24T06:17:00Z") });
+    const body = JSON.parse(mock.calls[0]!.body!);
+    expect(body).toMatchObject({ start_date: "2026-10-24" });
+    expect(body).not.toHaveProperty("time_range");
   });
 
   it("asks Tavily to drop undated results only with requireDate", async () => {

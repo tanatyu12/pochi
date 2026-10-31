@@ -23,7 +23,7 @@ import {
 } from "../state/store.js";
 import type { Insight, Item } from "../types.js";
 import { configureLog, log } from "../util/log.js";
-import { daysBetween, parseDate, toIsoDate } from "../util/time.js";
+import { DAY_MS, daysBetween, parseDate, toIsoDate } from "../util/time.js";
 
 export interface RunOptions {
   dryRun?: boolean;
@@ -82,11 +82,15 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   const state = statePath === undefined ? emptyState() : await loadState(statePath, { now, readOnly: dryRun });
   const pruned = pruneState(state, context.state.ttlDays, today);
   if (pruned > 0) log.debug(`removed ${pruned} expired state entries`);
-  const save = async () => {
-    if (statePath !== undefined && !dryRun) await saveState(state, statePath, { now });
+  // The saved time is where the next run's since starts, so it moves on only once every item
+  // collected was decided: one left undecided is not in the state and would fall outside the window.
+  const save = async (filtered: FilterResult) => {
+    if (statePath === undefined || dryRun) return;
+    const kept = state.updatedAt ?? new Date(now.getTime() - context.state.maxItemAgeDays * DAY_MS);
+    await saveState(state, statePath, { now: filtered.undecided.length === 0 ? now : kept });
   };
 
-  const collected = await collectAll(sources, { signal });
+  const collected = await collectAll(sources, { signal, since: sinceLastRun(state, context, now) });
   if (collected.attempted > 0 && collected.failures.length === collected.attempted) {
     throw new PochiError(`all ${collected.attempted} sources failed`, ExitCode.SOURCES);
   }
@@ -104,7 +108,7 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   if (filtered.aborted) {
     // The answers so far are paid for; insights not sent are analyzed again next time.
     recordFiltered(state, filtered, new Set(), today);
-    await save();
+    await save(filtered);
     throw interrupted();
   }
 
@@ -133,7 +137,7 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   if (sent.length < notifiers.length) delivered.clear();
   recordFiltered(state, filtered, delivered, today);
   // A failed save after a delivery means tomorrow repeats it, so it wins over everything else (1).
-  await save();
+  await save(filtered);
   if (opts.json) stdout(toJson(briefing, filtered, { dryRun, sent }));
 
   if (sent.some(({ result }) => result.aborted)) throw interrupted();
@@ -208,6 +212,19 @@ function sortKnown(
   if (stale > 0) log.debug(`skipped ${stale} new items older than ${maxAge} days`);
   if (givenUp > 0) log.info(`gave up on ${givenUp} items still not delivered ${maxAge} days after they were first seen`);
   return { fresh, pretriaged };
+}
+
+/**
+ * A day before the last run, so an entry dated just before it (or in another time zone) is not
+ * missed; what was already seen is dropped by the state. Never further back than maxItemAgeDays,
+ * since older items are dropped anyway. Without a saved run, sources take their newest few.
+ */
+function sinceLastRun(state: State, context: Context, now: Date): Date | undefined {
+  if (state.updatedAt === undefined) return undefined;
+  const oldest = now.getTime() - context.state.maxItemAgeDays * DAY_MS;
+  // A clock that was ahead must not push since past now.
+  const last = Math.min(state.updatedAt.getTime(), now.getTime());
+  return new Date(Math.max(last - DAY_MS, oldest));
 }
 
 // An item without a date cannot be judged old, so it is treated as new.

@@ -3,7 +3,8 @@
 version: 1
 
 defaults:
-  itemsPerFeed: 3
+  itemsPerFeed: 3            # the newest few of each feed, every run
+  maxItemsPerFeed: 20        # with a previous run, everything published since, up to this many
   maxContentChars: 2000
 
 # ids must be unique across feeds and queries. At least one feed or query is required.
@@ -24,5 +25,5 @@ queries:
   - id: qwen-news
     query: Qwen model release
     topic: news               # news | general
-    maxResults: 5
+    maxResults: 10            # 1-20; a basic search costs one credit whatever the count
     requireDate: false        # true drops results Tavily cannot date

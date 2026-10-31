@@ -106,12 +106,12 @@ schedule:                    # pochi schedule install が使う。キーと意�
 
 ```yaml
 version: 1
-defaults: { itemsPerFeed: 3, maxContentChars: 2000 }
+defaults: { itemsPerFeed: 3, maxItemsPerFeed: 20, maxContentChars: 2000 }   # maxItemsPerFeed：前回の実行以降の記事を itemsPerFeed を超えて取るときの上限
 feeds:
   - { id: nextjs, type: github, name: "Next.js releases", repo: vercel/next.js }   # feed: releases|tags, includePrereleases: false
   - { id: simonw, type: rss, name: "Simon Willison", url: "https://simonwillison.net/atom/everything/" }
 queries:
-  - { id: qwen-news, query: "Qwen model release", topic: news, maxResults: 5 }   # requireDate: false
+  - { id: qwen-news, query: "Qwen model release", topic: news, maxResults: 10 }   # requireDate: false。maxResults の既定は10（basic 検索は件数によらず1クレジット）
 ```
 
 id は feeds と queries を通して一意とし、feeds か queries のどちらかを最低1件必要とする。
@@ -147,6 +147,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 - キーは記事の `stateKeys(item)`（id と urlKey）。どれか1つでも entries にあれば既知とみなし、l の更新や状態の記録は全キーに対して行う。id だけで引くと、収集時に URL の重複として落とした側や、別の日に別のソースから来た同じページが再通知される
 - s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う。初めて見てから maxItemAgeDays を過ぎても r のままなら i にして打ち切る。touch で l が更新され続けて期限切れにならず、通知先に拒否され続ける記事を毎日解析し直してしまうため）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
 - f は初めて見た日、l は最後にフィード上で見た日
+- updatedAt は保存した時刻で、次の実行はここから収集の起点 since を決める（run の手順5）。そのため、未決の記事（Triage の失敗や maxItemsPerRun のあふれ。状態に記録されない）を残した実行では、前回の updatedAt（なければ maxItemAgeDays 前）を書き直して起点を進めない。進めると、それらの記事が次の実行の取得範囲から外れてしまう。読めない値は無視する（since なしで動く）
 - 古いエントリは l を基準に ttlDays で削除する。更新の止まったブログの記事はフィードに残り続けるため、通知日を基準にすると期限後に再通知されてしまう
 - キーはソートし、1エントリ1行で書く（毎日のコミットの差分を変わったエントリだけにするため）。一時ファイルに書いてから rename する
 - 壊れていた場合（JSON でない、version が 1 でない、entries が object でない）は `notified.json.corrupt-<YYYYMMDDTHHmmssZ>-<6桁の16進>` に退避して warn を出し、空の状態から始める（同じ秒に2回壊れても前の退避を上書きしないよう、末尾に乱数を付ける）。dry-run では退避せず、ファイルをそのまま残して空の状態から始める。個々のエントリだけが不正（キーが32桁の16進でない、s が n / i / r 以外、日付が実在する YYYY-MM-DD でない）なら、そのエントリだけを捨てる。ファイルがなければ空の状態とし、それ以外の読み込みエラーや退避の失敗は終了コード1にする（空で始めると全記事が再通知されるため）
@@ -211,7 +212,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - `parseFeedText` は feedsmith で RSS / Atom / RDF / JSON Feed を共通の RawEntry に変換する。feedsmith は XML のエンティティを1段デコードした値を返すので、本文は HTML（`html`）か文字どおりのテキスト（JSON Feed の content_text、Atom の type="text" と text/* の MIME）かを区別して持つ。Atom の type が html / xhtml / text/html / application/xhtml+xml なら HTML、それ以外の MIME（base64 など）は使えないものとして扱う。解析できなければ入力を含まない FeedParseError を投げる（「not a feed」または「malformed feed」）
   - 本文は content:encoded → description（RSS / RDF）、content → summary（Atom。空白だけ、または使えない type の content は飛ばす）、content_html → content_text → summary（JSON Feed）の順に採る。日付は pubDate / published / date_published を優先し、なければ dc:date / updated / date_modified。Atom のリンクは rel="alternate"（rel なしを含む）のうち、メディアタイプ（; 以降の引数は無視）が text/html のものを優先する。alternate がなければリンクなしとする（self / enclosure などは記事のページではない）。RDF は rdf:about を guid にする。RSS で link がなければ、絶対 URL の permalink guid を使う
   - タイトル：RSS / RDF は装飾タグ（b、em、strong、span、a、br など）だけを除いてからエンティティをデコードする。デコード後は CDATA のタグとエスケープされたタグ名を区別できないため、`<canvas>` のようなタグ名は残す。Atom は type に従い、html なら HTML として1段だけテキストにする（本文向けの二重エスケープ解除はしない）。JSON Feed と Atom の text はそのまま使う
-  - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、guid または正規化 URL が同じ記事は最も新しいものだけを残してから、最新 N 件を取る。plain text の本文も HTML の本文と同じ見出し優先の切り詰めを行う。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
+  - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、guid または正規化 URL が同じ記事は最も新しいものだけを残してから、最新 itemsPerFeed 件を取る。since があれば、その時刻以降の日付を持つ記事を maxItemsPerFeed 件まで追加で取る（実行の間隔中に itemsPerFeed 件より多く更新されたフィードを取りこぼさないため。日付のない記事は増やさない）。plain text の本文も HTML の本文と同じ見出し優先の切り詰めを行う。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
   - `fetchFeedEntries` は取得と解析をまとめ、リダイレクト後の URL も返す。全文を含むフィード（WordPress に多い）は 2MB を超えるので、上限は `FEED_MAX_BYTES`（10MB）とする。`fetchFeedItems` はそれに `toItems` を続け、件数を絞る前に entry を選ぶ filter を受け取れる。`fetchRssItems` は `fetchFeedItems` を呼ぶだけの薄い関数
 - **github.ts**
   - releases は REST API `https://api.github.com/repos/<repo>/releases?per_page=100` から取る。releases.atom は最新10件しか持たず、canary が続くと stable が窓から押し出されるため。`accept: application/vnd.github.html+json` で `body_html` を受け取り、rss.ts の `toItems`（kind は github）で変換する。draft は捨て、プレリリースは作者が付けた `prerelease` フラグで判定する。応答の上限は 8MB
@@ -228,12 +229,12 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   3. 候補は全件、実際に取得して解析できるか確かめる（同時に4件まで）。解析できない候補と 4xx（429 を除く）は外し、リダイレクト先が同じフィードは1つにまとめる。タイムアウト・通信エラー・5xx・429・サイズ超過は「確かめられなかった」として扱う：ほかに解析できたフィードがあれば warn を出してそれを返し、なければ代替パスを試さずにその HttpError を投げる（コメント用やサイト全体の別フィードを返さないため）
   4. 解析できたフィードが1件もなければ（`<link>` がない場合と、全部失敗した場合の両方）、リダイレクト後のページのパス（クエリを除き、末尾を / にしたもの）の下で feed, feed/, rss, rss.xml, atom.xml, feed.xml, index.xml を1件ずつ順に試し、最初に解析できたものだけを返す（feed と feed/ は同じフィードであることが多い）。パスの下だけを試し、オリジン直下には戻らない：共有ホスト（dev.to/someuser など）ではルートのフィードはサイト全体のものだから。代替パスで「確かめられなかった」ものがあり、どれも解析できなければその HttpError を投げる
 - **tavily.ts**
-  - POST https://api.tavily.com/search に Bearer 認証で送る。条件は time_range: "week" と search_depth: "basic"。topic を問わず日付が付くよう include_published_date: true を送る（付けないと general の結果には日付がない）。requireDate: true のクエリは filter_by_published_date: true も送り、日付を推定できない結果を Tavily 側で除く（time_range だけでは日付不明の結果は除かれない）
+  - POST https://api.tavily.com/search に Bearer 認証で送る。条件は search_depth: "basic" と、since があれば start_date: since の日付（YYYY-MM-DD）、なければ time_range: "week"（毎日の実行で同じ週の上位結果ばかりが返り、新しい記事が出なくなるのを防ぐ）。topic を問わず日付が付くよう include_published_date: true を送る（付けないと general の結果には日付がない）。requireDate: true のクエリは filter_by_published_date: true も送り、日付を推定できない結果を Tavily 側で除く（time_range だけでは日付不明の結果は除かれない）
   - TAVILY_API_KEY がなければ検索自体を行わない（`tavilyApiKey()` で有無を確かめられる）。401 は「Tavily rejected TAVILY_API_KEY」の HttpError とし、429 は1回だけ再試行する。5xx は課金済みの可能性があるので再試行しない
   - 本文は抽出済みの抜粋 `content` を使い、`include_raw_content` は使わない（ページ全体は雑音が多く大きい）
   - 結果は Tavily の関連度順のまま、URL のない結果、正規化 URL の重複、http(s) でない URL を除く（1件の欠けで応答全体を失わないよう、url はスキーマ上 null を許す）。件数は maxResults で決まり、itemsPerFeed は適用しない。sourceName は検索語、日付は published_date（推定できなければ null）
   - JSON でない応答や形の違う応答は `FeedParseError` を投げる（github.ts と共通の `sources/api.ts` の `parseApi`）
-- **index.ts** `collectAll(sources, { signal?, concurrency? })` は `{ items, attempted, failures, skipped }` を返す
+- **index.ts** `collectAll(sources, { signal?, concurrency?, since? })`（since は各ソースに `FetchDefaults`（types.ts。defaults に since を足したもの）として渡す） は `{ items, attempted, failures, skipped }` を返す
   - 同時実行は4件まで（concurrency が正の整数でなければ warn を出して4にする）。ソースごとに try/catch し、失敗（sourceId・sourceName・kind・error）を記録して warn を出し、次に進む。中断以外で例外は投げない
   - TAVILY_API_KEY がなければ queries を取得せず、`skipped` に id を入れて info を1回出す（ほかに取得するソースがなければ warn）。スキップした分は `attempted` に数えない
   - 結果は完了順ではなく設定の順（feeds → queries）に並べ、id と urlKey で重複を除く。先に出た記事（フィードの記事と Tavily の同じ URL ならフィード側）を残す
@@ -315,7 +316,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   2. dry-run でなければ `createNotifiers` で通知先を作る（slack で SLACK_WEBHOOK_URL がなければ2。空白だけは未設定扱い）。feeds が空で queries があり、TAVILY_API_KEY がなければ2（取得するソースがない）
   3. LLM を解決する（失敗すれば3）。手順2と3は記事の取得や LLM の課金より前に済ませる
   4. 状態ファイルを読み、期限切れのエントリを削除する。dry-run では `readOnly` で読む（壊れたファイルを退避しない）。`--no-state` なら読まずに空の状態から始め、保存もしない
-  5. 記事を収集する（全ソースが失敗すれば5）
+  5. 記事を収集する（全ソースが失敗すれば5）。状態ファイルに updatedAt があれば、その1日前（未来の時刻なら今から1日前。時差と公開日のずれの分の重なりで、重複は状態で除く）を since とし、ただし maxItemAgeDays より前には遡らない。updatedAt がなければ since なし（各フィードの最新 itemsPerFeed 件と Tavily の直近1週間）
   6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が r の記事は除外せず、`pretriaged` として手順7に渡す。ただし r のうち初めて見た日（全キーの f の最小値、`firstSeen`）から maxItemAgeDays を超えたものは渡さず、状態 i にして打ち切る。新規で maxItemAgeDays より古い記事は状態 i にする（日付のない記事は新しいものとして扱う）
   7. Triage と Analyze を実行する（状態 r の記事は `pretriaged` として渡す）。結果が `aborted` なら通知せず、irrelevant を i、pending と insights を r として記録して保存し、130 で終える
   8. channels の順に各通知先へ届ける（filter の結果に error があっても届ける）。中断されたら残りの通知先には届けない（各通知先の前に signal を確かめる。ファイルの書き込みは中断できないため）。dry-run のときは stdout に出し、状態は書かない（filter の error があれば出力後に3）

@@ -1,5 +1,5 @@
 import type { GithubFeed, QueryConfig, RssFeed, Sources } from "../config/schema.js";
-import type { Item, SourceKind } from "../types.js";
+import type { FetchDefaults, Item, SourceKind } from "../types.js";
 import { pLimit } from "../util/concurrency.js";
 import { log } from "../util/log.js";
 import { plural } from "../util/text.js";
@@ -34,10 +34,12 @@ export interface CollectResult {
 
 export interface CollectOptions {
   signal?: AbortSignal;
+  /** Take what each source published since then, not only its newest few. */
+  since?: Date;
   concurrency?: number;
 }
 
-export function fetchSource(source: SourceConfig, defaults: Sources["defaults"], signal?: AbortSignal): Promise<Item[]> {
+export function fetchSource(source: SourceConfig, defaults: FetchDefaults, signal?: AbortSignal): Promise<Item[]> {
   switch (source.kind) {
     case "rss":
       return fetchRssItems(source.feed, defaults, signal);
@@ -75,7 +77,7 @@ export type SourceOutcome =
  */
 export async function fetchEach(
   configs: SourceConfig[],
-  defaults: Sources["defaults"],
+  defaults: FetchDefaults,
   opts: { signal?: AbortSignal; concurrency?: number } = {},
 ): Promise<SourceOutcome[]> {
   const { signal } = opts;
@@ -115,7 +117,7 @@ export async function collectAll(sources: Sources, opts: CollectOptions = {}): P
     else log.info(message);
   }
 
-  const outcomes = await fetchEach(configs, sources.defaults, {
+  const outcomes = await fetchEach(configs, { ...sources.defaults, since: opts.since }, {
     signal,
     concurrency: concurrencyOf(opts.concurrency),
   });
