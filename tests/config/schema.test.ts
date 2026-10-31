@@ -24,7 +24,37 @@ describe("ContextSchema", () => {
       llm: { provider: "auto", maxItemsPerCall: 40, maxItemsPerRun: 150 },
       notify: { minImpact: "Low", postWhenEmpty: false, channels: [{ type: "slack" }] },
       state: { ttlDays: 45, maxItemAgeDays: 14 },
+      schedule: { interval: "daily" },
     });
+  });
+
+  it("accepts dependabot-style schedules, with day as a list too", () => {
+    const parse = (schedule: unknown) => ContextSchema.parse({ ...minimalContext, schedule }).schedule;
+    expect(parse({ interval: "weekly", day: ["monday", "thursday"], time: "07:30", timezone: "Asia/Tokyo" })).toEqual({
+      interval: "weekly",
+      day: ["monday", "thursday"],
+      time: "07:30",
+      timezone: "Asia/Tokyo",
+    });
+    expect(parse({ interval: "cron", cronjob: "0 8 * * 1-5" })).toEqual({ interval: "cron", cronjob: "0 8 * * 1-5" });
+  });
+
+  it("rejects schedule keys that do not fit the interval, and bad values", () => {
+    const errors = (schedule: unknown) => contextErrors({ ...minimalContext, schedule });
+    expect(errors({ day: "monday" })).toEqual(["context.yml: schedule.day: is only used with interval: weekly"]);
+    expect(errors({ interval: "cron", time: "06:00" })).toEqual([
+      "context.yml: schedule.time: is set by cronjob with interval: cron",
+      "context.yml: schedule.cronjob: is required with interval: cron",
+    ]);
+    expect(errors({ cronjob: "0 6 * * *" })).toEqual(["context.yml: schedule.cronjob: is only used with interval: cron"]);
+    expect(errors({ time: "6:00" })).toEqual(['context.yml: schedule.time: "6:00" is not a time (use HH:MM, 24-hour)']);
+    expect(errors({ interval: "cron", cronjob: "@daily" })).toEqual([
+      'context.yml: schedule.cronjob: "@daily" must have 5 fields (minute hour day-of-month month day-of-week)',
+    ]);
+    expect(errors({ timezone: "Mars/Olympus" })).toEqual([
+      "context.yml: schedule.timezone: must be an IANA time zone such as Asia/Tokyo",
+    ]);
+    expect(errors({ interval: "weekly", day: [] })).toEqual(["context.yml: schedule.day: must have at least 1 item"]);
   });
 
   it("fills the file channel's dir and keeps the channels in order", () => {

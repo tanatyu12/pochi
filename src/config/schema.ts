@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CalendarError, WEEKDAYS, isTimeZone, parseCron, parseTime } from "../schedule/calendar.js";
 import { parseHttpUrl } from "../util/hash.js";
 import { plural } from "../util/text.js";
 
@@ -20,6 +21,42 @@ const FileChannelSchema = z.strictObject({
   /** Relative paths are taken from the working directory, like config/ and state/. */
   dir: text.default("reports"),
 });
+
+const WeekdaySchema = z.enum(WEEKDAYS);
+
+// Named and shaped after dependabot's schedule, with day also taking a list.
+const ScheduleSchema = z
+  .strictObject({
+    interval: z.enum(["daily", "weekly", "monthly", "cron"]).default("daily"),
+    day: z.union([WeekdaySchema, z.array(WeekdaySchema).min(1)]).optional(),
+    time: z.string().optional(),
+    /** IANA name; omitted means the machine's zone (UTC for the github backend). */
+    timezone: z.string().refine(isTimeZone, { error: "must be an IANA time zone such as Asia/Tokyo" }).optional(),
+    cronjob: z.string().optional(),
+  })
+  .superRefine((s, ctx) => {
+    const issue = (path: string, message: string) => ctx.addIssue({ code: "custom", message, path: [path] });
+    if (s.day !== undefined && s.interval !== "weekly") issue("day", "is only used with interval: weekly");
+    if (s.interval === "cron") {
+      if (s.time !== undefined) issue("time", "is set by cronjob with interval: cron");
+      if (s.cronjob === undefined) issue("cronjob", "is required with interval: cron");
+    } else if (s.cronjob !== undefined) {
+      issue("cronjob", "is only used with interval: cron");
+    }
+    for (const [key, check] of [
+      ["time", parseTime],
+      ["cronjob", parseCron],
+    ] as const) {
+      const value = s[key];
+      if (value === undefined) continue;
+      try {
+        check(value);
+      } catch (err) {
+        if (!(err instanceof CalendarError)) throw err;
+        issue(key, err.message);
+      }
+    }
+  });
 
 export const ContextSchema = z
   .strictObject({
@@ -67,6 +104,7 @@ export const ContextSchema = z
         error: "must be greater than maxItemAgeDays",
         path: ["ttlDays"],
       }),
+    schedule: ScheduleSchema.prefault({}),
   });
 
 const GithubFeedSchema = z.strictObject({
@@ -129,6 +167,7 @@ export type GithubFeed = Extract<FeedConfig, { type: "github" }>;
 export type RssFeed = Extract<FeedConfig, { type: "rss" }>;
 export type QueryConfig = Sources["queries"][number];
 export type ChannelConfig = Context["notify"]["channels"][number];
+export type Schedule = Context["schedule"];
 
 // Config may hold secrets pasted in the wrong place, so messages are rebuilt from the issue
 // code: zod's own messages and the input never reach the output, not even unknown key names.

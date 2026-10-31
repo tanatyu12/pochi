@@ -1,0 +1,3 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`cronScheduler > renders one line with quoted paths, escaped % and the marker 1`] = `"17 6 * * 1-5 cd '/home/me/it'\\''s 100\\%' && PATH='/usr/local/bin:/usr/bin' '/usr/bin/node' '--env-file-if-exists=/home/me/it'\\''s 100\\%/.env' '/home/me/it'\\''s 100\\%/dist/pochi.mjs' 'run' '--dry-run' >> '/home/me/it'\\''s 100\\%/logs/pochi.log' 2>&1 # pochi:sh.pochi.2daaa59a"`;

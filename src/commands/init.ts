@@ -187,8 +187,9 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
             `gh secret set POCHI_SOURCES_YAML < ${shellQuote(sourcesPath)}`,
             `gh secret set SLACK_WEBHOOK_URL`,
             `gh secret set ANTHROPIC_API_KEY`,
+            `node dist/pochi.mjs schedule install --backend github${configDir}`,
           ]
-        : [`node dist/pochi.mjs run${configDir}`]),
+        : [`node dist/pochi.mjs run${configDir}`, `node dist/pochi.mjs schedule install${configDir}`]),
     ].join("\n"),
     "Next steps",
   );
