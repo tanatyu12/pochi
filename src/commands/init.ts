@@ -31,7 +31,7 @@ import { type IdeaSuggestionOutput, type LlmClient, LlmError } from "../llm/sche
 import { type Proposal, type ProposedText, readProposal } from "../proposal/parse.js";
 import { EMPTY_WATCHLIST, type Watchlist, discoveryPrompt } from "../proposal/prompt.js";
 import { CalendarError, DEFAULT_TIME, calendarOf, describeSchedule, nextRuns, parseTime, type Weekday } from "../schedule/calendar.js";
-import { type ScheduleDeps, installSchedule } from "./schedule.js";
+import { type ScheduleDeps, installSchedule, runsFromBundle } from "./schedule.js";
 import { type DiscoveredFeed, FeedCheckError, discoverFeeds, isTransient } from "../sources/discover.js";
 import { type RepoCheck, verifyRepo } from "../sources/github.js";
 import { type SourceConfig, type SourceOutcome, fetchEach, sourceConfigs, sourceInfo } from "../sources/index.js";
@@ -261,13 +261,25 @@ async function init(
 
   const configDir = dir === DEFAULT_CONFIG_DIR ? "" : ` --config-dir ${shellQuote(dir)}`;
   const types = new Set(context.notify.channels.map((c) => c.type));
-  // With Slack the job goes to Actions, which needs the secrets set first; see the next steps.
-  const installed = !types.has("slack") && (await offerInstall(p, dir, context, timeZone, deps.schedule));
+  // Slack can be posted to from this machine or from Actions; files stay on the machine that
+  // runs pochi, so a setup without Slack is run locally.
+  const onActions = types.has("slack") && (await askWhereToRun(p));
+  let installed = false;
+  if (!onActions && !runsFromBundle(deps.schedule)) {
+    // The job would call the source through tsx, which a scheduled run cannot do.
+    p.warn(
+      `The schedule was not installed: init is running from source. Run \`npm run build\`, then \`node dist/pochi.mjs schedule install${configDir}\`.`,
+    );
+  } else if (!onActions) {
+    installed = types.has("slack")
+      ? await install(p, dir, deps.schedule)
+      : await offerInstall(p, dir, context, timeZone, deps.schedule);
+  }
   p.note(
     [
       `node dist/pochi.mjs run --dry-run${configDir}`,
-      // Files stay on the machine that runs pochi, so a file-only setup is run locally, not in Actions.
-      ...(types.has("slack")
+      // Actions needs the secrets set first.
+      ...(onActions
         ? [
             `gh secret set POCHI_CONTEXT_YAML < ${shellQuote(contextPath)}`,
             `gh secret set POCHI_SOURCES_YAML < ${shellQuote(sourcesPath)}`,
@@ -355,10 +367,29 @@ function validTime(value: string): string | undefined {
   }
 }
 
+/** Whether a setup posting to Slack runs on GitHub Actions rather than on this machine. */
+async function askWhereToRun(p: Prompter): Promise<boolean> {
+  try {
+    const where = await p.select({
+      message: "Where should pochi run on schedule?",
+      options: [
+        { value: "local" as const, label: "This machine", hint: "launchd or cron; SLACK_WEBHOOK_URL from .env" },
+        { value: "github" as const, label: "GitHub Actions", hint: "needs repository secrets" },
+      ],
+      initialValue: "local",
+    });
+    return where === "github";
+  } catch (err) {
+    // The config is already written, so a cancel here only skips the install; the next steps
+    // still show how to run it on Actions.
+    if (err instanceof PromptCancelled) return true;
+    throw err;
+  }
+}
+
 /**
  * Offers to install the job on this machine (launchd or cron) now that the config is written,
- * and whether it was installed. A failure is a warning: the config is fine, and the next steps
- * still show the command.
+ * and whether it was installed.
  */
 async function offerInstall(
   p: Prompter,
@@ -379,6 +410,14 @@ async function offerInstall(
     throw err;
   }
   if (!wanted) return false;
+  return install(p, dir, deps);
+}
+
+/**
+ * Installs the job on this machine, and whether it was. A failure is a warning: the config is
+ * fine, and the next steps still show the command.
+ */
+async function install(p: Prompter, dir: string, deps: ScheduleDeps | undefined): Promise<boolean> {
   const lines: string[] = [];
   try {
     await installSchedule({ configDir: dir }, { ...deps, write: (line) => void lines.push(line) });
