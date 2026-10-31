@@ -5,7 +5,7 @@ export const PROPOSAL_VERSION = "proposal/v1";
 export const PROPOSAL_LIMITS = { problems: 12, exclude: 8, repos: 15, sites: 8, queries: 8 } as const;
 // parseProposal cuts beyond these instead: a proposal the user added to by hand may hold more
 // than the agent was asked for. problems and exclude are the config's own limits.
-export const PARSE_LIMITS = { problems: 20, exclude: 30, repos: 30, sites: 30, queries: 20 } as const;
+export const PARSE_LIMITS = { problems: 50, exclude: 30, repos: 30, sites: 30, queries: 20 } as const;
 
 /**
  * Who the team wants to follow, from init's --competitor, --adopter and --news-site. All optional;
@@ -111,8 +111,9 @@ directory and propose the sources and interests Pochi should be configured with.
   2-6 words each, as typed into a news search, no boolean operators or quotes. Write each in the
   language that gives the best results for its market (Japanese for a Japanese consumer market).
   News that only press releases carry is worth a query too.
-  topic is "news" for recent events, "general" otherwise. Each query costs a search every day, so
-  prefer fewer, sharper ones.
+  topic is "news" for what news sites and press releases report: those run on Google News, for free.
+  "general" is a paid web search on every run, for what a news search cannot find (product or model
+  pages, say), so keep general queries few.
 - evidence: the file (and line or dependency) behind each proposal, or "knowledge" for axis 4.
 - Write project.description, problems, exclude and evidence in the main language of the README.
 

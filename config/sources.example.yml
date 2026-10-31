@@ -19,6 +19,12 @@ feeds:
     type: rss
     name: Simon Willison
     url: https://simonwillison.net/atom/everything/
+  # A Google News search: free, no key needed. sites and locale are optional.
+  - id: qwen-press
+    type: googlenews
+    query: Qwen model release
+    # sites: [prtimes.jp]
+    locale: en-US
 
 # Web searches via Tavily. Skipped unless TAVILY_API_KEY is set.
 queries:

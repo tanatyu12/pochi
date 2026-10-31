@@ -45,6 +45,19 @@ export interface Prompter {
   warn(message: string): void;
   /** Shows a spinner with message while run settles, and passes on its result or error. */
   spin<T>(message: string, run: () => Promise<T>, signal?: AbortSignal): Promise<T>;
+  /** From now on Shift+Tab does not go back (the answers have been acted on). */
+  freeze?(): void;
+}
+
+/**
+ * Shift+Tab on a prompt: go back to the question before. Not a PochiError, since it never ends
+ * the program; the replaying prompter (util/replay) turns it into asking that question again.
+ */
+export class PromptBack extends Error {
+  constructor() {
+    super("back to the previous question");
+    this.name = "PromptBack";
+  }
 }
 
 export class PromptCancelled extends PochiError {
@@ -59,6 +72,25 @@ function unwrap<T>(value: T): Exclude<T, symbol> {
     throw new PromptCancelled();
   }
   return value as Exclude<T, symbol>;
+}
+
+/**
+ * Runs a clack prompt that Shift+Tab ends early, as PromptBack: the Tab / Shift+Tab of forms,
+ * while Esc and Ctrl-C keep meaning cancel, as in every other prompt library.
+ */
+async function withBack<T>(ask: (signal: AbortSignal) => Promise<T | symbol>): Promise<Exclude<T, symbol>> {
+  const controller = new AbortController();
+  const onKeypress = (_: string | undefined, key: { name?: string; shift?: boolean } | undefined) => {
+    if (key?.name === "tab" && key.shift) controller.abort();
+  };
+  process.stdin.on("keypress", onKeypress);
+  try {
+    const value = await ask(controller.signal);
+    if (controller.signal.aborted) throw new PromptBack();
+    return unwrap(value);
+  } finally {
+    process.stdin.off("keypress", onKeypress);
+  }
 }
 
 const FRAMES = clack.unicode ? ["◒", "◐", "◓", "◑"] : ["•", "o", "O", "0"];
@@ -130,24 +162,28 @@ export function createClackPrompter(): Prompter {
   return {
     async text({ validate, ...rest }) {
       // clack passes undefined for an untouched field.
-      return unwrap(await clack.text({ ...rest, ...(validate && { validate: (v) => validate(v ?? "") }) }));
+      return withBack((signal) =>
+        clack.text({ ...rest, signal, ...(validate && { validate: (v) => validate(v ?? "") }) }),
+      );
     },
     async select(prompt) {
       // clack's Option<T> is a conditional type, so it only resolves for a concrete T.
-      return unwrap(await clack.select<string>(prompt)) as typeof prompt.options[number]["value"];
+      return (await withBack((signal) => clack.select<string>({ ...prompt, signal }))) as typeof prompt.options[number]["value"];
     },
     async multiselect(prompt) {
-      // Listened to after clack, which subscribes as the prompt starts, so clack sees the space it emits.
-      const answer = clack.multiselect<string>({ ...prompt, required: false });
-      const restore = fullWidthSpaceAsSpace(process.stdin);
-      try {
-        return unwrap(await answer) as typeof prompt.options[number]["value"][];
-      } finally {
-        restore();
-      }
+      return (await withBack(async (signal) => {
+        // Listened to after clack, which subscribes as the prompt starts, so clack sees the space it emits.
+        const answer = clack.multiselect<string>({ ...prompt, required: false, signal });
+        const restore = fullWidthSpaceAsSpace(process.stdin);
+        try {
+          return await answer;
+        } finally {
+          restore();
+        }
+      })) as typeof prompt.options[number]["value"][];
     },
     async confirm(prompt) {
-      return unwrap(await clack.confirm(prompt));
+      return withBack((signal) => clack.confirm({ ...prompt, signal }));
     },
     intro: (title) => clack.intro(title),
     outro: (message) => clack.outro(message),

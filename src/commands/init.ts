@@ -8,6 +8,7 @@ import {
   type ContextInput,
   ContextSchema,
   DomainSchema,
+  MAX_PROBLEMS,
   REPO_PATTERN,
   type Schedule,
   type SourcesInput,
@@ -29,7 +30,7 @@ import {
 import { type IdeaSuggestionOutput, type LlmClient, LlmError } from "../llm/schema.js";
 import { type Proposal, type ProposedText, readProposal } from "../proposal/parse.js";
 import { EMPTY_WATCHLIST, type Watchlist, discoveryPrompt } from "../proposal/prompt.js";
-import { CalendarError, DEFAULT_TIME, describeSchedule, parseTime, type Weekday } from "../schedule/calendar.js";
+import { CalendarError, DEFAULT_TIME, calendarOf, describeSchedule, nextRuns, parseTime, type Weekday } from "../schedule/calendar.js";
 import { type ScheduleDeps, installSchedule } from "./schedule.js";
 import { type DiscoveredFeed, FeedCheckError, discoverFeeds, isTransient } from "../sources/discover.js";
 import { type RepoCheck, verifyRepo } from "../sources/github.js";
@@ -40,13 +41,16 @@ import { pLimit } from "../util/concurrency.js";
 import { normalizeUrl, parseHttpUrl, sha256Hex } from "../util/hash.js";
 import { HttpError } from "../util/http.js";
 import { configureLog } from "../util/log.js";
-import { type Prompter, PromptCancelled, createClackPrompter } from "../util/prompter.js";
+import { type Prompter, PromptBack, PromptCancelled, createClackPrompter } from "../util/prompter.js";
+import { replayingPrompter } from "../util/replay.js";
+import { createInitCache } from "./initCache.js";
 import type { Item } from "../types.js";
 import { collapseWhitespace, displayLine, plural, stripControlChars } from "../util/text.js";
 
-const MAX_PROBLEMS = 20;
 const MAX_EXCLUDE = 30;
 const MAX_TYPED_QUERIES = 10;
+// Tavily's free plan, per month.
+const TAVILY_FREE_CREDITS = 1000;
 // Each check is one or two GitHub API calls; a proposal can name 15 repositories at once.
 const GITHUB_CONCURRENCY = 4;
 // Each looks at one page and the feeds it leads to; a proposal can name 8 sites.
@@ -74,6 +78,8 @@ export interface InitDeps {
   stdout?: (s: string) => void;
   /** The machine's time zone, written as schedule.timezone. */
   timeZone?: string;
+  /** For the Tavily estimate, which counts the runs in the next 30 days. */
+  now?: () => Date;
   /** For installing the schedule at the end; output goes to the prompter. */
   schedule?: ScheduleDeps;
 }
@@ -86,6 +92,8 @@ type QuerySuggestion = {
   topic: NonNullable<QueryInput["topic"]>;
   hint?: string;
   includeDomains?: string[];
+  /** From the proposal or an idea the user picked, so picked to begin with when it is free. */
+  proposed?: boolean;
 };
 /** Settles either way, so nobody has to wait for it until Claude is needed. */
 type LlmLookup = Promise<{ client: LlmClient } | { error: unknown }>;
@@ -139,9 +147,25 @@ export async function runInit(opts: InitOptions = {}, deps: Partial<InitDeps> = 
   const proposal = opts.from === undefined ? undefined : await readProposal(opts.from);
   // The prompts show what matters; info lines from the fetchers would only break up the screen.
   const restoreLog = configureLog({ level: "quiet" });
+  // Shift+Tab goes back a question by running init again with the answers so far replayed; what
+  // it fetches and asks Claude is cached, so a replay repeats nothing.
+  const prompter = replayingPrompter(deps.prompter ?? createClackPrompter());
+  const cache = createInitCache(deps.resolveLlm ?? resolveLlm, deps.signal);
+  const restoreFetch = cache.installFetch();
   try {
-    await init(opts.configDir ?? DEFAULT_CONFIG_DIR, deps, proposal, watch);
+    for (;;) {
+      cache.newRun();
+      try {
+        await init(opts.configDir ?? DEFAULT_CONFIG_DIR, { ...deps, prompter, resolveLlm: cache.resolveLlm }, proposal, watch);
+        return;
+      } catch (err) {
+        if (!(err instanceof PromptBack)) throw err;
+        prompter.back();
+      }
+    }
   } finally {
+    restoreFetch();
+    cache.close();
     restoreLog();
   }
 }
@@ -157,7 +181,7 @@ async function init(
   const env = deps.env ?? process.env;
   const { signal } = deps;
 
-  p.intro("pochi init");
+  p.intro("pochi init  (Shift+Tab: back · Esc: quit)");
   // Asked first so nobody answers every question only to be refused at the end.
   const existing = await existingConfig(dir);
   if (existing.length > 0) {
@@ -169,8 +193,12 @@ async function init(
   if (proposal) noteProposal(p, proposal);
 
   let contextInput = await askContext(p, proposal);
+  // Before the sources, so the Tavily step can say what web searches cost at this schedule.
+  const timeZone = deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  contextInput = { ...contextInput, schedule: await askSchedule(p, previousSchedule, timeZone) };
   // The prompts read the defaults (language, llm) the parsed context fills in.
   let context = ContextSchema.parse(contextInput);
+  const runs = runsPerMonth(context.schedule, timeZone, deps.now?.() ?? new Date());
   // Looked for while the sources are asked (the CLI probe can take seconds), and only waited
   // for by a step that needs Claude. Stopped once the answers are in, so no probe outlives init.
   const lookup = new AbortController();
@@ -182,7 +210,7 @@ async function init(
   );
   let sources: SourcesInput;
   try {
-    const session = newSession(p, context, { llm, env, signal, watch });
+    const session = newSession(p, context, { llm, env, signal, watch, runsPerMonth: runs });
     const ideas = await askIdeas(session);
     if (ideas.problems.length > 0) {
       contextInput = { ...contextInput, problems: [...context.problems, ...ideas.problems] };
@@ -200,6 +228,7 @@ async function init(
           // The sites lead, so a query limited to them is told apart from the same words unlimited.
           hint: [q.includeDomains && `on ${q.includeDomains.join(", ")}`, q.evidence].filter(Boolean).join(" · ") || undefined,
           includeDomains: q.includeDomains,
+          proposed: true,
         })),
       );
       if (suggestions.length > 0) session.suggestions = suggestions;
@@ -212,11 +241,11 @@ async function init(
   } finally {
     lookup.abort();
   }
-  const timeZone = deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-  contextInput = { ...contextInput, schedule: await askSchedule(p, previousSchedule, timeZone) };
   context = ContextSchema.parse(contextInput);
   // Nothing touches the disk until every answer is in, so a cancel above leaves no trace.
   const { contextPath, sourcesPath } = await writeConfig(dir, { context: contextInput, sources }, { overwrite: true });
+  // Written: going back would change nothing on disk.
+  p.freeze?.();
 
   const paths = [contextPath, sourcesPath];
   const ignored = await checkIgnored(paths);
@@ -566,13 +595,21 @@ export interface SourceSession {
   ideaQueries?: QuerySuggestion[];
   /** Who the user named on the command line; empty lists when nobody was. */
   watch: Watchlist;
+  /** Runs in the next 30 days at the schedule asked, for what web searches cost. */
+  runsPerMonth?: number;
   tavilyNoted?: boolean;
 }
 
 export function newSession(
   p: Prompter,
   context: Context,
-  opts: { llm?: LlmClient | LlmLookup; env?: NodeJS.ProcessEnv; signal?: AbortSignal; watch?: Watchlist } = {},
+  opts: {
+    llm?: LlmClient | LlmLookup;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    watch?: Watchlist;
+    runsPerMonth?: number;
+  } = {},
 ): SourceSession {
   const { llm, signal } = opts;
   return {
@@ -587,6 +624,7 @@ export function newSession(
     keys: new Set(),
     checked: new WeakMap(),
     watch: opts.watch ?? EMPTY_WATCHLIST,
+    ...(opts.runsPerMonth !== undefined && { runsPerMonth: opts.runsPerMonth }),
   };
 }
 
@@ -618,6 +656,8 @@ async function askIdeas(s: SourceSession): Promise<Ideas> {
   const none: Ideas = { problems: [], sites: [], queries: [] };
   const room = MAX_PROBLEMS - s.context.problems.length;
   if (room <= 0) return none;
+  // So nobody picks a dozen ideas only to have most of them cut.
+  p.note(`${s.context.problems.length} of ${MAX_PROBLEMS} interests so far.`, "Interests");
   const wanted = await p.confirm({
     message: "Ask Claude for ideas from technology, design, marketing and industry angles you may have missed?",
     initialValue: true,
@@ -669,7 +709,9 @@ async function askIdeas(s: SourceSession): Promise<Ideas> {
         .map((url) => ({ url, evidence: `idea: ${idea.perspective}` })),
     ),
     queries: chosen.flatMap((idea) =>
-      idea.queries.slice(0, MAX_IDEA_QUERIES).map((query) => ({ query, topic: "news" as const, hint: `idea: ${idea.perspective}` })),
+      idea.queries
+        .slice(0, MAX_IDEA_QUERIES)
+        .map((query) => ({ query, topic: "news" as const, hint: `idea: ${idea.perspective}`, proposed: true })),
     ),
   };
 }
@@ -684,7 +726,8 @@ export async function askSources(s: SourceSession, proposed: FeedInput[] = []): 
   for (;;) {
     const feeds = await askFeeds(s, pending);
     pending = [];
-    const queries = await askQueries(s);
+    feeds.push(...(await askNewsSearches(s)));
+    const queries = await askWebSearches(s);
     if (feeds.length + queries.length > 0) {
       const kept = await trialFetch(s, feeds, queries);
       s.feeds.push(...kept.feeds);
@@ -709,13 +752,14 @@ async function askFeeds(s: SourceSession, added: FeedInput[] = []): Promise<Feed
           hint: s.llm || s.llmLookup ? "Next.js or vercel/next.js" : "owner/repo",
         },
         { value: "site", label: "Blog or feed URL", hint: "https://…" },
-        // sources.yml needs a source; queries, if any, are asked next.
-        ...(count > 0 || tavilyApiKey(s.env) ? [{ value: "done" as const, label: "Done" }] : []),
+        { value: "news", label: "News search (Google News, free)", hint: "words, optionally on chosen sites" },
+        // sources.yml needs a source; searches, if any are offered, are asked next.
+        ...(count > 0 || tavilyApiKey(s.env) || mayOfferNews(s) ? [{ value: "done" as const, label: "Done" }] : []),
       ],
     });
     if (kind === "done") return added;
 
-    const feed = kind === "repo" ? await askRepo(s) : await askSite(s);
+    const feed = kind === "repo" ? await askRepo(s) : kind === "site" ? await askSite(s) : await askNews(s);
     // Nothing found, or backed out: back to the choice above.
     if (!feed) continue;
     if (!claim(s, keyOf(feed), feed.id)) {
@@ -971,7 +1015,7 @@ async function addProposedFeeds(s: SourceSession, proposal: Pick<Proposal, "repo
   const keep = (feed: FeedInput | undefined) => {
     if (!feed) return;
     if (claim(s, keyOf(feed), feed.id)) added.push(feed);
-    else p.warn(`Already added: ${displayLine(feed.name, SHOWN_MAX_CHARS)}; skipped.`);
+    else p.warn(`Already added: ${displayLine(labelOf(feed), SHOWN_MAX_CHARS)}; skipped.`);
   };
 
   const seenRepos = new Set<string>();
@@ -1033,75 +1077,170 @@ async function addProposedFeeds(s: SourceSession, proposal: Pick<Proposal, "repo
   return added;
 }
 
-async function askQueries(s: SourceSession): Promise<QueryInput[]> {
+// Google News editions by the summary language; the rest search the English one.
+const LOCALES: Record<string, string> = { English: "en-US", Japanese: "ja-JP" };
+
+function localeOf(context: Context): string {
+  return LOCALES[context.language] ?? "en-US";
+}
+
+/** Runs in the next 30 days, capped: a cron job every minute is not worth counting. */
+export function runsPerMonth(schedule: Schedule, timeZone: string, now: Date): number {
+  const end = now.getTime() + 30 * 86_400_000;
+  return nextRuns(calendarOf(schedule), schedule.timezone ?? timeZone, now, 1000).filter((r) => r.getTime() < end).length;
+}
+
+function newsFeed(s: SourceSession, query: string, sites: string[] | undefined): FeedInput | undefined {
+  const id = queryIdFrom(query, s.ids);
+  return { id, type: "googlenews", query, ...(sites && sites.length > 0 && { sites }), locale: localeOf(s.context) };
+}
+
+/** Typed from the sources menu: the words, then the sites to keep to. */
+async function askNews(s: SourceSession): Promise<FeedInput | undefined> {
+  const query = cleanQuery(
+    await s.p.text({ message: "Google News search (empty to go back)", placeholder: "Qwen model release" }),
+  );
+  if (query === "") return undefined;
+  const typed = await s.p.text({
+    message: "Only on these sites (domain names, comma-separated; empty for any)",
+    placeholder: "prtimes.jp",
+    validate: (v) => (parseSites(v) === undefined ? "Enter domain names such as prtimes.jp, separated by commas" : undefined),
+  });
+  return newsFeed(s, query, parseSites(typed));
+}
+
+function parseSites(value: string): string[] | undefined {
+  const parts = value.split(/[,、\s]+/).filter((v) => v !== "");
+  const sites = parts.map((v) => DomainSchema.safeParse(v).data);
+  return sites.every((d) => d !== undefined) ? [...new Set(sites)] : undefined;
+}
+
+// Searches will be offered after the menu: some are known, or Claude may still suggest some.
+function mayOfferNews(s: SourceSession): boolean {
+  return offeredNews(s).length > 0 || (s.suggestions === undefined && (s.llm !== undefined || s.llmLookup !== undefined));
+}
+
+/** News searches offered without asking Claude: named on the command line, proposed, from ideas. */
+function offeredNews(s: SourceSession): QuerySuggestion[] {
+  const news = (s.suggestions ?? []).filter((q) => q.topic === "news");
+  return cleanSuggestions([...watchQueries(s.watch), ...news, ...(s.ideaQueries ?? [])]).filter(
+    (q) => !s.keys.has(newsKey(q.query, q.includeDomains)),
+  );
+}
+
+/**
+ * Offers searches as Google News feeds: free and keyless, so asked whether or not Tavily is set
+ * up. Claude is asked for suggestions once when nothing was proposed. Proposed ones (from the
+ * proposal or the ideas picked) are picked to begin with.
+ */
+async function askNewsSearches(s: SourceSession): Promise<FeedInput[]> {
   const { p, signal } = s;
+  if (s.suggestions === undefined) {
+    const llm = await getLlm(s);
+    s.suggestions = [];
+    if (llm) {
+      try {
+        const reply = await p.spin(
+          "Asking Claude for search queries",
+          () => llm.generate(querySuggestionRequest(s.context, s.watch), { signal }),
+          signal,
+        );
+        s.suggestions = cleanSuggestions(reply.queries.map((query) => ({ query, topic: "news" as const }))).slice(
+          0,
+          MAX_QUERY_SUGGESTIONS,
+        );
+      } catch (err) {
+        throwIfCancelled(signal);
+        if (!(err instanceof LlmError)) throw err;
+        llmFailed(s, err);
+      }
+    }
+  }
+  const offered = offeredNews(s);
+  if (offered.length === 0) return [];
+  const picked = await p.multiselect({
+    message: "News searches to run (Google News, free; space to select)",
+    options: offered.map((q) => ({
+      value: q.query,
+      label: displayLine(q.query, SHOWN_MAX_CHARS),
+      hint: q.hint && (displayLine(q.hint, HINT_MAX_CHARS) || undefined),
+    })),
+    initialValues: offered.filter((q) => q.proposed).map((q) => q.query),
+  });
+  const added: FeedInput[] = [];
+  for (const q of offered.filter((o) => picked.includes(o.query))) {
+    const feed = newsFeed(s, q.query, q.includeDomains);
+    if (feed && claim(s, keyOf(feed), feed.id)) added.push(feed);
+  }
+  return added;
+}
+
+/**
+ * Offers web searches, which run on Tavily: only with a key, and with what they cost said first,
+ * since each one is a paid search on every run. The proposal's general queries are the
+ * candidates (news ones went to Google News); none is picked for the user.
+ */
+async function askWebSearches(s: SourceSession): Promise<QueryInput[]> {
+  const { p } = s;
+  const candidates = cleanSuggestions((s.suggestions ?? []).filter((q) => q.topic === "general")).filter(
+    (q) => !s.keys.has(queryKey(q.query)),
+  );
   // A run reads the same key (from process.env, which env is outside tests), so a query asked
   // for here is one a run can fetch.
   if (!tavilyApiKey(s.env)) {
-    const proposed = (s.suggestions?.length ?? 0) + (s.ideaQueries?.length ?? 0) + watchQueries(s.watch).length;
-    if (!s.tavilyNoted) {
+    if (!s.tavilyNoted && candidates.length > 0) {
       p.note(
-        `TAVILY_API_KEY is not set, so web search queries are skipped${proposed > 0 ? ` (${plural(proposed, "proposed query", "proposed queries")} left out)` : ""}.`,
+        `TAVILY_API_KEY is not set, so web searches are skipped (${plural(candidates.length, "proposed web search", "proposed web searches")} left out).`,
       );
     }
     s.tavilyNoted = true;
     return [];
   }
-  if (!s.tavilyNoted) p.note("Web search queries use Tavily: each costs one credit a run, and one now to try it.");
+  const runs = s.runsPerMonth;
+  const each = runs === undefined ? "" : ` (about ${plural(runs, "credit")} a month each at this schedule)`;
+  if (!s.tavilyNoted) {
+    p.note(
+      `Web searches run on Tavily, a paid search API: each one costs a credit on every run${each}, and one now to try it. The free plan has ${TAVILY_FREE_CREDITS} credits a month, so add only what a news search cannot find.`,
+      "Tavily",
+    );
+  }
   s.tavilyNoted = true;
 
-  const llm = s.suggestions === undefined ? await getLlm(s) : undefined;
-  if (llm) {
-    try {
-      const reply = await p.spin(
-        "Asking Claude for search queries",
-        () => llm.generate(querySuggestionRequest(s.context, s.watch), { signal }),
-        signal,
-      );
-      s.suggestions = cleanSuggestions(reply.queries.map((query) => ({ query, topic: "news" as const }))).slice(
-        0,
-        MAX_QUERY_SUGGESTIONS,
-      );
-    } catch (err) {
-      throwIfCancelled(signal);
-      if (!(err instanceof LlmError)) throw err;
-      llmFailed(s, err);
-      s.suggestions = [];
-    }
-  }
-
-  // None picked to begin with, proposed or not: each costs a credit every morning.
-  const candidates: QuerySuggestion[] = [];
-  const offered = cleanSuggestions([...watchQueries(s.watch), ...(s.suggestions ?? []), ...(s.ideaQueries ?? [])]).filter(
-    (q) => !s.keys.has(queryKey(q.query)),
-  );
+  const chosen: QuerySuggestion[] = [];
   let addOwn = true;
-  if (offered.length > 0) {
+  if (candidates.length > 0) {
     const picked = await p.multiselect({
-      message: "Search queries to run every morning (space to select)",
-      options: offered.map((q) => ({
+      message: "Web searches to run (Tavily, paid; space to select)",
+      options: candidates.map((q) => ({
         value: q.query,
         label: displayLine(q.query, SHOWN_MAX_CHARS),
         hint: q.hint && (displayLine(q.hint, HINT_MAX_CHARS) || undefined),
       })),
     });
-    candidates.push(...offered.filter((q) => picked.includes(q.query)));
+    chosen.push(...candidates.filter((q) => picked.includes(q.query)));
     addOwn = await askAddOwn(p, picked.length);
   }
   const typed = addOwn
-    ? await askList(p, { message: "Add a search query", placeholder: "Qwen model release", min: 0, max: MAX_TYPED_QUERIES })
+    ? await askList(p, { message: "Add a web search (Tavily)", placeholder: "Qwen Image LoRA", min: 0, max: MAX_TYPED_QUERIES })
     : [];
   // Control characters alone clean to nothing.
-  candidates.push(...typed.map(cleanQuery).filter((q) => q !== "").map((query) => ({ query, topic: "news" as const })));
+  chosen.push(...typed.map(cleanQuery).filter((q) => q !== "").map((query) => ({ query, topic: "general" as const })));
 
   const added: QueryInput[] = [];
-  for (const { query, topic, includeDomains } of candidates) {
+  for (const { query, topic, includeDomains } of chosen) {
     const id = queryIdFrom(query, s.ids);
     if (!claim(s, queryKey(query), id)) {
       p.warn(`Already added: ${displayLine(query, SHOWN_MAX_CHARS)}; skipped.`);
       continue;
     }
     added.push({ id, query, topic, ...(includeDomains && { includeDomains }) });
+  }
+  const total = s.queries.length + added.length;
+  if (added.length > 0 && runs !== undefined) {
+    const credits = total * runs;
+    const line = `${plural(total, "web search", "web searches")}: about ${plural(credits, "Tavily credit")} a month.`;
+    if (credits > TAVILY_FREE_CREDITS) p.warn(`${line} That is more than the ${TAVILY_FREE_CREDITS} the free plan has.`);
+    else p.note(line, "Tavily");
   }
   return added;
 }
@@ -1175,10 +1314,27 @@ async function trialFetch(
   return { feeds: feeds.filter((f) => !rejected.has(f.id)), queries: queries.filter((q) => !rejected.has(q.id)) };
 }
 
-// GitHub treats owner/repo case-insensitively; feed URLs compare as the pipeline dedupes them.
+// GitHub treats owner/repo case-insensitively; feed URLs compare as the pipeline dedupes them. A
+// news search and a web search for the same words are different sources.
 function keyOf(source: FeedInput | QueryInput): string {
-  if ("query" in source) return queryKey(source.query);
-  return source.type === "github" ? repoKey(source.repo) : feedKey(source.url);
+  if (!("type" in source)) return queryKey(source.query);
+  switch (source.type) {
+    case "github":
+      return repoKey(source.repo);
+    case "googlenews":
+      return newsKey(source.query, source.sites);
+    case "rss":
+      return feedKey(source.url);
+  }
+}
+
+function newsKey(query: string, sites: readonly string[] = []): string {
+  return `news:${cleanQuery(query).toLowerCase()}|${[...sites].sort().join(",")}`;
+}
+
+/** What a source is called on screen; a news search may have no name of its own. */
+function labelOf(feed: FeedInput): string {
+  return feed.type === "googlenews" ? (feed.name ?? feed.query) : feed.name;
 }
 
 function repoKey(repo: string): string {

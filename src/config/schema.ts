@@ -10,6 +10,9 @@ const positiveInt = z.int().positive();
 // Owners cannot contain dots; repos may start with one (.github) but "." and ".." would escape the API path.
 export const REPO_PATTERN = /^[\w-]+\/(?!\.\.?$)[\w.-]+$/;
 
+// Every interest goes into each LLM prompt, but at a line each 50 is still about 1,000 tokens.
+export const MAX_PROBLEMS = 50;
+
 export const ImpactSchema = z.enum(["High", "Medium", "Low"]);
 export type Impact = z.output<typeof ImpactSchema>;
 
@@ -62,7 +65,7 @@ export const ContextSchema = z
   .strictObject({
     version: z.literal(1),
     project: z.strictObject({ name: text, description: z.string() }),
-    problems: z.array(text).min(1).max(20),
+    problems: z.array(text).min(1).max(MAX_PROBLEMS),
     exclude: z.array(text).max(30).default([]),
     language: text.default("English"),
     llm: z
@@ -109,6 +112,17 @@ export const ContextSchema = z
     schedule: ScheduleSchema.prefault({}),
   });
 
+// A bare host name such as prtimes.jp, the form Tavily's domain filters take.
+export const DomainSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/, {
+    error: "must be a domain name such as example.com",
+  });
+export const MAX_DOMAINS = 20;
+const domains = z.array(DomainSchema).min(1).max(MAX_DOMAINS).optional();
+
 const GithubFeedSchema = z.strictObject({
   id: sourceId,
   type: z.literal("github"),
@@ -125,16 +139,21 @@ const RssFeedSchema = z.strictObject({
   url: z.string().refine((u) => parseHttpUrl(u) !== undefined, { error: "must be an absolute http(s) URL" }),
 });
 
-// A bare host name such as prtimes.jp, the form Tavily's domain filters take.
-export const DomainSchema = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/, {
-    error: "must be a domain name such as example.com",
-  });
-export const MAX_DOMAINS = 20;
-const domains = z.array(DomainSchema).min(1).max(MAX_DOMAINS).optional();
+const GoogleNewsFeedSchema = z.strictObject({
+  id: sourceId,
+  type: z.literal("googlenews"),
+  /** Shown in briefings; the query when left out. */
+  name: text.optional(),
+  /** As typed into Google News; site: and the time range are added from the fields below. */
+  query: text,
+  /** Only articles from these sites, such as a press release wire. */
+  sites: domains,
+  /** The edition's language and region. */
+  locale: z
+    .string()
+    .regex(/^[a-z]{2,3}-[A-Z]{2}$/, { error: "must be a language and region such as ja-JP" })
+    .default("en-US"),
+});
 
 const QuerySchema = z.strictObject({
   id: sourceId,
@@ -159,7 +178,7 @@ export const SourcesSchema = z
         maxContentChars: positiveInt.default(2000),
       })
       .prefault({}),
-    feeds: z.array(z.discriminatedUnion("type", [GithubFeedSchema, RssFeedSchema])).default([]),
+    feeds: z.array(z.discriminatedUnion("type", [GithubFeedSchema, RssFeedSchema, GoogleNewsFeedSchema])).default([]),
     queries: z.array(QuerySchema).default([]),
   })
   .superRefine((s, ctx) => {
@@ -185,6 +204,7 @@ export type SourcesInput = z.input<typeof SourcesSchema>;
 export type FeedConfig = Sources["feeds"][number];
 export type GithubFeed = Extract<FeedConfig, { type: "github" }>;
 export type RssFeed = Extract<FeedConfig, { type: "rss" }>;
+export type GoogleNewsFeed = Extract<FeedConfig, { type: "googlenews" }>;
 export type QueryConfig = Sources["queries"][number];
 export type ChannelConfig = Context["notify"]["channels"][number];
 export type Schedule = Context["schedule"];
