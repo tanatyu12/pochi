@@ -139,6 +139,12 @@ describe("schedule install", () => {
     expect(workflow).toContain("# daily at 06:17 (Asia/Tokyo)");
   });
 
+  it("warns for github when llm.provider names a CLI, which the runner does not have", async () => {
+    await setup(context("llm: { provider: codex }\n"));
+    await installSchedule({ backend: "github" }, deps());
+    expect(out).toContain("warn: llm.provider is codex, but the Actions runner has no CLI to run; use auto or api there");
+  });
+
   it("reads the time as UTC for github when no timezone is set, and says so", async () => {
     await setup(context());
     await installSchedule({ backend: "github", print: true }, deps());

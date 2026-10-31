@@ -97,7 +97,7 @@ describe("resolveLlm with provider auto", () => {
     expect(err.message).toContain("ANTHROPIC_API_KEY");
   });
 
-  it("is unavailable when claude --version hangs, and stops it with SIGINT, then SIGKILL", async () => {
+  it("is unavailable when claude and codex --version hang, and stops each with SIGINT, then SIGKILL", async () => {
     vi.useFakeTimers();
     const mock = fakeSpawn(run.hang({ ignoreSigint: true }));
     const promise = expectLlmError(resolveLlm(llmConfig(), { env: {}, platform: "linux", spawn: mock.spawn }), "unavailable");
@@ -105,8 +105,12 @@ describe("resolveLlm with provider auto", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(mock.calls[0]?.signals).toEqual(["SIGINT"]);
     await vi.advanceTimersByTimeAsync(5_000);
-    await promise;
     expect(mock.calls[0]?.signals).toEqual(["SIGINT", "SIGKILL"]);
+    await mock.spawned(2);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await promise;
+    expect(mock.calls[1]?.command).toBe("codex");
+    expect(mock.calls[1]?.signals).toEqual(["SIGINT", "SIGKILL"]);
   });
 
   it("runs claude --version in a private directory, not the shared temp directory", async () => {
@@ -239,5 +243,97 @@ describe("model names", () => {
     await client.generate({ system: "s", prompt: "p", schema: TriageOutputSchema, tier: "triage" });
     const args = mock.calls[1]?.args ?? [];
     expect(args[args.indexOf("--model") + 1]).toBe("haiku-x");
+  });
+});
+
+describe("resolveLlm with codex", () => {
+  const CODEX_VERSION = "codex-cli 0.120.0\n";
+
+  it("falls back to codex in auto when claude --version fails", async () => {
+    const mock = fakeSpawn([run.spawnError("ENOENT"), run.exit(CODEX_VERSION)]);
+    const resolved = await resolveLlm(llmConfig(), { env: {}, platform: "darwin", spawn: mock.spawn });
+    expect(resolved.client.backend).toBe("codex");
+    expect(resolved.cliVersion).toBe("codex-cli 0.120.0");
+    expect(resolved.models).toEqual({ triage: undefined, analyze: undefined });
+    expect(mock.calls.map((c) => c.command)).toEqual(["claude", "codex"]);
+    expect(mock.calls[1]?.args).toEqual(["--version"]);
+    expect(String(mock.calls[1]?.options.cwd)).toContain("pochi-codex-");
+  });
+
+  it("prefers claude in auto when both are installed", async () => {
+    const mock = fakeSpawn([run.exit(VERSION)]);
+    const resolved = await resolveLlm(llmConfig(), { env: {}, platform: "darwin", spawn: mock.spawn });
+    expect(resolved.client.backend).toBe("claude");
+    expect(mock.calls).toHaveLength(1);
+  });
+
+  it("names both commands when neither runs", async () => {
+    const mock = fakeSpawn(run.spawnError("ENOENT"));
+    const err = await expectLlmError(resolveLlm(llmConfig(), { env: {}, platform: "linux", spawn: mock.spawn }), "unavailable");
+    expect(err.message).toContain("install claude or codex");
+  });
+
+  it("uses only codex with provider codex, even when the key is set", async () => {
+    const mock = fakeSpawn([run.exit(CODEX_VERSION)]);
+    const resolved = await resolveLlm(llmConfig({ provider: "codex" }), {
+      env: { ANTHROPIC_API_KEY: KEY },
+      platform: "darwin",
+      spawn: mock.spawn,
+      codexCommand: "/opt/codex",
+    });
+    expect(resolved.client.mode).toBe("cli");
+    expect(resolved.client.backend).toBe("codex");
+    expect(mock.calls.map((c) => c.command)).toEqual(["/opt/codex"]);
+  });
+
+  it("is unavailable with provider codex when codex --version fails, without trying claude", async () => {
+    const mock = fakeSpawn([run.spawnError("ENOENT")]);
+    const err = await expectLlmError(
+      resolveLlm(llmConfig({ provider: "codex" }), { env: {}, platform: "linux", spawn: mock.spawn }),
+      "unavailable",
+    );
+    expect(err.message).toContain("provider is codex but codex --version");
+    expect(mock.calls).toHaveLength(1);
+  });
+
+  it("does not try codex with provider cli or claude", async () => {
+    for (const provider of ["cli", "claude"]) {
+      const mock = fakeSpawn([run.spawnError("ENOENT")]);
+      await expectLlmError(
+        resolveLlm(llmConfig({ provider }), { env: {}, platform: "linux", spawn: mock.spawn }),
+        "unavailable",
+      );
+      expect(mock.calls.map((c) => c.command)).toEqual(["claude"]);
+    }
+  });
+
+  it("is unavailable on Windows", async () => {
+    const mock = fakeSpawn([]);
+    const err = await expectLlmError(
+      resolveLlm(llmConfig({ provider: "codex" }), { env: {}, platform: "win32", spawn: mock.spawn }),
+      "unavailable",
+    );
+    expect(err.message).toContain("Windows");
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it("runs codex with the configured models", async () => {
+    const mock = fakeSpawn([run.exit(CODEX_VERSION), run.hang()]);
+    const controller = new AbortController();
+    const { client, models } = await resolveLlm(llmConfig({ provider: "codex", analyzeModel: "gpt-big" }), {
+      env: {},
+      platform: "linux",
+      spawn: mock.spawn,
+    });
+    expect(models).toEqual({ triage: undefined, analyze: "gpt-big" });
+    const promise = client.generate(
+      { system: "s", prompt: "p", schema: TriageOutputSchema, tier: "analyze" },
+      { signal: controller.signal },
+    );
+    await mock.spawned(2);
+    controller.abort(new Error("stop"));
+    await expect(promise).rejects.toThrow("stop");
+    const args = mock.calls[1]?.args ?? [];
+    expect(args[args.indexOf("--model") + 1]).toBe("gpt-big");
   });
 });

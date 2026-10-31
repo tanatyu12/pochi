@@ -82,7 +82,7 @@ problems: ["..."]            # 1〜20件
 exclude: ["..."]             # 0〜30件
 language: English            # LLM が生成する文の言語
 llm:
-  provider: auto             # auto | api | cli
+  provider: auto             # auto | api | claude | codex（cli は claude の別名）
   triageModel: ~             # 既定: api なら claude-haiku-5-5、cli なら haiku
   analyzeModel: ~            # 既定: api なら claude-sonnet-5-5、cli なら sonnet
   maxItemsPerCall: 40
@@ -244,12 +244,13 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 
 ### LLM（llm/, pipeline/）
 
-- **adapter.ts** `resolveLlm(context.llm, { env?, platform?, spawn?, command?, signal? })` は `{ client, models, cliVersion? }` を返す。共通インターフェースは `LlmClient.generate<T>({system, prompt, schema, tier})`
-  - provider が auto のとき：ANTHROPIC_API_KEY（前後の空白を除いて判定し、空白だけは未設定扱い。APIモードではこの除いた値を SDK に `apiKey` として渡すので、判定と送るキーが食い違わない）があれば APIモード、なければ `claude --version` が成功するとき CLIモード。どちらも使えなければ unavailable（Windows は CLIモード非対応で、claude を起動しない）
-  - provider が api でキーがなければ auth。provider が cli ならキーがあっても CLIモードとし、Windows や `claude --version` の失敗は unavailable
-  - モデル名は triageModel / analyzeModel、なければモードの既定（`DEFAULT_API_MODELS` / `DEFAULT_CLI_MODELS`）
+- **adapter.ts** `resolveLlm(context.llm, { env?, platform?, spawn?, command?, codexCommand?, signal? })` は `{ client, models, cliVersion? }` を返す。共通インターフェースは `LlmClient.generate<T>({system, prompt, schema, tier})`。CLIモードの client は `backend`（claude / codex）を持つ
+  - provider が auto のとき：ANTHROPIC_API_KEY（前後の空白を除いて判定し、空白だけは未設定扱い。APIモードではこの除いた値を SDK に `apiKey` として渡すので、判定と送るキーが食い違わない）があれば APIモード、なければ `claude --version` が成功するとき claude の CLIモード、それも失敗すれば `codex --version` が成功するとき codex の CLIモード。どれも使えなければ unavailable（Windows は CLIモード非対応で、どちらも起動しない）
+  - provider が api でキーがなければ auth。provider が cli / claude ならキーがあっても claude の CLIモード、codex なら codex の CLIモードとし、もう一方は試さない。Windows や `--version` の失敗は unavailable
+  - モデル名は triageModel / analyzeModel、なければモードの既定（`DEFAULT_API_MODELS` / `DEFAULT_CLI_MODELS`）。codex には既定を持たず、未指定なら `--model` を渡さずに codex の既定のモデルを使う（models は undefined。doctor は "codex default" と表示する）
+  - codex には環境変数をそのまま渡す。CODEX_API_KEY があれば codex はそれで動く（利用者が codex 用に設定したものとして扱う）
   - CLIモードの claude（`claude --version` を含む）には ANTHROPIC_API_KEY と ANTHROPIC_AUTH_TOKEN を除いた環境変数（`cliEnv`）を渡す。どちらかがあると claude はログインではなくそれで動き、API の従量課金になるため。ただし ANTHROPIC_BASE_URL が空でないとき（ゲートウェイや LiteLLM 経由の構成）は何も除かない。claude はキーかトークンでゲートウェイに認証するため。Bedrock / Vertex の設定は、利用者が claude 用に設定したものとして常に残す
-  - `claude --version` は cli.ts の `runClaude` で実行する（専用の一時ディレクトリを cwd とし、shell: false。10秒でタイムアウトし、SIGINT、5秒後に SIGKILL。中断は signal の reason、なければ AbortError）。終了コード0で何か出力したときだけ成功とし、その1行目（200字まで）を `cliVersion` として doctor に渡す
+  - `--version` は cli.ts の `withPrivateDir` と `runIn` で実行する（専用の一時ディレクトリを cwd とし、shell: false。10秒でタイムアウトし、SIGINT、5秒後に SIGKILL。中断は signal の reason、なければ AbortError）。終了コード0で何か出力したときだけ成功とし、その1行目（200字まで）を `cliVersion` として doctor に渡す
 - **api.ts**
   - `createApiLlm({ models, apiKey?, client? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
   - `messages.create` に `output_config.format`（`toJsonSchema` の JSON Schema。CLI と同じもの。schema ごとにキャッシュする）を渡し、`stop_reason` を確かめてから text ブロックを連結して JSON.parse し、zod で検証する。`zodOutputFormat` は zod v4 で動くが、`messages.parse` は stop_reason を見る前に全 text ブロックを解析して汎用の例外を投げるため、refusal や途中で切れた応答を区別できず使わない
@@ -265,6 +266,11 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 出力の解析：stdout の JSON の封筒で type==="result" を確認する。全体が JSON として読めなければ最後の行を読む（前に通知が出ても読めるように）。エラーでも終了コード1で封筒が返り、is_error が true、subtype は "success" のまま、api_error_status に HTTP ステータスが入る（実機で確認）。ステータスの対応は api.ts と共通の `statusKind`（schema.ts）を使う：401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx → transport、413 → too_large、400 → bad_request、404 など → unavailable（存在しないモデル名は 404）。result が "Prompt is too long" なら、ステータスの有無によらず too_large（分ければ通る）。ステータスがない場合：subtype が error_max_structured_output_retries なら invalid_output、result が未ログインの文面（"Not logged in · Please run /login"）なら auth、terminal_reason が api_error（接続できない場合）なら transport、それ以外も transport（原因不明で恒久的とは限らないので、実行を止めずに1回再試行する。メッセージは terminal_reason で組み立てる）。prompt is too long 以外は実機で確認した
   - 判定の順：is_error → structured_output（`validateReply` で検証）→ stop_reason が refusal なら refusal、max_tokens / model_context_window_exceeded なら max_tokens → 代替経路。代替経路では result から ANSI を除去し、JSON として解析できる最初の釣り合った `{}` を取り出す（`findFirstJsonObject`。閉じない `{` があっても、その後ろを探す）。見つからなければ invalid_output
   - 封筒として読めない出力は、終了コードが0以外なら transport、0なら invalid_output。claude が見つからなければ（ENOENT）unavailable。メッセージには result や stderr を含めず、ステータス、モデル名、終了コードだけで組み立てる
+- **codex.ts**
+  - `createCodexLlm({ models, spawn?, command?, env?, timeoutMs?, maxBytes? })`。プロセスの起動・タイムアウト・停止・出力の上限は cli.ts の `runIn` を共有する（cwd は `pochi-codex-*`）
+  - 引数（`buildCodexArgs`）：`exec --json --output-schema <cwd>/schema.json --output-last-message <cwd>/out.json --sandbox read-only --ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules --color never -c model_instructions_file="<cwd>/system.md" -c features.shell_tool=false -c web_search="disabled" -c project_doc_max_bytes=0 [--model <m>] -`。system プロンプトは codex の基本の指示を置き換える `model_instructions_file` で渡す。シェルと Web 検索を切り、read-only の sandbox で動かす。`--ignore-user-config` で config.toml（MCP サーバー、プロファイル）を、`project_doc_max_bytes=0` で AGENTS.md を読ませない。スキーマと system プロンプトは spawn の前に cwd に書き、プロンプトは stdin で渡す
+  - 出力の解析：stdout の JSONL を1行ずつ読み、`turn.completed` があり out.json が空でなければ、それを JSON.parse（読めなければ `findFirstJsonObject`）して `validateReply` で検証する。`turn.completed` がなければ最後の `turn.failed` / `error` の文面を照合する（引用はしない）：context window / prompt is too long → too_large、未ログイン・unauthorized → auth、usage limit / rate limit → rate_limit、存在しないモデル → unavailable、文面の "status NNN" → `statusKind`、それ以外 → transport。再試行された `error` は、ターンが完了していれば無視する。イベントがなく out.json もなければ、終了コードが0以外なら transport、0なら invalid_output
+  - 引数と構造化出力は codex-cli 0.165.0（ChatGPT ログイン）で確認した。存在しないモデル名は `turn.failed` の "model is not supported" で、unavailable になる（実機で確認）。未ログイン・使用上限・長すぎる入力の文面は未確認
 - **prompts.ts**
   - system プロンプトには、プロジェクト、課題、除外ルール、言語を入れる
   - `triageRequest` / `analyzeRequest` / `repoInferenceRequest` / `querySuggestionRequest` は system・prompt・schema・tier をまとめた `GenerateRequest` を返す。init 向けの2つは tier が triage
@@ -358,7 +364,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 - launchd：`~/Library/LaunchAgents/<id>.plist`。`StartCalendarInterval` は制限されたフィールドの直積（100件まで）。launchd はキーを AND で見るので、日付と曜日の両方を指定した cron 式は拒否する。登録は bootout → bootstrap（失敗したら1回だけやり直す）。スリープ中に過ぎた実行は復帰時に1回走る
 - cron：crontab の `# pochi:<id>` で終わる行だけを差し替える（他の行には触れない）。パスは単引用符で囲み、`%` はエスケープする。改行を含むパスは拒否する
 - github：`.github/workflows/daily_briefing.yml` を書くだけで、commit と push は利用者に任せる（Secrets の設定方法を案内する）
-- install は設定を検証してから登録する。`--print` は何も変えずに内容を表示し、`--at HH:MM` は時刻をその場だけ上書きし、`--dry-run` は登録したジョブを `run --dry-run` にする。ローカルでは `.env` がない・他人が読める・必要なキー（slack なら SLACK_WEBHOOK_URL、provider: api なら ANTHROPIC_API_KEY、queries があれば TAVILY_API_KEY）がない場合に warn を出す。値は表示しない
+- install は設定を検証してから登録する。`--print` は何も変えずに内容を表示し、`--at HH:MM` は時刻をその場だけ上書きし、`--dry-run` は登録したジョブを `run --dry-run` にする。ローカルでは `.env` がない・他人が読める・必要なキー（slack なら SLACK_WEBHOOK_URL、provider: api なら ANTHROPIC_API_KEY、queries があれば TAVILY_API_KEY）がない場合に warn を出す。値は表示しない。github で provider が cli / claude / codex なら、runner には CLI がないので warn を出す
 - status は登録の有無、頻度、次の3回、ログのパスを示し、登録内容が今の設定から作るものと違えば install し直すよう warn を出す
 
 ### 終了コード

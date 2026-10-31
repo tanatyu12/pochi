@@ -67,8 +67,10 @@ export const ContextSchema = z
     language: text.default("English"),
     llm: z
       .strictObject({
-        provider: z.enum(["auto", "api", "cli"]).default("auto"),
-        // null and omitted both mean "use the mode's default"; the adapter resolves it.
+        // cli is claude, as it was before codex was supported.
+        provider: z.enum(["auto", "api", "cli", "claude", "codex"]).default("auto"),
+        // null and omitted both mean "use the mode's default"; the adapter resolves it. For codex
+        // that is codex's own configured model.
         triageModel: text.nullish(),
         analyzeModel: text.nullish(),
         maxItemsPerCall: positiveInt.default(40),
