@@ -102,13 +102,32 @@ function renderItems(items: readonly Item[], maxContentChars?: number): string {
   return ["<untrusted_items>", ...blocks, "</untrusted_items>"].join("\n");
 }
 
-export function triageRequest(context: Context, items: readonly Item[]): GenerateRequest<TriageOutput> {
+/** today: the run's UTC day; without it the model is not told the date. */
+export interface ItemRequestOptions {
+  today?: string;
+}
+
+// Items without a published date pass the age check in code, so the model judges them by their content.
+function recencyRule(context: Context, today: string | undefined): string[] {
+  if (today === undefined) return [];
+  const days = context.state.maxItemAgeDays;
+  return [
+    `- Today is ${today}. The team only wants news from the last ${days} days: an item whose content is clearly about something older (an announcement, release or event from months ago, or an undated evergreen page) is not relevant.`,
+  ];
+}
+
+export function triageRequest(
+  context: Context,
+  items: readonly Item[],
+  opts: ItemRequestOptions = {},
+): GenerateRequest<TriageOutput> {
   requireSome(items, "item");
   const task = [
     "Task: decide which articles are relevant to the team's interests above.",
     "- Return exactly one decision for every item id, using the id given on the item.",
     "- Mark an item relevant only if it clearly matches one of the interests. When unsure, mark it not relevant.",
     "- Anything matching the exclusions is not relevant.",
+    ...recencyRule(context, opts.today),
     "- reason: one short sentence explaining the decision.",
   ].join("\n");
   return {
@@ -120,10 +139,15 @@ export function triageRequest(context: Context, items: readonly Item[]): Generat
 }
 
 // Content was already cut to maxContentChars when it was collected, so it goes in whole.
-export function analyzeRequest(context: Context, items: readonly Item[]): GenerateRequest<AnalysisOutput> {
+export function analyzeRequest(
+  context: Context,
+  items: readonly Item[],
+  opts: ItemRequestOptions = {},
+): GenerateRequest<AnalysisOutput> {
   requireSome(items, "item");
   const task = [
     "Task: explain what each article means for the project.",
+    ...(opts.today === undefined ? [] : [`- Today is ${opts.today}; judge urgency from that date.`]),
     "- Return one insight for every item id, using the id given on the item.",
     "- title: a short headline. summary: two or three sentences on what changed and why it matters to this project.",
     "- impact:",

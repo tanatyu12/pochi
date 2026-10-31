@@ -135,6 +135,21 @@ describe("filterAndAnalyze batching", () => {
     expect(result.stats).toEqual({ triageBatches: 3, triageFailed: 0, analyzeBatches: 2, analyzeFailed: 0, dropped: 0 });
   });
 
+  it("tells both stages today's date", async () => {
+    const systems: string[] = [];
+    const llm = fakeLlm();
+    const client: LlmClient = {
+      mode: "api",
+      generate: (req, opts) => {
+        systems.push(req.system);
+        return llm.client.generate(req, opts);
+      },
+    };
+    await filterAndAnalyze(client, makeContext(), items(2), { today: "2026-10-28" });
+    expect(systems).toHaveLength(2);
+    for (const system of systems) expect(system).toContain("Today is 2026-10-28");
+  });
+
   it("honors a configured maxItemsPerCall", async () => {
     const llm = fakeLlm();
     await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 4 } }), items(10));

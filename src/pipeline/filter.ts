@@ -77,7 +77,8 @@ export async function filterAndAnalyze(
     signal,
     retryDelayMs = RETRY_DELAY_MS,
     pretriaged = [],
-  }: { signal?: AbortSignal; retryDelayMs?: number; pretriaged?: readonly Item[] } = {},
+    today,
+  }: { signal?: AbortSignal; retryDelayMs?: number; pretriaged?: readonly Item[]; today?: string } = {},
 ): Promise<FilterResult> {
   const result: FilterResult = {
     insights: [],
@@ -119,7 +120,7 @@ export async function filterAndAnalyze(
     "triage",
     chunk(selected, context.llm.maxItemsPerCall),
     result.undecided,
-    (batch) => triageRequest(context, batch),
+    (batch) => triageRequest(context, batch, { today }),
     (batch, reply) => {
       const decisions = byShortId(batch, reply.decisions, "triage");
       return batch.filter((item, i) => {
@@ -140,7 +141,7 @@ export async function filterAndAnalyze(
     "analyze",
     chunk(relevant, ANALYZE_BATCH_SIZE),
     result.pending,
-    (batch) => analyzeRequest(context, batch),
+    (batch) => analyzeRequest(context, batch, { today }),
     (batch, reply) => {
       const insights = byShortId(batch, reply.insights, "analyze");
       return batch.filter((item, i) => {
