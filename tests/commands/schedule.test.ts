@@ -192,6 +192,21 @@ describe("schedule status and uninstall", () => {
     expect(out).toEqual(["launchd: not installed (run `pochi schedule install`)"]);
   });
 
+  it("takes the default config dir given by name or by path as no --config-dir", async () => {
+    await setup(context());
+    const crontab = fakeCrontab();
+    const linux = deps({ platform: "linux", exec: crontab.exec });
+    // As init installs it: with the dir it wrote to, here the default one.
+    await installSchedule({ configDir: join(cwd, "config") }, linux);
+    expect(crontab.text()).not.toContain("--config-dir");
+
+    for (const configDir of [undefined, "config"]) {
+      out = [];
+      await scheduleStatus({ configDir }, linux);
+      expect(out.some((line) => line.includes("differs"))).toBe(false);
+    }
+  });
+
   it("compares the installed job with context.yml", async () => {
     await setup(context());
     const crontab = fakeCrontab();

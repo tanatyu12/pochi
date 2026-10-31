@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { ConfigError } from "../config/load.js";
+import { ConfigError, DEFAULT_CONFIG_DIR } from "../config/load.js";
 import { sha256Hex } from "../util/hash.js";
 import { cronScheduler } from "./cron.js";
 import { type ExecFn, exec as defaultExec } from "./exec.js";
@@ -58,9 +58,12 @@ export function buildJob(opts: {
   dryRun?: boolean;
 }): Job {
   const cwd = resolve(opts.cwd);
+  // The default dir is left out however it was given (init always gives one), so a job
+  // installed with --config-dir config and one without are the same job.
+  const configDir = opts.configDir === undefined ? undefined : resolve(cwd, opts.configDir);
   const args = [
     "run",
-    ...(opts.configDir === undefined ? [] : ["--config-dir", resolve(cwd, opts.configDir)]),
+    ...(configDir === undefined || configDir === resolve(cwd, DEFAULT_CONFIG_DIR) ? [] : ["--config-dir", configDir]),
     ...(opts.dryRun ? ["--dry-run"] : []),
   ];
   return {
