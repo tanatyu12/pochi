@@ -688,7 +688,7 @@ async function askIdeas(s: SourceSession): Promise<Ideas> {
     p.note("Claude had nothing to add.");
     return none;
   }
-  // None picked to begin with: each brings more news every morning.
+  // None picked to begin with: each brings more news on every run.
   const picked = await p.multiselect({
     message: "Ideas to add to what you want to hear about (space to select, enter to confirm)",
     options: ideas.map((idea) => ({
@@ -717,8 +717,8 @@ async function askIdeas(s: SourceSession): Promise<Ideas> {
 }
 
 /**
- * Asks for feeds and queries, fetches the latest item of each and keeps the ones the user wants
- * to watch. Repeats until at least one is kept, since sources.yml needs one.
+ * Asks for feeds and queries, fetches the latest item of each and keeps them, asking about the
+ * ones that failed or have nothing yet. Repeats until at least one is kept, since sources.yml needs one.
  */
 export async function askSources(s: SourceSession, proposed: FeedInput[] = []): Promise<SourcesInput> {
   // Proposed feeds were claimed already; the first trial fetch tries them with the typed ones.
@@ -1245,7 +1245,7 @@ async function askWebSearches(s: SourceSession): Promise<QueryInput[]> {
   return added;
 }
 
-/** Shows the latest item of each source and keeps those the user wants to watch. */
+/** Shows the latest item of each source; asks whether to keep the ones that failed or have nothing yet. */
 async function trialFetch(
   s: SourceSession,
   feeds: FeedInput[],
@@ -1301,8 +1301,10 @@ async function trialFetch(
           : "No items yet.",
         `${label} (${kind})`,
       );
+      // The user just picked it, so only one that brought nothing is asked about again.
+      if (item) continue;
     }
-    if (!(await p.confirm({ message: `Watch ${label} every morning?`, initialValue: ok }))) rejected.add(id);
+    if (!(await p.confirm({ message: `Watch ${label} anyway?`, initialValue: ok }))) rejected.add(id);
   }
 
   // A rejected source may be added again later, perhaps another way.
