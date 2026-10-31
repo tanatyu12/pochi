@@ -8,9 +8,9 @@ import {
   MAX_MESSAGE_CHARS,
   MAX_SECTION_CHARS,
   sendSlack,
-  type Briefing,
   type SlackMessage,
 } from "../../src/notifiers/slack.js";
+import type { Briefing } from "../../src/notifiers/types.js";
 import type { Insight } from "../../src/types.js";
 import { HttpError } from "../../src/util/http.js";
 import { configureLog, resetLog } from "../../src/util/log.js";

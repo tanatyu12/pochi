@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -107,6 +107,8 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+const withChannels = (channels: string) => `${CONTEXT}notify:\n  channels: ${channels}\n`;
+
 function run(llm: ReturnType<typeof fakeLlm>, opts: RunOptions = {}, deps: RunDeps = {}) {
   return runCommand(
     { configDir: join(dir, "config"), state: statePath, ...opts },
@@ -213,10 +215,70 @@ describe("runCommand", () => {
 
   it("exits 4 when Slack rejects the message, without marking anything notified", async () => {
     routes({ slack: reply.status(404) });
-    expect(await exitOf(run(fakeLlm()))).toBe(ExitCode.SLACK);
+    expect(await exitOf(run(fakeLlm()))).toBe(ExitCode.DELIVERY);
     // Undelivered insights wait as r, so tomorrow analyzes them without triaging them again.
     expect(await statuses()).toEqual(["i", "i", "r", "r", "r", "r"]);
     expect(logs).not.toContain("s3cr3t");
+  });
+
+  it("writes a report without a webhook when the file is the only channel", async () => {
+    const reports = join(dir, "reports");
+    await writeFile(join(dir, "config", "context.yml"), withChannels(`[{ type: file, dir: "${reports}" }]`));
+    vi.stubEnv("SLACK_WEBHOOK_URL", "");
+    const fetch = routes();
+    expect(await exitOf(run(fakeLlm(), { json: true }))).toBe(ExitCode.OK);
+
+    expect(fetch.callsTo(WEBHOOK)).toHaveLength(0);
+    const report = await readFile(join(reports, "2026-10-26.md"), "utf8");
+    expect(report).toContain("[High] [Breaking change in lib]");
+    expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
+    expect(JSON.parse(stdout).delivered.file).toHaveLength(2);
+
+    // Delivered items are known now, so the next run has nothing to write.
+    vi.unstubAllGlobals();
+    routes();
+    expect(await exitOf(run(fakeLlm()))).toBe(ExitCode.OK);
+    expect(await readdir(reports)).toEqual(["2026-10-26.md"]);
+  });
+
+  it("marks items notified only once every channel has them, and exits 4 naming the one that failed", async () => {
+    const reports = join(dir, "reports");
+    await writeFile(join(dir, "config", "context.yml"), withChannels(`[{ type: slack }, { type: file, dir: "${reports}" }]`));
+    routes({ slack: reply.status(404) });
+    let error: unknown;
+    await run(fakeLlm()).catch((err: unknown) => (error = err));
+    expect(exitCodeOf(error)).toBe(ExitCode.DELIVERY);
+    expect((error as Error).message).toBe("delivery failed: slack (2 updates not delivered)");
+    // The file got them, Slack did not: they stay r, so Slack gets them tomorrow.
+    expect(await readdir(reports)).toEqual(["2026-10-26.md"]);
+    expect(await statuses()).toEqual(["i", "i", "r", "r", "r", "r"]);
+  });
+
+  it("names the file channel when only it fails, keeping the items for tomorrow", async () => {
+    const blocker = join(dir, "not-a-dir");
+    await writeFile(blocker, "");
+    await writeFile(join(dir, "config", "context.yml"), withChannels(`[{ type: slack }, { type: file, dir: "${blocker}" }]`));
+    const fetch = routes();
+    let error: unknown;
+    await run(fakeLlm()).catch((err: unknown) => (error = err));
+    expect((error as Error).message).toBe("delivery failed: file (2 updates not delivered)");
+    expect(slackTexts(fetch)).toHaveLength(1);
+    expect(await statuses()).toEqual(["i", "i", "r", "r", "r", "r"]);
+  });
+
+  it("exits 130 without writing the file when interrupted after Slack", async () => {
+    const reports = join(dir, "reports");
+    await writeFile(join(dir, "config", "context.yml"), withChannels(`[{ type: slack }, { type: file, dir: "${reports}" }]`));
+    const controller = new AbortController();
+    routes({
+      slack: () => {
+        controller.abort();
+        return new Response("ok");
+      },
+    });
+    expect(await exitOf(run(fakeLlm(), {}, { signal: controller.signal }))).toBe(ExitCode.INTERRUPTED);
+    expect(await readdir(dir)).not.toContain("reports");
+    expect(await statuses()).toEqual(["i", "i", "r", "r", "r", "r"]);
   });
 
   it("exits 5 when every source fails, and 0 when only some do", async () => {

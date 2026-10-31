@@ -1,0 +1,22 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`toMarkdown > renders each insight under its own heading 1`] = `
+"# Pochi · my-app · 2026-10-26
+
+## [High] [Title 1](<https://example.com/posts/1>)
+
+Summary 1
+
+**Action:** Action 1
+
+Source: Next.js releases
+
+## [Medium] [Title 2](<https://example.com/posts/2>)
+
+Source: Next.js releases
+
+---
+
+Collected 120 items from 8 sources; failed: Blog A
+"
+`;

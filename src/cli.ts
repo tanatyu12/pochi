@@ -12,7 +12,7 @@ import { VERSION } from "./version.js";
 export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
   const program = new Command()
     .name("pochi")
-    .description("Daily tech briefing for your project, delivered to Slack")
+    .description("Daily tech briefing for your project, delivered to Slack or Markdown files")
     .version(VERSION)
     // Before .command(): subcommands copy the parent's settings when they are created.
     .exitOverride();
