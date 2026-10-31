@@ -1,8 +1,11 @@
 /** The version tag a proposal must carry; bump it when the shape changes. */
 export const PROPOSAL_VERSION = "proposal/v1";
 
-// The prompt asks for at most these; parseProposal cuts anything beyond them.
+// The prompt asks the agent for at most these.
 export const PROPOSAL_LIMITS = { problems: 12, exclude: 8, repos: 15, sites: 8, queries: 8 } as const;
+// parseProposal cuts beyond these instead: a proposal the user added to by hand may hold more
+// than the agent was asked for. problems and exclude are the config's own limits.
+export const PARSE_LIMITS = { problems: 20, exclude: 30, repos: 30, sites: 30, queries: 20 } as const;
 
 /**
  * Who the team wants to follow, from init's --competitor, --adopter and --news-site. All optional;

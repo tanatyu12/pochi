@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConfigError } from "../../src/config/load.js";
 import { ExitCode } from "../../src/errors.js";
 import { extractJson, parseProposal, readProposal } from "../../src/proposal/parse.js";
-import { PROPOSAL_LIMITS } from "../../src/proposal/prompt.js";
+import { PARSE_LIMITS, PROPOSAL_LIMITS } from "../../src/proposal/prompt.js";
 
 const FULL = {
   pochi: "proposal/v1",
@@ -114,11 +114,23 @@ describe("parseProposal", () => {
   });
 
   it("cuts each list at its limit and counts the rest as dropped", () => {
-    const repos = Array.from({ length: PROPOSAL_LIMITS.repos + 3 }, (_, i) => ({ repo: `acme/r${i}` }));
+    const repos = Array.from({ length: PARSE_LIMITS.repos + 3 }, (_, i) => ({ repo: `acme/r${i}` }));
     const result = parse({ pochi: "proposal/v1", repos });
-    expect(result.repos).toHaveLength(PROPOSAL_LIMITS.repos);
-    expect(result.repos.at(-1)!.repo).toBe(`acme/r${PROPOSAL_LIMITS.repos - 1}`);
+    expect(result.repos).toHaveLength(PARSE_LIMITS.repos);
+    expect(result.repos.at(-1)!.repo).toBe(`acme/r${PARSE_LIMITS.repos - 1}`);
     expect(result.dropped).toBe(3);
+  });
+
+  it("keeps more than the agent was asked for, as a proposal added to by hand holds", () => {
+    const sites = Array.from({ length: PROPOSAL_LIMITS.sites + 5 }, (_, i) => ({ url: `https://s${i}.example/feed` }));
+    const queries = Array.from({ length: PROPOSAL_LIMITS.queries + 5 }, (_, i) => ({ query: `q${i}` }));
+    const result = parse({ pochi: "proposal/v1", sites, queries });
+    expect(result.sites).toHaveLength(sites.length);
+    expect(result.queries).toHaveLength(queries.length);
+    expect(result.dropped).toBe(0);
+    for (const [list, max] of Object.entries(PARSE_LIMITS)) {
+      expect(max).toBeGreaterThanOrEqual(PROPOSAL_LIMITS[list as keyof typeof PROPOSAL_LIMITS]);
+    }
   });
 
   it("strips control characters and shortens long text", () => {
