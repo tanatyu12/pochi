@@ -77,6 +77,22 @@ describe("parseProposal", () => {
     expect((thrown(() => parse([FULL])) as Error).message).toBe("p.json: no JSON proposal found");
   });
 
+  it("keeps a query's includeDomains, leaving out what is not a domain", () => {
+    const result = parse({
+      pochi: "proposal/v1",
+      queries: [
+        { query: "ペット葬儀 グッズ", includeDomains: ["PRTimes.jp", "https://x.example", 3, "prtimes.jp"] },
+        { query: "no sites", includeDomains: ["not a domain"] },
+        { query: "bad list", includeDomains: "prtimes.jp" },
+      ],
+    });
+    expect(result.queries).toEqual([
+      { query: "ペット葬儀 グッズ", topic: "news", evidence: "", includeDomains: ["prtimes.jp"] },
+      { query: "no sites", topic: "news", evidence: "" },
+      { query: "bad list", topic: "news", evidence: "" },
+    ]);
+  });
+
   it("drops malformed entries one by one and counts them", () => {
     const result = parse({
       pochi: "proposal/v1",

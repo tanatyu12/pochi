@@ -1,7 +1,7 @@
 import { open } from "node:fs/promises";
 import { z } from "zod";
 import { ConfigError } from "../config/load.js";
-import { REPO_PATTERN } from "../config/schema.js";
+import { DomainSchema, MAX_DOMAINS, REPO_PATTERN } from "../config/schema.js";
 import { parseHttpUrl } from "../util/hash.js";
 import { displayLine as clean } from "../util/text.js";
 import { PROPOSAL_LIMITS, PROPOSAL_VERSION } from "./prompt.js";
@@ -23,7 +23,7 @@ export interface Proposal {
   exclude: ProposedText[];
   repos: { repo: string; evidence: string }[];
   sites: { url: string; evidence: string }[];
-  queries: { query: string; topic: "news" | "general"; evidence: string }[];
+  queries: { query: string; topic: "news" | "general"; evidence: string; includeDomains?: string[] }[];
   /** Entries left out because they were malformed or past the limits. */
   dropped: number;
 }
@@ -49,6 +49,7 @@ const QueryEntry = z.looseObject({
   topic: z.enum(["news", "general"]).optional().catch(undefined),
   intent: optionalText,
   evidence: optionalText,
+  includeDomains: list,
 });
 
 /** Reads a proposal written by an agent; ConfigError (exit 2) when there is none to use. */
@@ -137,7 +138,17 @@ export function parseProposal(text: string, label: string): Proposal {
     }),
     queries: entries(p.queries, QueryEntry, PROPOSAL_LIMITS.queries, (e) => {
       const query = clean(e.query, TEXT_MAX_CHARS);
-      return query ? { query, topic: e.topic ?? "news", evidence: evidence({ axis: e.intent, evidence: e.evidence }) } : undefined;
+      if (!query) return undefined;
+      // A domain that is not one is left out; the query still searches, just not only there.
+      const domains = [
+        ...new Set((e.includeDomains ?? []).flatMap((d) => DomainSchema.safeParse(d).data ?? [])),
+      ].slice(0, MAX_DOMAINS);
+      return {
+        query,
+        topic: e.topic ?? "news",
+        evidence: evidence({ axis: e.intent, evidence: e.evidence }),
+        ...(domains.length > 0 && { includeDomains: domains }),
+      };
     }),
     dropped,
   };

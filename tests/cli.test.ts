@@ -29,6 +29,10 @@ describe("cli", () => {
       // --print-prompt asks nothing, so it works off a terminal too.
       expect(await main(["node", "pochi", "init", "--print-prompt"])).toBe(0);
       expect(stdout).toHaveBeenLastCalledWith(expect.stringContaining("proposal/v1"));
+      const named = ["--adopter", "ペット葬儀社", "--adopter", "ペット保険会社", "--news-site", "prtimes.jp"];
+      expect(await main(["node", "pochi", "init", "--print-prompt", ...named])).toBe(0);
+      expect(stdout).toHaveBeenLastCalledWith(expect.stringContaining('"ペット葬儀社", "ペット保険会社"'));
+      expect(await main(["node", "pochi", "init", "--print-prompt", "--news-site", "https://prtimes.jp"])).toBe(2);
       expect(await main(["node", "pochi", "run", "--no-such-option"])).toBe(2);
       expect(await main(["node", "pochi", "run", "--help"])).toBe(0);
       expect(await main(["node", "pochi", "doctor", "--no-such-option"])).toBe(2);
