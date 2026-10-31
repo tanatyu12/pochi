@@ -36,3 +36,11 @@ notify:
 state:
   ttlDays: 45           # must be greater than maxItemAgeDays
   maxItemAgeDays: 14
+
+# When `pochi schedule install` runs pochi (dependabot-style). Omit for daily at 06:17.
+schedule:
+  interval: daily       # daily | weekly | monthly (the 1st) | cron
+  # day: [monday, thursday]  # weekly only: one day or a list (default monday)
+  time: "06:17"         # HH:MM, 24-hour; not used with interval: cron
+  # timezone: Asia/Tokyo     # default: this machine's zone (UTC for --backend github)
+  # cronjob: "17 6 * * 1-5"  # interval: cron only: minute hour day-of-month month day-of-week

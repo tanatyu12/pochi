@@ -51,13 +51,14 @@ TypeScript を esbuild で単一ファイル `dist/pochi.mjs` にまとめる。
 ```
 src/
   cli.ts  errors.ts  types.ts  version.ts
-  commands/{init,run,doctor}.ts
+  commands/{init,run,doctor,schedule}.ts
   config/{schema,load,write}.ts
   sources/{index,html,rss,github,discover,tavily}.ts
   llm/{schema,prompts,adapter,api,cli}.ts
   pipeline/filter.ts
   notifiers/slack.ts
   state/store.ts
+  schedule/{calendar,types,index,exec,launchd,cron,github}.ts
   util/{http,log,concurrency,hash,time}.ts
 tests/  fixtures/{feeds,html,tavily,claude,slack}  helpers/{mockFetch,fakeSpawn}.ts
 config/{context,sources}.example.yml
@@ -93,6 +94,12 @@ notify:
     - { type: slack }        # Webhook は SLACK_WEBHOOK_URL から
     - { type: file, dir: reports }   # <dir>/<YYYY-MM-DD>.md に Markdown で書く
 state: { ttlDays: 45, maxItemAgeDays: 14 }   # ttlDays > maxItemAgeDays であること
+schedule:                    # pochi schedule install が使う。キーと意味は dependabot の schedule に合わせる
+  interval: daily            # daily | weekly | monthly（毎月1日）| cron。既定 daily
+  day: [monday, thursday]    # weekly のみ。1つなら文字列でもよい。既定 monday
+  time: "06:17"              # HH:MM。既定 06:17。interval: cron では使わない
+  timezone: Asia/Tokyo       # IANA 名。省略時はマシンのタイムゾーン（github バックエンドでは UTC）
+  cronjob: "17 6 * * 1-5"    # interval: cron のときだけ必須。5フィールド
 ```
 
 ### sources.yml
@@ -340,6 +347,20 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
     - 対話：name と description を入力の初期値にする。problems と exclude は案を大文字小文字を区別せずに重複を除いて全選択の multiselect で出し（hint は axis と evidence）、続けて手入力で足せる（選んだ案や入力済みと同じものは受け付けない。選んだ数を上限から引く。problems を1件も選ばなければ手入力が1件必要）。language は English / Japanese ならそれを、それ以外は Other を選んだうえでその値を初期値にする。続けて提案の repos（大文字小文字を区別せずに重複を除く）を全選択の multiselect で出し（Claude は要らないので、裏で進む LLM の解決を待たない）、`verifyRepo` を同時に4件まで実行する。not_found / empty / 確認できなかったもの（手で入力したものではないので「それでも追加するか」は聞かない）は warn を出して除外し、movedTo・tags・プレリリースは手入力と同じに扱う。sites は全選択の multiselect の後、選んだものを discoverFeeds で同時に4件まで探し、提案の順に1件ずつ確定する（複数フィードなら選ばせる）。確認できなかったフィードや開けなかったページは、手で入力したものではないので「それでも追加するか」は聞かずに warn を出して除外する。repo や site が既に足したフィードと重なれば、どれを skip したかを warn で示す。残ったソースは最初の回のメニューに「n so far」として加わり、手で足したソースと一緒に Trial Fetch で確かめる。queries があれば Claude に提案を求めず（LLM の解決も待たない。TAVILY_API_KEY がなければ、除外した提案の件数を note に含める）、手入力と同じく整えて空になったものと重複を除き、案を multiselect で出す（毎朝1クレジットずつかかるので、初期状態では選ばない）。topic は案の値を引き継ぎ、id は手入力と同じ `queryIdFrom` で作る
   - 対話の間は、ログを warn 以上に絞る（取得処理の info で画面が崩れないようにする）
 
+### 定期実行（schedule/、commands/schedule.ts）
+
+`pochi schedule install | uninstall | status [--backend launchd|cron|github]` で、context.yml の `schedule` どおりに `pochi run` を定期実行させる。`--backend` の既定は macOS が launchd、Linux が cron（それ以外は github を指定させる）。
+
+- 抽象化：`Scheduler` インターフェース（`zone`、`render`、`install`、`uninstall`、`inspect`）。バックエンドを足すときはこれを実装して `createScheduler` に加える。`render` が返した内容をそのまま `install` に渡すので、`--print` の表示と実際に入るものが一致する
+- calendar.ts：設定を cron と同じ意味の共通形式 `Calendar`（minute・hour・dayOfMonth・month・weekday）にする。cron 式のパース（数・`*`・範囲・リスト・刻み・名前。`@daily` と L・W・# は拒否）、cron への書き戻し、次回の実行時刻の計算を持つ
+- タイムゾーン：launchd と cron はマシンの時刻、Actions は UTC で読むので、install 時に `convertZone` で移す。日をまたげば曜日もずらす。日付を指定していて日をまたぐもの（monthly を JST から UTC へ、など）や、時と分が1つの組にならないものは移せないので2で終え、`timezone` を登録先に合わせるよう案内する。夏時間で差が変わる組み合わせは warn（登録後は追従しない）
+- ジョブ：ID は `sh.pochi.<cwd の sha256 先頭8桁>`。`node --env-file-if-exists=<cwd>/.env <dist/pochi.mjs> run` を cwd で実行し、install 時の PATH を渡す（CLI モードの claude を見つけるため）。出力は `logs/pochi.log` に追記する（gitignore 済み）。tsx からの実行では install させず、`npm run build` を促す
+- launchd：`~/Library/LaunchAgents/<id>.plist`。`StartCalendarInterval` は制限されたフィールドの直積（100件まで）。launchd はキーを AND で見るので、日付と曜日の両方を指定した cron 式は拒否する。登録は bootout → bootstrap（失敗したら1回だけやり直す）。スリープ中に過ぎた実行は復帰時に1回走る
+- cron：crontab の `# pochi:<id>` で終わる行だけを差し替える（他の行には触れない）。パスは単引用符で囲み、`%` はエスケープする。改行を含むパスは拒否する
+- github：`.github/workflows/daily_briefing.yml` を書くだけで、commit と push は利用者に任せる（Secrets の設定方法を案内する）
+- install は設定を検証してから登録する。`--print` は何も変えずに内容を表示し、`--at HH:MM` は時刻をその場だけ上書きし、`--dry-run` は登録したジョブを `run --dry-run` にする。ローカルでは `.env` がない・他人が読める・必要なキー（slack なら SLACK_WEBHOOK_URL、provider: api なら ANTHROPIC_API_KEY、queries があれば TAVILY_API_KEY）がない場合に warn を出す。値は表示しない
+- status は登録の有無、頻度、次の3回、ログのパスを示し、登録内容が今の設定から作るものと違えば install し直すよう warn を出す
+
 ### 終了コード
 
 | コード | 意味 |
@@ -352,22 +373,23 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 | 5 | 全ソースの失敗 |
 | 130 | 中断 |
 
-## GitHub Actions と運用
+## 定期実行と運用
 
-毎朝 6:17（JST）に実行し、状態ファイルを bot がコミットする。利用者は clone または「Use this template」で作った自分のリポジトリで動かす。
+`pochi schedule install` で、手元のマシン（launchd / cron）か GitHub Actions に登録する。既定は毎日 6:17。Actions では状態ファイルを bot がコミットする。利用者は clone または「Use this template」で作った自分のリポジトリで動かす。
 
-`daily_briefing.yml` の要点：
+`daily_briefing.yml`（`pochi schedule install --backend github` が生成する）の要点：
 
-- 起動条件は cron `17 21 * * *`（UTC。正時を避ける）と `workflow_dispatch`（入力で `dry_run` を指定できる）
+- 起動条件は context.yml の `schedule` を UTC に移した cron（既定の 06:17 JST なら `17 21 * * *`。正時を避ける）と `workflow_dispatch`（入力で `dry_run` を指定できる。入力は env 経由でシェルに渡す）
 - `permissions: contents: write`、`concurrency` で多重実行を防ぎ、`timeout-minutes: 20`
 - 実行手順は checkout → setup-node（Node 24）→ `npm ci` → `npm run build` → `node dist/pochi.mjs run`
 - Secrets を env として渡す：POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、ANTHROPIC_API_KEY、TAVILY_API_KEY、SLACK_WEBHOOK_URL。加えて `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` を渡す（Actions が自動で発行するので登録は不要。GitHub API の無認証の回数制限は共有ランナーで使い切られうる）。設定の中身は絶対にログに出さない
-- dry_run 以外の実行では `git add -f state/notified.json` する。差分がなければ終了し、あれば `[skip ci]` 付きでコミットして `pull --rebase` し、push する
+- dry_run 以外の実行では `git add -f state/notified.json` する。差分がなければ終了し、あれば `[skip ci]` 付きでコミットして `pull --rebase` し、push する。run が失敗しても（キャンセル以外）コミットする。失敗前に届けた分を記録しないと翌日また届くため
 
 `ci.yml` は push と PR のたびに、Node 22 と 24 の両方で typecheck、test、build、バンドルの動作確認を行う。dependabot も置く。
 
 README に書く注意点：
 
+- 手元で定期実行するときは、キーをリポジトリ直下の `.env`（chmod 600）に書く。launchd と cron はシェルの環境変数を引き継がない
 - フォークでは定期実行が既定で無効になるため、テンプレートか clone を勧める。非公開リポジトリでも使える
 - 定期実行は既定ブランチでのみ動き、cron は UTC で指定する
 - 公開リポジトリは60日間活動がないと定期実行が止まる。状態ファイルのコミットが活動として数えられる
@@ -376,7 +398,7 @@ README に書く注意点：
 
 ## タスク一覧
 
-23タスクを M0〜M5 の6マイルストーンに分ける。クリティカルパスは T1 → T2 → T5 → T6 → T9 → T16 → T20 → T23 で、T3・T10〜T13・T14・T15 は並行して進められる。
+25タスクを M0〜M5 の6マイルストーンに分ける（T24・T25 は後から追加）。クリティカルパスは T1 → T2 → T5 → T6 → T9 → T16 → T20 → T23 で、T3・T10〜T13・T14・T15 は並行して進められる。
 
 | ID | 段階 | タスク | 依存 | 受け入れ条件 | 状態 |
 | --- | --- | --- | --- | --- | --- |
@@ -399,11 +421,12 @@ README に書く注意点：
 | T17 | M3 通知・状態 | commands/doctor（T16 と並行可） | T3, T9, T13 | 出力に秘密情報が含まれないことをテストで確認 | 完了 |
 | T18 | M4 init | init の対話と設定の書き出し（プロンプト関数を差し替え可能にする） | T3 | 端末でなければ2、キャンセルなら130で何も書かない。書いた設定を読み戻せる。権限600、.gitignore | 完了 |
 | T19 | M4 init | init のソース特定と Trial Fetch | T18, T6, T7, T8, T13 | 存在を確認できないリポジトリは提示しない。owner/repo は LLM を通さない。LLM なしでも完了する。複数フィードは選ばせる。却下されたソースは除外する | 完了 |
-| T20 | M5 CI・文書 | daily_briefing.yml | T16 | actionlint が通る。dry_run ではコミットしない。秘密情報を echo しない | 未着手 |
+| T20 | M5 CI・文書 | daily_briefing.yml（T25 の github バックエンドとして生成する） | T16, T25 | actionlint が通る。dry_run ではコミットしない。秘密情報を echo しない | 確認待ち（actionlint 未実行） |
 | T21 | M5 CI・文書 | ci.yml と dependabot | T1 | 最初の push で CI が通る | 未着手 |
 | T22 | M5 CI・文書 | README と SECURITY.md | T16, T19 | README だけを見て clone から最初の dry-run まで進める。`init --print-prompt` から `--from` までの手順も載せる | 未着手 |
 | T23 | M5 CI・文書 | 手動 E2E とリリース準備 | すべて | 検証計画の12項目を通す。npm audit で high 以上がない | 未着手 |
 | T24 | M4 init | 提案の取り込み（`init --from`、`--print-prompt`、探索プロンプト） | T19 | 提案の JSON を前後の説明文ごと読める。不正なエントリだけを捨てる。存在しない repo は書き出さない。案の queries があれば LLM に提案を求めない。読めないファイルなら質問の前に2。手元の claude で pochi 自身から作った案を読める | 完了 |
+| T25 | M5 CI・文書 | 定期実行の抽象化（`pochi schedule`、launchd / cron / github） | T16 | dependabot 形式の頻度を各バックエンドに変換できる。タイムゾーンの移動と移せない場合のエラー。crontab の他の行を壊さない。plist が plutil -lint を通る。手元の Mac で dry-run のジョブが動く | 確認待ち（実機未確認） |
 
 ## 検証計画とリスク
 
