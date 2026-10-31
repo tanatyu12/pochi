@@ -29,6 +29,23 @@ export interface DiscoveredFeed {
   title?: string;
 }
 
+/**
+ * A candidate feed whose check failed for a reason that may pass on another try. Thrown instead
+ * of the HttpError, whose url is redacted, so the caller can still add the feed by its real URL.
+ */
+export class FeedCheckError extends Error {
+  constructor(
+    /** The candidate as fetched, not redacted. */
+    readonly feedUrl: string,
+    /** Advertised by the page's <link>, as opposed to a common path guessed under it. */
+    readonly advertised: boolean,
+    override readonly cause: HttpError,
+  ) {
+    super(cause.message, { cause });
+    this.name = "FeedCheckError";
+  }
+}
+
 export interface FeedLink {
   url: string;
   title?: string;
@@ -38,8 +55,9 @@ export interface FeedLink {
  * Finds the feeds for a page: the URL itself if it is a feed, else the feeds its <link>
  * elements advertise, else the first common feed path under the page that works. Every result
  * has been fetched and parsed. An empty array means no feed was found. A page that cannot be
- * fetched throws, and so does a candidate that failed for a reason that may pass (timeout,
- * network, 5xx, 429, too large) when nothing else was found, so "no feed" is never a guess.
+ * fetched throws its HttpError. A candidate that failed for a reason that may pass (timeout,
+ * network, 5xx, 429, too large) when nothing else was found throws a FeedCheckError, so
+ * "no feed" is never a guess.
  */
 export async function discoverFeeds(url: string, signal?: AbortSignal): Promise<DiscoveredFeed[]> {
   // The URL may itself be a full-content feed, so it gets the feed size limit.
@@ -54,19 +72,19 @@ export async function discoverFeeds(url: string, signal?: AbortSignal): Promise<
   const limit = pLimit(VERIFY_CONCURRENCY);
   const links = findFeedLinks(page.text, page.url);
   const checks = await Promise.all(links.map((link) => limit(() => verifyFeed(link.url, signal))));
-  const failed: HttpError[] = [];
+  const failed: FeedCheckError[] = [];
   // Two links may redirect to the same feed.
   const seen = new Set<string>();
   const found: DiscoveredFeed[] = [];
   checks.forEach((check, i) => {
-    if (check instanceof HttpError) failed.push(check);
+    if (check instanceof HttpError) failed.push(new FeedCheckError(links[i]!.url, true, check));
     else if (check !== undefined && !seen.has(check)) {
       seen.add(check);
       found.push({ ...links[i]!, url: check });
     }
   });
   if (found.length > 0) {
-    for (const err of failed) log.warn(`could not check an advertised feed: ${err.url}`, err);
+    for (const err of failed) log.warn(`could not check an advertised feed: ${err.cause.url}`, err.cause);
     return found;
   }
   // Probing the common paths now could return a different feed (comments, the whole site).
@@ -78,8 +96,9 @@ export async function discoverFeeds(url: string, signal?: AbortSignal): Promise<
   dir.hash = "";
   if (!dir.pathname.endsWith("/")) dir.pathname += "/";
   for (const path of FALLBACK_PATHS) {
-    const check = await verifyFeed(new URL(path, dir).toString(), signal);
-    if (check instanceof HttpError) failed.push(check);
+    const candidate = new URL(path, dir).toString();
+    const check = await verifyFeed(candidate, signal);
+    if (check instanceof HttpError) failed.push(new FeedCheckError(candidate, false, check));
     else if (check !== undefined) return [{ url: check }];
   }
   if (failed.length > 0) throw failed[0];
