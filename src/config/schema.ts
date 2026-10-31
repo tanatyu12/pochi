@@ -126,14 +126,15 @@ const RssFeedSchema = z.strictObject({
 });
 
 // A bare host name such as prtimes.jp, the form Tavily's domain filters take.
-const domain = z
+export const DomainSchema = z
   .string()
   .trim()
   .toLowerCase()
   .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/, {
     error: "must be a domain name such as example.com",
   });
-const domains = z.array(domain).min(1).max(20).optional();
+export const MAX_DOMAINS = 20;
+const domains = z.array(DomainSchema).min(1).max(MAX_DOMAINS).optional();
 
 const QuerySchema = z.strictObject({
   id: sourceId,
