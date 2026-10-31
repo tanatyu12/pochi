@@ -50,6 +50,23 @@ describe("createClackPrompter", () => {
     expect(clack.cancel).toHaveBeenCalledOnce();
   });
 
+  it("lets a full-width space toggle in a multiselect, as Space types it with a Japanese IME on", async () => {
+    const before = process.stdin.listenerCount("keypress");
+    clack.multiselect.mockImplementation(async () => {
+      const names: (string | undefined)[] = [];
+      const record = (_: string, key: { name?: string } | undefined) => void names.push(key?.name);
+      process.stdin.on("keypress", record);
+      // Typed once the prompt is up, as a real key is.
+      await new Promise((resolve) => setImmediate(resolve));
+      process.stdin.emit("keypress", "\u3000", { sequence: "\u3000" });
+      process.stdin.off("keypress", record);
+      return names;
+    });
+    // The mock answers with the key names it saw.
+    expect(await createClackPrompter().multiselect({ message: "m", options: [] })).toEqual([undefined, "space"]);
+    expect(process.stdin.listenerCount("keypress")).toBe(before);
+  });
+
   it("validates an untouched field as an empty string", async () => {
     clack.text.mockResolvedValue("x");
     const validate = vi.fn(() => undefined);
