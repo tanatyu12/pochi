@@ -43,7 +43,7 @@ export const IdeaSuggestionOutputSchema = z.object({
 export type IdeaSuggestionOutput = z.output<typeof IdeaSuggestionOutputSchema>;
 
 /**
- * JSON Schema for the claude CLI's --json-schema and for the API when zodOutputFormat is not
+ * JSON Schema for the claude CLI's --json-schema, codex's --output-schema and for the API when zodOutputFormat is not
  * usable. It describes the input side, since what the model emits is what we parse. Input mode
  * leaves objects open, so every object is closed here (additionalProperties: false), as
  * structured outputs require; $schema is dropped since neither consumer needs it.
@@ -77,7 +77,7 @@ export function validateReply<T>(value: unknown, schema: z.ZodType<T>, where: st
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     const paths = issuePaths(parsed.error);
-    throw new LlmError("invalid_output", `Claude's reply did not match the schema at ${paths} (${where})`);
+    throw new LlmError("invalid_output", `the reply did not match the schema at ${paths} (${where})`);
   }
   return parsed.data;
 }
@@ -118,8 +118,13 @@ export interface GenerateRequest<T> {
   tier: LlmTier;
 }
 
+/** The command the CLI mode runs. */
+export type CliBackend = "claude" | "codex";
+
 export interface LlmClient {
   readonly mode: "api" | "cli";
+  /** Set in the CLI mode. */
+  readonly backend?: CliBackend;
   generate<T>(req: GenerateRequest<T>, opts?: { signal?: AbortSignal }): Promise<T>;
 }
 
