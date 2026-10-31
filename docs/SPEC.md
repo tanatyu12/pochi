@@ -70,7 +70,7 @@ README.md  SECURITY.md  LICENSE(MIT)  .nvmrc(24)  .gitignore
 
 ## データスキーマ
 
-設定ファイルは zod の strictObject で検証し、未知のキーはエラーにする。Slack Webhook は環境変数 `SLACK_WEBHOOK_URL` からのみ読み、yml には書かない。
+設定ファイルは zod の strictObject で検証し、未知のキーはエラーにする。Slack Webhook は環境変数 `SLACK_WEBHOOK_URL` からのみ読み、yml には書かない。通知先は `notify.channels` で選ぶ（slack と file。同じ type は1件まで、1件以上）。
 
 ### context.yml
 
@@ -87,7 +87,11 @@ llm:
   maxItemsPerCall: 40
   maxItemsPerRun: 150        # 新しい記事と状態 r の記事を合わせた1回の上限
 notify:
-  slack: { postWhenEmpty: false, minImpact: Low }
+  minImpact: Low             # これ未満の記事は通知しない（通知先によらない）
+  postWhenEmpty: false       # 関連記事が0件の日も「No relevant updates」を届ける
+  channels:                  # 既定は [{ type: slack }]。届ける順
+    - { type: slack }        # Webhook は SLACK_WEBHOOK_URL から
+    - { type: file, dir: reports }   # <dir>/<YYYY-MM-DD>.md に Markdown で書く
 state: { ttlDays: 45, maxItemAgeDays: 14 }   # ttlDays > maxItemAgeDays であること
 ```
 
@@ -134,7 +138,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 ```
 
 - キーは記事の `stateKeys(item)`（id と urlKey）。どれか1つでも entries にあれば既知とみなし、l の更新や状態の記録は全キーに対して行う。id だけで引くと、収集時に URL の重複として落とした側や、別の日に別のソースから来た同じページが再通知される
-- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う。初めて見てから maxItemAgeDays を過ぎても r のままなら i にして打ち切る。touch で l が更新され続けて期限切れにならず、Slack に拒否され続ける記事を毎日解析し直してしまうため）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
+- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う。初めて見てから maxItemAgeDays を過ぎても r のままなら i にして打ち切る。touch で l が更新され続けて期限切れにならず、通知先に拒否され続ける記事を毎日解析し直してしまうため）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
 - f は初めて見た日、l は最後にフィード上で見た日
 - 古いエントリは l を基準に ttlDays で削除する。更新の止まったブログの記事はフィードに残り続けるため、通知日を基準にすると期限後に再通知されてしまう
 - キーはソートし、1エントリ1行で書く（毎日のコミットの差分を変わったエントリだけにするため）。一時ファイルに書いてから rename する
@@ -161,7 +165,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 
 ## モジュール仕様
 
-`pochi run` は「設定読込 → 収集 → 既知の記事を除外 → Triage → Analyze → Slack → 状態保存」を一直線に実行する。ソースやバッチが一部失敗しても処理は止めない。
+`pochi run` は「設定読込 → 収集 → 既知の記事を除外 → Triage → Analyze → 通知 → 状態保存」を一直線に実行する。ソースやバッチが一部失敗しても処理は止めない。
 
 ```mermaid
 flowchart LR
@@ -169,8 +173,8 @@ flowchart LR
   collect --> dedupe["既知の記事を除外<br/>状態ファイルと照合"]
   dedupe --> triage["Triage<br/>Haiku で全件を判定"]
   triage -- 関連あり --> analyze["Analyze<br/>Sonnet で関連分のみ"]
-  analyze --> slack["Slack に通知<br/>45件ごとに分割"]
-  slack --> save["状態を保存<br/>届いた分だけ通知済みに"]
+  analyze --> notify["通知<br/>Slack・Markdown ファイル"]
+  notify --> save["状態を保存<br/>全通知先に届いた分だけ通知済みに"]
   save -. 翌日の実行で参照 .-> dedupe
 ```
 
@@ -279,8 +283,12 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 
 ### 通知とコマンド
 
+- **notifiers/types.ts**：通知先の共通の型。`Briefing`（project、date、`Insight[]`、収集件数、取得したソース数、失敗したソース名）。`Insight`（types.ts）は Item と LLM が書いた title / summary / impact / action で、pipeline/filter が返す。`Notifier` は `name`（channel の type）と `deliver(briefing, { signal })` を持ち、`Delivery`（`{ deliveredIds, failures, aborted }`）を返す。deliver は例外を投げず、通知済みにする記事と終了コードは commands/run が決める。通知先を増やすときは Notifier を1つ書き、schema の channels と `createNotifiers` に足す
+- **notifiers/index.ts**：`createNotifiers(context)` が channels の順に Notifier を作る。slack で SLACK_WEBHOOK_URL がなければ（空白だけも未設定）ConfigError（2）
+- **notifiers/file.ts**：`<dir>/<date>.md` に Markdown（`toMarkdown`、notifiers/text.ts）を書く。dir がなければ作る。同じ日の2回目以降は `<date>-2.md`、`-3.md`（99まで）とし、前のレポートを上書きしない（その記事は通知済みなので、消えると読めなくなる）。一時ファイルに書いて fsync してから link で空いている名前に置くので、途中で落ちても半端なファイルが残らない。ハードリンクを使えないファイルシステム（EPERM / ENOTSUP など）では `wx` で直接書く（上書きはしないが、書き込み中に落ちると半端なファイルが残りうる）。書けなければ全 insight を failures にする。insight が0件なら postWhenEmpty のときだけ書く。タイトル・要約・Action・ソース名は1行にまとめ（行頭の `---` や `- ` で区切り線やリストにならないよう）、 `\ ` * _ [ ] < > #` はエスケープし、フィードや LLM の文で見出しやリンクを作らせない
+- **notifiers/text.ts**：`toText`（dry-run の stdout）と `toMarkdown`（file）
 - **notifiers/slack.ts**
-  - 入力は `Briefing`（project、date、`Insight[]`、収集件数、取得したソース数、失敗したソース名）。`Insight`（types.ts）は Item と LLM が書いた title / summary / impact / action で、pipeline/filter が返す
+  - `slackNotifier(webhookUrl, { postWhenEmpty })` が下の2つを Notifier にまとめる
   - `buildSlackMessages` は送るメッセージ（payload と含まれる記事の ID）を組み立てる純関数で、dry-run でも同じものを出力できる。`sendSlack` は送信し、`{ deliveredIds, failures, aborted }` を返す（failures は元のメッセージ番号と届かなかった記事の ID）。中断されても例外を投げず、それまでに届いた分を `aborted: true` で返す。通知済みにする記事と終了コード（4、中断なら130）の判定は commands/run が行う
   - メッセージの構成：header ブロック（`Pochi · <project> · <date>`、150字まで、複数なら ` (1/3)`）、記事ごとの section（2900字まで。1メッセージの section の合計は12,000字まで）、最後に収集件数と失敗したソースを示す context ブロック（全メッセージに付ける。3000字まで）。1メッセージは最大47ブロックで、Slack の上限50に収まる
   - 記事の表示：絵文字（High :red_circle: / Medium :large_orange_circle: / Low :large_blue_circle:）、[影響度]、<url|title>、要約（空なら省略）、*Action:*（空なら省略）、ソース名。title とソース名の空白・改行は1つの空白にまとめる。URL はエスケープ後1000字までで、超えたらクエリとフラグメントを落とし、それでも超えればリンクにせずタイトルを太字で出す。`& < >` を1回の置換でエスケープし（二重にエスケープしない）、リンクのラベルの `|` は `｜`、URL の `|` は `%7C` にする。字数はエスケープ後に測ってエンティティの途中で切らず、要約から切り詰める（Action には少なくとも残りの半分を残す）
@@ -290,38 +298,39 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - ラベルは英語固定、LLM が生成する文は language に従う
 - **commands/run.ts**
   1. 設定を読む（失敗すれば終了コード2。`--verbose` と `--quiet` の併用も2）
-  2. dry-run でなければ SLACK_WEBHOOK_URL を確認する（空白だけは未設定扱い。なければ2）。feeds が空で queries があり、TAVILY_API_KEY がなければ2（取得するソースがない）
+  2. dry-run でなければ `createNotifiers` で通知先を作る（slack で SLACK_WEBHOOK_URL がなければ2。空白だけは未設定扱い）。feeds が空で queries があり、TAVILY_API_KEY がなければ2（取得するソースがない）
   3. LLM を解決する（失敗すれば3）。手順2と3は記事の取得や LLM の課金より前に済ませる
   4. 状態ファイルを読み、期限切れのエントリを削除する。dry-run では `readOnly` で読む（壊れたファイルを退避しない）。`--no-state` なら読まずに空の状態から始め、保存もしない
   5. 記事を収集する（全ソースが失敗すれば5）
   6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が r の記事は除外せず、`pretriaged` として手順7に渡す。ただし r のうち初めて見た日（全キーの f の最小値、`firstSeen`）から maxItemAgeDays を超えたものは渡さず、状態 i にして打ち切る。新規で maxItemAgeDays より古い記事は状態 i にする（日付のない記事は新しいものとして扱う）
-  7. Triage と Analyze を実行する（状態 r の記事は `pretriaged` として渡す）。結果が `aborted` なら Slack には送らず、irrelevant を i、pending と insights を r として記録して保存し、130 で終える
-  8. Slack に送る（filter の結果に error があっても送る）。dry-run のときは stdout に出し、状態は書かない（filter の error があれば出力後に3）
-  9. 状態を保存する。irrelevant は i、pending は r、届いた insights は n、届かなかった insights は r（翌日は Triage を払い直さずに Analyze から送り直す）として記録する。保存に失敗すれば1（送信済みの記事が翌日また届くため、ほかの失敗より優先する）。保存の後、Slack の送信が中断されていれば130、filter の結果に error があれば3、送信に失敗していれば4。3 を 4 より優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
+  7. Triage と Analyze を実行する（状態 r の記事は `pretriaged` として渡す）。結果が `aborted` なら通知せず、irrelevant を i、pending と insights を r として記録して保存し、130 で終える
+  8. channels の順に各通知先へ届ける（filter の結果に error があっても届ける）。中断されたら残りの通知先には届けない（各通知先の前に signal を確かめる。ファイルの書き込みは中断できないため）。dry-run のときは stdout に出し、状態は書かない（filter の error があれば出力後に3）
+  9. 状態を保存する。irrelevant は i、pending は r、全通知先に届いた insights は n、どれかに届かなかった insights は r（翌日は Triage を払い直さずに Analyze から送り直す。届いた側には重複して届く）として記録する。保存に失敗すれば1（送信済みの記事が翌日また届くため、ほかの失敗より優先する）。保存の後、通知が中断されていれば130、filter の結果に error があれば3、どれかの通知先で失敗していれば4（`delivery failed: slack (2 updates not delivered)`）。3 を 4 より優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
   - 収集中や LLM の解決中に中断されたら（signal の reason が投げられる）130 にする
   - フラグ：`--dry-run`、`--state <path>`、`--no-state`、`--json`、`--config-dir <dir>`（既定 config）、`--verbose`、`--quiet`
-  - stdout：dry-run では人が読むテキスト（見出し、insight ごとに `[影響度] title`・URL・要約・Action・ソース名、最後に収集件数と失敗したソース）。`--json` では1つの JSON（date、dryRun、collected、attempted、failedSources、stats、insights、dry-run なら Slack に送るはずだった `messages`、送信したなら `delivered`、filter の error があれば kind と message）。ログは常に stderr
+  - stdout：dry-run では人が読むテキスト（見出し、insight ごとに `[影響度] title`・URL・要約・Action・ソース名、最後に収集件数と失敗したソース）。`--json` では1つの JSON（date、dryRun、collected、attempted、failedSources、stats、insights、dry-run で slack が通知先にあれば Slack に送るはずだった `messages`、届けたなら通知先ごとの `delivered`（`{ slack: [...], file: [...] }`）、filter の error があれば kind と message）。ログは常に stderr
   - テストのために `runCommand(opts, deps)` の deps で now・signal・stdout・resolveLlm・待ち時間を差し替えられる
   - cli.ts は SIGINT / SIGTERM で AbortController を中断する（判定済みの分を保存してから130）。2回目の SIGINT ではすぐに130で終える。SIGTERM は何度来ても中断を求めるだけで、すぐには終えない（Actions のキャンセルは SIGINT の後に SIGTERM を送るので、保存を打ち切らないため。待てなければ SIGKILL が来る）。エラーの表示も `redact()` に通す
-- **commands/doctor.ts**：設定の読込元と妥当性、LLMモードとモデル、環境変数の有無（値は表示しない）、状態ファイルの件数を表示する。`--fetch` を付けると各ソースの最新タイトルも表示する。LLM の生成呼び出しと Slack への送信はしない（課金も通知もしない）
+- **commands/doctor.ts**：設定の読込元と妥当性、LLMモードとモデル、環境変数の有無（値は表示しない）、状態ファイルの件数を表示する。`--fetch` を付けると各ソースの最新タイトルも表示する。LLM の生成呼び出しと通知はしない（課金も通知もしない）
   - 出力は stdout に「区分ごとの見出し＋ `ok / warn / fail / skip / -`、ラベル、詳細」の行で、全行を `redact()` に通す。ラベルと詳細は制御文字（C0・DEL・C1）を除いて1行にし、200字までに切る（フィードのタイトルに含まれた ANSI / OSC シーケンスを端末に流さないため）。ログは warn 以上だけを stderr に出し（`--verbose` で debug まで）、終わったらログの設定を元に戻す
   - Config：`loadConfig` の読込元（ファイルパスか環境変数名）、project 名、feeds / queries の件数。失敗なら ConfigError を1件の fail として、その各行を続けて表示し、LLM と `--fetch` は skip。run の手順2と同じく、feeds が空で queries があり TAVILY_API_KEY がなければ fail、feeds があれば warn
   - LLM：`resolveLlm` の結果（モード、モデル名、CLIモードなら `claude --version` の1行目）。APIモードではキーの有効性までは確かめない。状態ファイルはこの確認と並行して読み、表示は区分の順のまま
-  - 環境変数：ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、TAVILY_API_KEY、SLACK_WEBHOOK_URL、GITHUB_TOKEN、POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、POCHI_STATE_PATH を set / not set / blank だけで示す。SLACK_WEBHOOK_URL は未設定か `https://hooks.slack.com/` で始まらなければ warn
+  - 環境変数：ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、TAVILY_API_KEY、SLACK_WEBHOOK_URL、GITHUB_TOKEN、POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、POCHI_STATE_PATH を set / not set / blank だけで示す
+  - Notify：channels ごとに1行。slack は SLACK_WEBHOOK_URL が未設定か `https://hooks.slack.com/` で始まらなければ warn。file は dir が書けるか（なければ、作れる祖先があるか）を確かめ、書けなければ fail（4）
   - 状態ファイル：パスは run と同じ優先順位（`--state` > `POCHI_STATE_PATH` > 既定）。`inspectState`（state/store）で読むだけで、壊れていても退避しない。エントリ数、n / i / r の件数、ttlDays を過ぎた件数を示す。ファイルがなければ ok、壊れていれば fail、不正なエントリがあれば warn
   - `--fetch`：`sourceConfigs`（sources/index）の順に `fetchEach` で同時に4件まで取得し、最新1件のタイトルか「no items」、失敗ならエラーのメッセージを示す。TAVILY_API_KEY がなければ queries は skip
-  - 終了コード：全項目を表示してから、最初の fail の区分で終える（設定・取得するソースがない 2、LLM 3、状態ファイル 1、`--fetch` で全ソースが失敗 5、中断 130）。一部のソースの失敗と warn は 0。最後の行は問題の件数に加え、一部のソースの失敗を「non-fatal failure」、warn を「warning」として別々に数える。中断はどの確認の最中でも 130 とし、最後の行は出さない
+  - 終了コード：全項目を表示してから、最初の fail の区分で終える（設定・取得するソースがない 2、LLM 3、状態ファイル 1、レポートの dir に書けない 4、`--fetch` で全ソースが失敗 5、中断 130）。一部のソースの失敗と warn は 0。最後の行は問題の件数に加え、一部のソースの失敗を「non-fatal failure」、warn を「warning」として別々に数える。中断はどの確認の最中でも 130 とし、最後の行は出さない
 - **commands/init.ts**（端末での対話が必要。Ctrl-C で終了コード130とし、何も書かない）
   - stdin と stdout のどちらかが端末でなければ、質問を出す前に、端末が必要なことと config/*.example.yml を複製するよう案内するメッセージを出して終了コード2にする（パイプや CI で最初の質問のまま止まらないようにする）
   - 対話は `util/prompter.ts` の `Prompter`（text / select / multiselect / confirm、表示系と spinner の `spin`）を通し、テストでは回答を順に返す偽物（`tests/helpers/scriptedPrompter.ts`）に差し替える。clack のキャンセルはこの層で `PromptCancelled`（130）にする
   - 既存の context.yml か sources.yml があれば、質問の前に上書きを確認する（既定は No。断れば130）。書き出しは全部の回答がそろってからなので、途中のキャンセルでは既存のファイルも変わらない
-  1. プロジェクト名、説明、課題（複数）、除外ルール、言語を対話で聞く。課題と除外ルールは1件ずつ聞き、空の入力で終える（課題は1件以上、上限はスキーマと同じ20件と30件）。言語は English / Japanese / その他（自由入力）
+  1. プロジェクト名、説明、課題（複数）、除外ルール、言語を対話で聞く。課題と除外ルールは1件ずつ聞き、空の入力で終える（課題は1件以上、上限はスキーマと同じ20件と30件）。言語は English / Japanese / その他（自由入力）。続けて通知先（Slack / Markdown ファイル）を multiselect で聞き（初期は Slack。0件なら warn を出して聞き直す）、`notify.channels` に書く
   - 手順1の後で `resolveLlm` を呼ぶ。使えなければ warn を1回出し、LLM なしで続ける。ソースはメニュー（技術名か GitHub リポジトリ / ブログかフィードの URL / Done）から1件ずつ足し、手順4と5に進む。Trial Fetch で1件も残らなければメニューに戻る（sources.yml には1件以上が必要なため）。入力欄を空のまま確定するとメニューに戻る。同じソースは skip する（repo は大文字小文字を区別せず、フィード URL は `normalizeUrl` した形、クエリは小文字にして比べる）。id はリポジトリ名・ホスト名・クエリから作り、重複すれば `-2` などを付ける（`sourceIdFrom`）
   2. 技術名の入力（アプローチB）：owner/repo の形なら LLM を通さずに `verifyRepo` だけで確かめる。not_found と empty なら戻り、確認できなければ「それでも追加するか」を聞く（既定は No）。movedTo なら新しい名前にし、tags しかなければ `feed: tags`、プレリリースしかなければ `includePrereleases: true` にする。それ以外の入力は LLM に候補を出させ、形の正しい候補の重複を除いて最大3件（`MAX_REPO_CANDIDATES`）に切り、`verifyRepo` で found になったものだけを選択肢にする（確認できなかった候補は件数だけを warn で出す）。LLM がなければ owner/repo の形しか受け付けない。auth と unavailable の後は、この実行では LLM を使わない
   3. ブログ URL の入力（アプローチC）：discoverFeeds でフィードを探す。URL 自体がフィードならそれを使う。複数見つかれば選ばせ（title は制御文字を除いて表示する）、開けないページやフィードのないページは warn を出して戻る
   4. Tavily：TAVILY_API_KEY があるときだけ。LLM があれば提案を1回だけ求め、空白を詰めて重複を除き、最大5件（`MAX_QUERY_SUGGESTIONS`）を multiselect で選ばせる。続けて手入力でも足せる（topic は news）。キーがなければ note を出して飛ばす
   5. Trial Fetch：新しく足したソースを `fetchEach` でまとめて取得し、各ソースの最新記事（title・日付・URL。制御文字を除いて1行にする）、「No items yet.」、または失敗を示して「毎朝ウォッチしますか？」と確認する（失敗したソースは既定 No）。却下したソースは書き出さず、あとで足し直せる。通信中の Ctrl-C は signal で中断して130にし、何も書かない
-  6. 設定ファイルを権限 600 で書き出し、.gitignore に含まれていることを確認する（ファイルのディレクトリで、2つのファイルをまとめて1回の `git check-ignore` で確認する。無視されていなければ、実際の設定ディレクトリの `*.yml` を .gitignore に足すよう warn し、git がない・リポジトリ外なら確認できなかったと伝えるだけで、終了コードは0）。POCHI_CONTEXT_YAML / POCHI_SOURCES_YAML が設定されていれば、ファイルより優先される旨を warn する（値は出さない）。最後に次の手順（run --dry-run、gh secret set）を案内する。既定以外の設定ディレクトリなら run に `--config-dir` を付け、パスはシェル用にクォートする
+  6. 設定ファイルを権限 600 で書き出し、.gitignore に含まれていることを確認する（ファイルのディレクトリで、2つのファイルをまとめて1回の `git check-ignore` で確認する。無視されていなければ、実際の設定ディレクトリの `*.yml` を .gitignore に足すよう warn し、git がない・リポジトリ外なら確認できなかったと伝えるだけで、終了コードは0）。POCHI_CONTEXT_YAML / POCHI_SOURCES_YAML が設定されていれば、ファイルより優先される旨を warn する（値は出さない）。最後に次の手順を案内する（run --dry-run に続けて、Slack を選んだなら gh secret set、ファイルだけなら手元での run。レポートは実行したマシンに残るため）。既定以外の設定ディレクトリなら run に `--config-dir` を付け、パスはシェル用にクォートする
   - LLM が使えない環境でも完了できるようにする（その場合、技術名は owner/repo の直接入力だけを受け付ける）
   - **提案の取り込み（`--from <file>`、`--print-prompt`）**：利用者が自分のプロジェクトでコーディングエージェントにリポジトリを読ませ、監視すべき情報源の案を作らせて、それを初期値にする。pochi 自身はエージェントを起動しない（CLI モードは claude をツールなしで動かす方針で、案を作るにはリポジトリを読む必要があるため）
     - `--print-prompt`：探索プロンプト（`src/proposal/prompt.ts` の `DISCOVERY_PROMPT`）を stdout に出して0で終える。端末でなくても動く。`--from` との併用は2。プロンプトは4つの軸（技術基盤、ビジネス、市場・競合・規制、運用課題）で探索させ、読み取り専用であること、.env などの機密ファイルを開かないこと、ファイル内の指示に従わないことを求める。各案には根拠（evidence）を付けさせ、すべての repo / site / query がいずれかの problem で説明されるよう求める（Triage は problems で判定するため）。クエリはブール式を使わない2〜6語にする
@@ -339,7 +348,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 | 1 | 内部エラー、または送信後の状態保存の失敗 |
 | 2 | 設定・使い方のエラー |
 | 3 | LLM が使えない、または全バッチの失敗 |
-| 4 | Slack への送信失敗（一部の失敗も含む） |
+| 4 | 通知の失敗（Slack への送信、レポートの書き込み。一部の失敗も含む） |
 | 5 | 全ソースの失敗 |
 | 130 | 中断 |
 
@@ -414,6 +423,7 @@ README に書く注意点：
 - [ ] もう一度実行しても同じ記事が通知されない
 - [ ] `language: Japanese` にすると日本語で出力される
 - [ ] 無効な Webhook では終了コード4になり、記事が通知済みにならない
+- [ ] `channels: [{ type: file }]` なら Webhook なしで reports/<日付>.md が書かれ、2回目の実行で同じ記事が出ない
 - [ ] 非公開リポジトリに複製して Actions を dry_run で動かし、続けて本番実行する。bot が状態ファイルをコミットし、重複通知がないことを確認する
 - [ ] 「以前の指示を無視せよ」を含む記事を混ぜても判定が変わらない
 

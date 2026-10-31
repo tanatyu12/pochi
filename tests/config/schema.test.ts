@@ -22,9 +22,27 @@ describe("ContextSchema", () => {
       exclude: [],
       language: "English",
       llm: { provider: "auto", maxItemsPerCall: 40, maxItemsPerRun: 150 },
-      notify: { slack: { postWhenEmpty: false, minImpact: "Low" } },
+      notify: { minImpact: "Low", postWhenEmpty: false, channels: [{ type: "slack" }] },
       state: { ttlDays: 45, maxItemAgeDays: 14 },
     });
+  });
+
+  it("fills the file channel's dir and keeps the channels in order", () => {
+    const parsed = ContextSchema.parse({ ...minimalContext, notify: { channels: [{ type: "file" }, { type: "slack" }] } });
+    expect(parsed.notify.channels).toEqual([{ type: "file", dir: "reports" }, { type: "slack" }]);
+  });
+
+  it("rejects no channels, a repeated channel type and an unknown one", () => {
+    const errors = (channels: unknown[]) => contextErrors({ ...minimalContext, notify: { channels } });
+    expect(errors([])).toEqual(["context.yml: notify.channels: must have at least 1 item"]);
+    expect(errors([{ type: "file" }, { type: "file", dir: "out" }])).toEqual([
+      "context.yml: notify.channels[1].type: duplicate type",
+    ]);
+    expect(errors([{ type: "email" }])).toEqual(["context.yml: notify.channels[0].type: invalid option"]);
+    // The webhook is read from the environment only, so it has no key here.
+    expect(errors([{ type: "slack", webhookUrl: "https://hooks.slack.com/x" }])).toEqual([
+      "context.yml: notify.channels[0]: unknown key",
+    ]);
   });
 
   it.each([null, undefined, "claude-haiku-5-5"])("accepts triageModel %s", (triageModel) => {

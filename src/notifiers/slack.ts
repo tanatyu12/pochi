@@ -4,6 +4,7 @@ import { HttpError, postJson } from "../util/http.js";
 import { log } from "../util/log.js";
 import { collapseWhitespace, plural, truncate, truncateUnits } from "../util/text.js";
 import { sleep } from "../util/time.js";
+import type { Briefing, Delivery, DeliveryFailure, Notifier } from "./types.js";
 
 export const MAX_ITEMS_PER_MESSAGE = 45;
 /** Slack allows 3000 per section; the margin covers counting differences. */
@@ -35,21 +36,6 @@ const EMOJI: Record<Impact, string> = {
 
 const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
 
-export interface Briefing {
-  /** context.project.name */
-  project: string;
-  /** "2026-10-26" */
-  date: string;
-  /** In the order filter left them (impact, then date). */
-  insights: Insight[];
-  /** Items collected. */
-  collected: number;
-  /** Sources fetched. */
-  attempted: number;
-  /** Names of the sources that failed. */
-  failedSources: string[];
-}
-
 export interface SlackMessage {
   payload: { text: string; blocks: unknown[] };
   /** Item.id of every insight in this message. */
@@ -61,22 +47,26 @@ export interface SlackMessage {
   fallback?: () => SlackMessage[];
 }
 
-export interface SlackFailure {
+export interface SlackFailure extends DeliveryFailure {
   /** Index of the message passed to sendSlack. */
   index: number;
-  /** Item.id of the insights that were not delivered. */
-  itemIds: string[];
-  /** For a message not sent because an earlier one failed, the error that stopped sending. */
-  error: unknown;
 }
 
-export interface SlackResult {
-  /** Item.id of the insights in messages that got a 2xx. */
-  deliveredIds: string[];
-  /** Insights not delivered, including those never sent. */
+/** deliveredIds are the insights in messages that got a 2xx. */
+export interface SlackResult extends Delivery {
   failures: SlackFailure[];
-  /** The signal aborted; what was delivered before that is still in deliveredIds. */
-  aborted: boolean;
+}
+
+/** Builds the messages when it delivers, so a dry run can print the same ones with buildSlackMessages. */
+export function slackNotifier(
+  webhookUrl: string,
+  opts: { postWhenEmpty: boolean; intervalMs?: number },
+): Notifier {
+  return {
+    name: "slack",
+    deliver: (b, { signal }) =>
+      sendSlack(webhookUrl, buildSlackMessages(b, opts), { signal, intervalMs: opts.intervalMs }),
+  };
 }
 
 /** Slack's control characters, in one pass so an escaped &lt; is not escaped again. */

@@ -15,7 +15,7 @@ problems:
 exclude:
   - Funding news and company acquisitions
 
-# Language for the summaries the LLM writes. Slack labels stay in English.
+# Language for the summaries the LLM writes. Labels stay in English.
 language: English
 
 llm:
@@ -26,9 +26,12 @@ llm:
   maxItemsPerRun: 150
 
 notify:
-  slack:
-    postWhenEmpty: false
-    minImpact: Low      # High | Medium | Low
+  minImpact: Low        # High | Medium | Low
+  postWhenEmpty: false  # deliver a "No relevant updates" note on quiet days
+  channels:             # where the briefing goes, in this order
+    - type: slack       # the webhook is read from SLACK_WEBHOOK_URL only
+    # - type: file      # writes <dir>/<YYYY-MM-DD>.md
+    #   dir: reports
 
 state:
   ttlDays: 45           # must be greater than maxItemAgeDays

@@ -32,7 +32,7 @@ const API = "https://api.github.com/repos";
 const SIMON = "https://simonwillison.net/atom/everything/";
 const TAVILY = "https://api.tavily.com/search";
 
-// name, description, problems (ended by ""), exclude (ended by ""), language.
+// name, description, problems (ended by ""), exclude (ended by ""), language, channels.
 const CONTEXT_ANSWERS: Answer[] = [
   "my-app",
   "A SaaS app: Next.js\nand Postgres",
@@ -42,6 +42,7 @@ const CONTEXT_ANSWERS: Answer[] = [
   "Funding news",
   "",
   "Japanese",
+  ["slack"],
 ];
 // Two sources, then yes to watching each after the trial fetch.
 const SOURCE_ANSWERS: Answer[] = ["repo", "vercel/next.js", "site", SIMON, "done", true, true];
@@ -270,11 +271,23 @@ describe("runInit", () => {
   });
 
   it("asks for another language when Other is chosen and leaves exclude out when empty", async () => {
-    const { deps: d } = deps(["app", "", "Problem", "", "", "other", "German", ...SOURCE_ANSWERS]);
+    const { deps: d } = deps(["app", "", "Problem", "", "", "other", "German", ["slack"], ...SOURCE_ANSWERS]);
     await runInit({ configDir: dir }, d);
     const text = await readFile(join(dir, "context.yml"), "utf8");
     expect(text).not.toContain("exclude");
     expect((await loadConfig({ configDir: dir, env: {} })).context.language).toBe("German");
+  });
+
+  it("asks again until a channel is picked, and leaves the Actions steps out for files only", async () => {
+    const { prompter, deps: d } = deps(["app", "", "Problem", "", "", "English", [], ["file"], ...SOURCE_ANSWERS]);
+    await runInit({ configDir: dir }, d);
+    expect(prompter.shown).toContain("warn: Pick at least one.");
+    expect((await loadConfig({ configDir: dir, env: {} })).context.notify.channels).toEqual([
+      { type: "file", dir: "reports" },
+    ]);
+    const steps = prompter.shown.find((s) => s.startsWith("note: Next steps: "))!;
+    expect(steps).toContain(`node dist/pochi.mjs run --config-dir`);
+    expect(steps).not.toContain("gh secret set");
   });
 
   it("requires a project name and at least one problem", async () => {
@@ -288,7 +301,7 @@ describe("runInit", () => {
 
   it("stops asking for problems at 20", async () => {
     const problems = Array.from({ length: 20 }, (_, i) => `Problem ${i + 1}`);
-    const { prompter, deps: d } = deps(["app", "", ...problems, "", "English", ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps(["app", "", ...problems, "", "English", ["slack"], ...SOURCE_ANSWERS]);
     await runInit({ configDir: dir }, d);
     expect(prompter.asked.filter((m) => m.startsWith("What do you want to hear about?"))).toHaveLength(20);
     expect((await loadConfig({ configDir: dir, env: {} })).context.problems).toEqual(problems);
@@ -867,7 +880,7 @@ describe("runInit --from", () => {
     sites: [{ url: SIMON, evidence: "README" }],
     queries: [{ query: "pet AI illustration app", intent: "competitor", topic: "general", evidence: "README" }],
   };
-  // name, description, problems picked, none typed, exclude picked, none typed, language.
+  // name, description, problems picked, none typed, exclude picked, none typed, language, channels.
   const PROPOSAL_CONTEXT: Answer[] = [
     "pecolab",
     "Pet photos to illustrations",
@@ -876,6 +889,7 @@ describe("runInit --from", () => {
     [],
     "",
     "Japanese",
+    ["slack"],
   ];
   const PROBLEMS = "What do you want to hear about? (proposed; space to toggle)";
   const REPOS = "Proposed repositories to watch (space to toggle)";
@@ -961,7 +975,7 @@ describe("runInit --from", () => {
   it("leaves a language it does not list to Other, filled in", async () => {
     const from = await writeProposal({ pochi: "proposal/v1", language: "German", problems: [{ text: "News" }] });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps(["app", "", ["News"], "", "", "other", "German", ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps(["app", "", ["News"], "", "", "other", "German", ["slack"], ...SOURCE_ANSWERS]);
     await runInit({ configDir, from }, d);
     expect(prompter.initial["Language for the summaries"]).toBe("other");
     expect(prompter.initial.Language).toBe("German");
@@ -980,7 +994,7 @@ describe("runInit --from", () => {
 
   it("warns about the entries it left out", async () => {
     const from = await writeProposal({ pochi: "proposal/v1", problems: [{ text: "News" }], repos: [{ repo: "nope" }, "x"] });
-    const { prompter, deps: d } = deps(["app", "", ["News"], "", "", "English", ...SOURCE_ANSWERS]);
+    const { prompter, deps: d } = deps(["app", "", ["News"], "", "", "English", ["slack"], ...SOURCE_ANSWERS]);
     await runInit({ configDir: join(dir, "config"), from }, d);
     expect(prompter.shown).toContain("warn: Left out 2 proposed entries: malformed or past the limits.");
   });
