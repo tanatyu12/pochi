@@ -16,6 +16,7 @@ async function run<T>(flow: (p: ReturnType<typeof replayingPrompter>) => Promise
 }
 
 const flow = async (p: ReturnType<typeof replayingPrompter>) => {
+  p.intro("title");
   p.note("start");
   const name = await p.text({ message: "Name" });
   const color = await p.select({ message: "Color", options: [{ value: "red", label: "Red" }, { value: "blue", label: "Blue" }] });
@@ -34,6 +35,7 @@ describe("replayingPrompter", () => {
     expect(inner.initial).toMatchObject({ Name: "app", Color: "blue", Tags: ["a"] });
     // A replay shows nothing again; the note is shown on the runs that start at the first question.
     expect(inner.shown.filter((s) => s === "note: start")).toHaveLength(2);
+    expect(inner.shown.filter((s) => s === "intro: title")).toHaveLength(1);
   });
 
   it("asks the first question again when going back from it", async () => {
