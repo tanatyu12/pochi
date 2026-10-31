@@ -226,6 +226,13 @@ describe("request builders", () => {
     expect(querySuggestionRequest(context).system).toContain(`up to ${MAX_QUERY_SUGGESTIONS} short queries`);
   });
 
+  it("suggest queries in the market's language and ideas from adjacent industries", () => {
+    expect(querySuggestionRequest(context).system).toContain("in the language of the market the project serves");
+    const ideas = ideaSuggestionRequest(context).system;
+    expect(ideas).toContain("  - industry: competitors' new products, and companies in adjacent businesses");
+    expect(ideas).not.toContain("software team");
+  });
+
   it("refuse an empty batch", () => {
     expect(() => triageRequest(context, [])).toThrow(RangeError);
     expect(() => analyzeRequest(context, [])).toThrow(RangeError);

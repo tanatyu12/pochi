@@ -48,6 +48,8 @@ export async function fetchTavilyItems(
     include_published_date: true,
     // Also drops results without a detectable date, which the window alone keeps.
     ...(query.requireDate && { filter_by_published_date: true }),
+    ...(query.includeDomains && { include_domains: query.includeDomains }),
+    ...(query.excludeDomains && { exclude_domains: query.excludeDomains }),
     max_results: query.maxResults,
     include_answer: false,
     // The extracted snippet in `content` is enough; raw pages carry navigation and can be large.

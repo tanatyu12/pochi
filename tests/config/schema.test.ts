@@ -171,6 +171,22 @@ describe("SourcesSchema", () => {
     ]);
   });
 
+  it("takes domain names for a query's domain filters, lowercased", () => {
+    const parsed = SourcesSchema.parse({
+      version: 1,
+      queries: [{ id: "q", query: "x", includeDomains: [" PRTimes.jp "], excludeDomains: ["news.example.co.uk"] }],
+    });
+    expect(parsed.queries[0]).toMatchObject({ includeDomains: ["prtimes.jp"], excludeDomains: ["news.example.co.uk"] });
+    for (const bad of ["https://prtimes.jp", "prtimes.jp/main", "localhost", "-a.com"]) {
+      expect(sourcesErrors({ version: 1, queries: [{ id: "q", query: "x", includeDomains: [bad] }] })).toEqual([
+        "sources.yml: queries[0].includeDomains[0]: must be a domain name such as example.com",
+      ]);
+    }
+    expect(sourcesErrors({ version: 1, queries: [{ id: "q", query: "x", includeDomains: [] }] })).toEqual([
+      "sources.yml: queries[0].includeDomains: must have at least 1 item",
+    ]);
+  });
+
   it("bounds maxResults", () => {
     expect(sourcesErrors({ version: 1, queries: [{ id: "q", query: "x", maxResults: 21 }] })).toEqual([
       "sources.yml: queries[0].maxResults: must be <= 20",

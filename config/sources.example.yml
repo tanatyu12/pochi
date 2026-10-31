@@ -27,3 +27,8 @@ queries:
     topic: news               # news | general
     maxResults: 10            # 1-20; a basic search costs one credit whatever the count
     requireDate: false        # true drops results Tavily cannot date
+  # Searching one site, for news only press releases carry:
+  # - id: partner-launches
+  #   query: ペット保険 オリジナルグッズ
+  #   topic: general
+  #   includeDomains: [prtimes.jp]   # excludeDomains works the same way

@@ -83,6 +83,17 @@ describe("fetchTavilyItems", () => {
     expect(body).not.toHaveProperty("time_range");
   });
 
+  it("limits the search to the configured domains", async () => {
+    const mock = mockFetch({ [SEARCH]: reply.json({ results: [] }) });
+    await fetchTavilyItems(query, defaults);
+    await fetchTavilyItems({ ...query, includeDomains: ["prtimes.jp"], excludeDomains: ["example.com"] }, defaults);
+    expect(JSON.parse(mock.calls[0]!.body!)).not.toHaveProperty("include_domains");
+    expect(JSON.parse(mock.calls[1]!.body!)).toMatchObject({
+      include_domains: ["prtimes.jp"],
+      exclude_domains: ["example.com"],
+    });
+  });
+
   it("asks Tavily to drop undated results only with requireDate", async () => {
     const mock = mockFetch({ [SEARCH]: reply.json({ results: [] }) });
     await fetchTavilyItems(query, defaults);

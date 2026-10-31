@@ -28,7 +28,7 @@ export type RepoInferenceOutput = z.output<typeof RepoInferenceOutputSchema>;
 export const QuerySuggestionOutputSchema = z.object({ queries: z.array(z.string()) });
 export type QuerySuggestionOutput = z.output<typeof QuerySuggestionOutputSchema>;
 
-export const PerspectiveSchema = z.enum(["tech", "design", "marketing", "business", "ops"]);
+export const PerspectiveSchema = z.enum(["tech", "design", "marketing", "industry", "business", "ops"]);
 export const IdeaSuggestionOutputSchema = z.object({
   ideas: z.array(
     z.object({
