@@ -142,6 +142,24 @@ describe("extractJson", () => {
     expect(extractJson(text)).toEqual({ final: true });
   });
 
+  it("prefers the last block tagged as a proposal over an example after it", () => {
+    const text = [
+      "```json",
+      '{"pochi": "proposal/v1", "n": 1}',
+      "```",
+      "A sources.yml would then look like:",
+      "```json",
+      '{"feeds": []}',
+      "```",
+    ].join("\n");
+    expect(extractJson(text)).toEqual({ pochi: "proposal/v1", n: 1 });
+  });
+
+  it("falls back to the fenced blocks when text starting with { is not JSON as a whole", () => {
+    expect(extractJson('{"pochi": "proposal/v1"}\n\nLet me know if you want more.')).toBeUndefined();
+    expect(extractJson('{inline} first, then:\n```json\n{"pochi": "proposal/v1"}\n```')).toEqual({ pochi: "proposal/v1" });
+  });
+
   it("returns undefined for broken or missing JSON", () => {
     expect(extractJson('{"a": ')).toBeUndefined();
     expect(extractJson("no fences here")).toBeUndefined();
@@ -173,5 +191,9 @@ describe("readProposal", () => {
     const big = join(dir, "big.json");
     await writeFile(big, JSON.stringify({ pochi: "proposal/v1", pad: "x".repeat(256 * 1024) }));
     await expect(readProposal(big)).rejects.toMatchObject({ message: `the proposal ${big} is larger than 256 KB` });
+  });
+
+  it("refuses what is not a regular file before reading it", async () => {
+    await expect(readProposal(dir)).rejects.toMatchObject({ message: `cannot read the proposal ${dir}` });
   });
 });

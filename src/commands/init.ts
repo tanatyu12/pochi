@@ -40,6 +40,8 @@ const MAX_EXCLUDE = 30;
 const MAX_TYPED_QUERIES = 10;
 // Each check is one or two GitHub API calls; a proposal can name 15 repositories at once.
 const GITHUB_CONCURRENCY = 4;
+// Each looks at one page and the feeds it leads to; a proposal can name 8 sites.
+const SITE_CONCURRENCY = 4;
 // Titles, notes and errors come from feeds, the model and the network; one line each is enough.
 const SHOWN_MAX_CHARS = 120;
 const HINT_MAX_CHARS = 60;
@@ -134,10 +136,9 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
     let proposed: FeedInput[] = [];
     if (proposal) {
       // Offered in place of Claude's suggestions; with none proposed, Claude is still asked.
-      const seen = new Set<string>();
-      const suggestions = proposal.queries
-        .map((q) => ({ query: cleanQuery(q.query), topic: q.topic, hint: q.evidence || undefined }))
-        .filter((q) => q.query !== "" && once(seen, q.query.toLowerCase()));
+      const suggestions = cleanSuggestions(
+        proposal.queries.map((q) => ({ query: q.query, topic: q.topic, hint: q.evidence || undefined })),
+      );
       if (suggestions.length > 0) session.suggestions = suggestions;
       proposed = await addProposedFeeds(session, proposal);
     }
@@ -249,7 +250,7 @@ async function askListWithProposals(
   opts: { message: string; placeholder: string; min: number; max: number },
 ): Promise<string[]> {
   const seen = new Set<string>();
-  const unique = proposed.filter((e) => once(seen, e.text)).slice(0, opts.max);
+  const unique = proposed.filter((e) => once(seen, e.text.toLowerCase())).slice(0, opts.max);
   const picked =
     unique.length === 0
       ? []
@@ -263,23 +264,34 @@ async function askListWithProposals(
           initialValues: unique.map((e) => e.text),
         });
   if (picked.length >= opts.max) return picked;
-  const typed = await askList(p, { ...opts, min: Math.max(0, opts.min - picked.length), max: opts.max - picked.length });
+  const typed = await askList(p, {
+    ...opts,
+    min: Math.max(0, opts.min - picked.length),
+    max: opts.max - picked.length,
+    taken: picked,
+  });
   return [...picked, ...typed];
 }
 
-// One text prompt per entry; an empty answer ends the list once min entries are in.
+// One text prompt per entry; an empty answer ends the list once min entries are in. An entry
+// already in the list, or in taken, is refused whatever its case.
 async function askList(
   p: Prompter,
-  opts: { message: string; placeholder: string; min: number; max: number },
+  opts: { message: string; placeholder: string; min: number; max: number; taken?: readonly string[] },
 ): Promise<string[]> {
   const items: string[] = [];
+  const seen = new Set((opts.taken ?? []).map((t) => t.toLowerCase()));
   while (items.length < opts.max) {
     const mandatory = items.length < opts.min;
     const answer = await p.text({
       message: `${opts.message} (${items.length + 1}/${opts.max}${mandatory ? "" : ", empty to finish"})`,
       placeholder: opts.placeholder,
-      validate: mandatory ? required : undefined,
+      validate: (v) => {
+        if (mandatory && required(v)) return required(v);
+        return seen.has(v.trim().toLowerCase()) ? "Already in the list" : undefined;
+      },
     });
+    seen.add(answer.trim().toLowerCase());
     if (answer.trim() === "") break;
     items.push(answer.trim());
   }
@@ -454,14 +466,20 @@ async function checkTypedRepo(s: SourceSession, repo: string): Promise<FeedInput
     if (!(await p.confirm({ message: `Add ${repo} anyway?`, initialValue: false }))) return undefined;
     return repoFeed(s, repo);
   }
+  return checkedRepoFeed(s, repo, check, "");
+}
+
+/** The feed for a repository GitHub answered about, or undefined (with a warning) when there is none to watch. */
+function checkedRepoFeed(s: SourceSession, repo: string, check: RepoCheck, suffix: string): FeedInput | undefined {
+  const { p } = s;
   if (check.status === "not_found") {
-    p.warn(`${repo} was not found on GitHub.`);
+    p.warn(`${repo} was not found on GitHub${suffix}.`);
     return undefined;
   }
   const current = check.movedTo ?? repo;
   if (check.movedTo) p.note(`${repo} moved to ${current}; watching that instead.`);
   if (check.status === "empty") {
-    p.warn(`${current} has no releases or tags to watch.`);
+    p.warn(`${current} has no releases or tags to watch${suffix}.`);
     return undefined;
   }
   return repoFeed(s, current, check);
@@ -572,32 +590,47 @@ async function resolveSite(s: SourceSession, url: string): Promise<FeedInput | u
     p.warn("Already added; skipped.");
     return undefined;
   }
+  const found = await settle(p.spin(`Looking for feeds on ${url}`, () => discoverFeeds(url, signal), signal));
+  throwIfCancelled(signal);
+  return pickSiteFeed(s, url, found, true);
+}
 
-  let feeds: DiscoveredFeed[];
-  try {
-    feeds = await p.spin(`Looking for feeds on ${url}`, () => discoverFeeds(url, signal), signal);
-  } catch (err) {
-    throwIfCancelled(signal);
+/**
+ * Turns what discoverFeeds settled with into a feed, asking which one when the page has several.
+ * A feed that could not be checked is offered anyway only when the user typed the URL: a
+ * proposed one is left out, since nobody vouches for it.
+ */
+async function pickSiteFeed(
+  s: SourceSession,
+  url: string,
+  found: PromiseSettledResult<DiscoveredFeed[]>,
+  typed: boolean,
+): Promise<FeedInput | undefined> {
+  const { p } = s;
+  const leftOut = typed ? "" : "; left out";
+  if (found.status === "rejected") {
+    const err: unknown = found.reason;
     // The page opened; a feed it led to did not.
     if (err instanceof FeedCheckError) {
-      p.warn(`Could not check a feed on ${url}: ${errorLine(err)}`);
+      p.warn(`Could not check a feed on ${url}: ${errorLine(err)}${leftOut}`);
       // An advertised feed may be up again by the next run; a guessed path may be no feed at all.
       const shown = displayLine(err.feedUrl, SHOWN_MAX_CHARS);
-      if (!err.advertised || !(await p.confirm({ message: `Add ${shown} anyway?`, initialValue: false }))) {
+      if (!typed || !err.advertised || !(await p.confirm({ message: `Add ${shown} anyway?`, initialValue: false }))) {
         return undefined;
       }
       return siteFeed(s, url, err.feedUrl);
     }
     if (!(err instanceof HttpError)) throw err;
-    p.warn(`Could not open ${url}: ${errorLine(err)}`);
+    p.warn(`Could not open ${url}: ${errorLine(err)}${leftOut}`);
     // It may be up again by the next run; the user typed it, so let them decide.
-    if (!isTransient(err) || !(await p.confirm({ message: `Add ${url} as a feed anyway?`, initialValue: false }))) {
+    if (!typed || !isTransient(err) || !(await p.confirm({ message: `Add ${url} as a feed anyway?`, initialValue: false }))) {
       return undefined;
     }
     return siteFeed(s, url, url);
   }
+  const feeds = found.value;
   if (feeds.length === 0) {
-    p.warn(`No feed found on ${url}.`);
+    p.warn(`No feed found on ${url}${leftOut}.`);
     return undefined;
   }
   if (feeds.length === 1) return siteFeed(s, url, feeds[0]!.url);
@@ -636,7 +669,9 @@ async function addProposedFeeds(s: SourceSession, proposal: Proposal): Promise<F
   const { p, signal } = s;
   const added: FeedInput[] = [];
   const keep = (feed: FeedInput | undefined) => {
-    if (feed && claim(s, keyOf(feed), feed.id)) added.push(feed);
+    if (!feed) return;
+    if (claim(s, keyOf(feed), feed.id)) added.push(feed);
+    else p.warn(`Already added: ${displayLine(feed.name, SHOWN_MAX_CHARS)}; skipped.`);
   };
 
   const seenRepos = new Set<string>();
@@ -666,18 +701,7 @@ async function addProposedFeeds(s: SourceSession, proposal: Proposal): Promise<F
         p.warn(`Could not check ${repo} on GitHub: ${errorLine(err)}; left out.`);
         return;
       }
-      const check = result.value;
-      if (check.status === "not_found") {
-        p.warn(`${repo} was not found on GitHub; left out.`);
-        return;
-      }
-      const current = check.movedTo ?? repo;
-      if (check.movedTo) p.note(`${repo} moved to ${current}; watching that instead.`);
-      if (check.status === "empty") {
-        p.warn(`${current} has no releases or tags to watch; left out.`);
-        return;
-      }
-      keep(repoFeed(s, current, check));
+      keep(checkedRepoFeed(s, repo, result.value, "; left out"));
     });
   }
 
@@ -695,8 +719,17 @@ async function addProposedFeeds(s: SourceSession, proposal: Proposal): Promise<F
           })),
           initialValues: sites.map((site) => site.url),
         });
-  // One at a time: a page with several feeds asks which one.
-  for (const url of chosenSites) keep(await resolveSite(s, url));
+  if (chosenSites.length > 0) {
+    const limit = pLimit(SITE_CONCURRENCY);
+    const found = await p.spin(
+      `Looking for feeds on ${plural(chosenSites.length, "site")}`,
+      () => Promise.allSettled(chosenSites.map((url) => limit(() => discoverFeeds(url, signal)))),
+      signal,
+    );
+    throwIfCancelled(signal);
+    // In the order proposed, one at a time: a page with several feeds asks which one.
+    for (const [i, url] of chosenSites.entries()) keep(await pickSiteFeed(s, url, found[i]!, false));
+  }
   return added;
 }
 
@@ -705,7 +738,12 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
   // A run reads the same key (from process.env, which env is outside tests), so a query asked
   // for here is one a run can fetch.
   if (!tavilyApiKey(s.env)) {
-    if (!s.tavilyNoted) p.note("TAVILY_API_KEY is not set, so web search queries are skipped.");
+    const proposed = s.suggestions?.length ?? 0;
+    if (!s.tavilyNoted) {
+      p.note(
+        `TAVILY_API_KEY is not set, so web search queries are skipped${proposed > 0 ? ` (${plural(proposed, "proposed query", "proposed queries")} left out)` : ""}.`,
+      );
+    }
     s.tavilyNoted = true;
     return [];
   }
@@ -720,12 +758,10 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
         () => llm.generate(querySuggestionRequest(s.context), { signal }),
         signal,
       );
-      const seen = new Set<string>();
-      s.suggestions = reply.queries
-        .map(cleanQuery)
-        .filter((q) => q !== "" && once(seen, q.toLowerCase()))
-        .slice(0, MAX_QUERY_SUGGESTIONS)
-        .map((query) => ({ query, topic: "news" as const }));
+      s.suggestions = cleanSuggestions(reply.queries.map((query) => ({ query, topic: "news" as const }))).slice(
+        0,
+        MAX_QUERY_SUGGESTIONS,
+      );
     } catch (err) {
       throwIfCancelled(signal);
       if (!(err instanceof LlmError)) throw err;
@@ -861,6 +897,14 @@ function cleanQuery(query: string): string {
   return collapseWhitespace(stripControlChars(query));
 }
 
+/** Cleans each query, dropping the ones that clean to nothing and repeats in any case. */
+function cleanSuggestions(suggestions: QuerySuggestion[]): QuerySuggestion[] {
+  const seen = new Set<string>();
+  return suggestions
+    .map((q) => ({ ...q, query: cleanQuery(q.query) }))
+    .filter((q) => q.query !== "" && once(seen, q.query.toLowerCase()));
+}
+
 /** Records the source as added; false when it already was. */
 function claim(s: SourceSession, key: string, id: string): boolean {
   if (s.keys.has(key)) return false;
@@ -883,6 +927,14 @@ function llmFailed(s: SourceSession, err: LlmError): void {
   } else {
     s.p.warn(`Claude could not answer (${err.kind}).`);
   }
+}
+
+// Like Promise.allSettled for one promise.
+function settle<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  return promise.then(
+    (value) => ({ status: "fulfilled", value }),
+    (reason: unknown) => ({ status: "rejected", reason }),
+  );
 }
 
 // A fetch cut short by Ctrl-C fails like any other; the signal tells them apart.

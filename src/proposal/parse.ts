@@ -1,9 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { z } from "zod";
 import { ConfigError } from "../config/load.js";
 import { REPO_PATTERN } from "../config/schema.js";
 import { parseHttpUrl } from "../util/hash.js";
-import { collapseWhitespace, stripControlChars, truncate } from "../util/text.js";
+import { displayLine as clean } from "../util/text.js";
 import { PROPOSAL_LIMITS, PROPOSAL_VERSION } from "./prompt.js";
 
 const MAX_BYTES = 256 * 1024;
@@ -55,7 +55,22 @@ const QueryEntry = z.looseObject({
 export async function readProposal(path: string): Promise<Proposal> {
   let bytes: Buffer;
   try {
-    bytes = await readFile(path);
+    // At most one byte past the limit is read, so /dev/zero or a huge log cannot fill memory.
+    const file = await open(path, "r");
+    try {
+      if (!(await file.stat()).isFile()) throw new Error("not a regular file");
+      const buffer = Buffer.alloc(MAX_BYTES + 1);
+      let length = 0;
+      for (;;) {
+        const { bytesRead } = await file.read(buffer, length, buffer.length - length, null);
+        if (bytesRead === 0) break;
+        length += bytesRead;
+        if (length === buffer.length) break;
+      }
+      bytes = buffer.subarray(0, length);
+    } finally {
+      await file.close();
+    }
   } catch (err) {
     throw new ConfigError(`cannot read the proposal ${path}`, { cause: err });
   }
@@ -64,7 +79,8 @@ export async function readProposal(path: string): Promise<Proposal> {
 }
 
 /**
- * Takes the JSON as is, or the last ```json block that parses when the agent wrapped it in prose.
+ * Takes the JSON as is, or the last fenced block that holds a proposal when the agent wrapped it
+ * in prose.
  * The file came from a model reading a repository, so messages never quote it.
  */
 export function parseProposal(text: string, label: string): Proposal {
@@ -127,17 +143,24 @@ export function parseProposal(text: string, label: string): Proposal {
   };
 }
 
-/** The proposal's JSON value, or undefined when the text holds none. */
+/**
+ * The proposal's JSON value, or undefined when the text holds none. A block tagged with this
+ * version wins over any other object, so an example the agent adds after it is not taken instead.
+ */
 export function extractJson(text: string): unknown {
   const trimmed = text.replace(/^﻿/, "").trim();
-  if (trimmed.startsWith("{")) return tryParse(trimmed);
+  const whole = trimmed.startsWith("{") ? tryParse(trimmed) : undefined;
+  if (whole !== undefined) return whole;
   let found: unknown;
+  let tagged: unknown;
   // Fences open and close at the start of a line; a ``` mentioned mid-sentence is prose.
   for (const match of trimmed.matchAll(/^```[^\n]*\n([\s\S]*?)^```/gm)) {
     const value = tryParse(match[1]!);
-    if (value !== undefined && typeof value === "object" && value !== null && !Array.isArray(value)) found = value;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    found = value;
+    if ((value as { pochi?: unknown }).pochi === PROPOSAL_VERSION) tagged = value;
   }
-  return found;
+  return tagged ?? found;
 }
 
 function tryParse(text: string): unknown {
@@ -146,8 +169,4 @@ function tryParse(text: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-function clean(text: string, maxChars: number): string {
-  return truncate(collapseWhitespace(stripControlChars(text)), maxChars);
 }
