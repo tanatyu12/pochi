@@ -424,7 +424,7 @@ export function newSession(
 type Ideas = { problems: string[]; sites: { url: string; evidence: string }[]; queries: QuerySuggestion[] };
 
 /**
- * Asks Claude for interests the answers so far may miss (tech, design, marketing and more), each
+ * Asks Claude for interests the answers so far may miss (tech, design, marketing, industry and more), each
  * with sites and queries that would bring news on it. The sites and queries of the ideas picked
  * are offered with the rest of the sources, and checked the same way.
  */
@@ -434,7 +434,7 @@ async function askIdeas(s: SourceSession): Promise<Ideas> {
   const room = MAX_PROBLEMS - s.context.problems.length;
   if (room <= 0) return none;
   const wanted = await p.confirm({
-    message: "Ask Claude for ideas from technology, design and marketing angles you may have missed?",
+    message: "Ask Claude for ideas from technology, design, marketing and industry angles you may have missed?",
     initialValue: true,
   });
   if (!wanted) return none;

@@ -1,6 +1,12 @@
-import type { Impact } from "./config/schema.js";
+import type { Impact, Sources } from "./config/schema.js";
 
 export type SourceKind = "rss" | "github" | "tavily";
+
+/**
+ * What every source is fetched with: the configured defaults and, when the run knows when it last
+ * ran, since. Sources then take what was published since rather than only their newest few.
+ */
+export type FetchDefaults = Sources["defaults"] & { since?: Date };
 
 /** A collected article, normalized across sources. */
 export interface Item {

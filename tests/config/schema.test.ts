@@ -128,9 +128,9 @@ describe("SourcesSchema", () => {
     const gh = { id: "next", type: "github", name: "Next", repo: "vercel/next.js" };
     expect(SourcesSchema.parse({ version: 1, feeds: [gh], queries: [{ id: "q", query: "x" }] })).toEqual({
       version: 1,
-      defaults: { itemsPerFeed: 3, maxContentChars: 2000 },
+      defaults: { itemsPerFeed: 3, maxItemsPerFeed: 20, maxContentChars: 2000 },
       feeds: [{ ...gh, feed: "releases", includePrereleases: false }],
-      queries: [{ id: "q", query: "x", topic: "general", maxResults: 5 }],
+      queries: [{ id: "q", query: "x", topic: "general", maxResults: 10, requireDate: false }],
     });
   });
 
@@ -168,6 +168,22 @@ describe("SourcesSchema", () => {
   it("rejects github-only keys on an rss feed", () => {
     expect(sourcesErrors({ version: 1, feeds: [{ ...rss, repo: "a/b" }] })).toEqual([
       "sources.yml: feeds[0]: unknown key",
+    ]);
+  });
+
+  it("takes domain names for a query's domain filters, lowercased", () => {
+    const parsed = SourcesSchema.parse({
+      version: 1,
+      queries: [{ id: "q", query: "x", includeDomains: [" PRTimes.jp "], excludeDomains: ["news.example.co.uk"] }],
+    });
+    expect(parsed.queries[0]).toMatchObject({ includeDomains: ["prtimes.jp"], excludeDomains: ["news.example.co.uk"] });
+    for (const bad of ["https://prtimes.jp", "prtimes.jp/main", "localhost", "-a.com"]) {
+      expect(sourcesErrors({ version: 1, queries: [{ id: "q", query: "x", includeDomains: [bad] }] })).toEqual([
+        "sources.yml: queries[0].includeDomains[0]: must be a domain name such as example.com",
+      ]);
+    }
+    expect(sourcesErrors({ version: 1, queries: [{ id: "q", query: "x", includeDomains: [] }] })).toEqual([
+      "sources.yml: queries[0].includeDomains: must have at least 1 item",
     ]);
   });
 

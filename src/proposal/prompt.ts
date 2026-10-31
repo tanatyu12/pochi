@@ -38,7 +38,9 @@ directory and propose the sources and interests Pochi should be configured with.
    product offer, how does it make money?
 4. Market and marketing. From axis 3 and your knowledge: direct competitors and alternatives, how
    such products find users (SEO, social media, app stores, ads), trends the target users follow,
-   laws, platform policies and risks that could affect the product.
+   laws, platform policies and risks that could affect the product. Also the adjacent businesses
+   that sell, bundle or adopt products like this one (partners, distributors, business customers),
+   whose launches and press releases show where the market is going.
 5. Operations. CI config, TODO/FIXME comments, heavy API usage, test setup. Where is cost or pain
    likely (LLM inference cost, CI speed, scaling)?
 
@@ -55,6 +57,7 @@ directory and propose the sources and interests Pochi should be configured with.
 - queries (up to ${PROPOSAL_LIMITS.queries}): web searches for news that no feed covers (competitors, trends, regulation).
   2-6 words each, as typed into a news search, no boolean operators or quotes. Write each in the
   language that gives the best results for its market (Japanese for a Japanese consumer market).
+  News that only press releases carry is worth a query too.
   topic is "news" for recent events, "general" otherwise. Each query costs a search every day, so
   prefer fewer, sharper ones.
 - evidence: the file (and line or dependency) behind each proposal, or "knowledge" for axis 4.

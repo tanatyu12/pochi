@@ -181,6 +181,15 @@ describe("inspectState", () => {
     expect(logs).toEqual([]);
   });
 
+  it("reads when the file was saved, ignoring a value that is not a time", async () => {
+    await writeFile(path, JSON.stringify({ version: 1, updatedAt: "2026-10-25T22:17:03Z", entries: {} }));
+    expect((await loadState(path)).updatedAt).toEqual(new Date("2026-10-25T22:17:03Z"));
+    await writeFile(path, JSON.stringify({ version: 1, updatedAt: "yesterday", entries: {} }));
+    const state = await loadState(path);
+    expect(state.updatedAt).toBeUndefined();
+    expect(logs).toEqual([]);
+  });
+
   it("returns the valid entries and counts the dropped ones", async () => {
     const entry = { s: "n", f: "2026-10-01", l: "2026-10-25" };
     await writeFile(path, JSON.stringify({ version: 1, entries: { [A]: entry, short: entry, [B]: { s: "x" } } }));
