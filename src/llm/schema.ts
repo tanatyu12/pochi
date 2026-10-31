@@ -28,6 +28,20 @@ export type RepoInferenceOutput = z.output<typeof RepoInferenceOutputSchema>;
 export const QuerySuggestionOutputSchema = z.object({ queries: z.array(z.string()) });
 export type QuerySuggestionOutput = z.output<typeof QuerySuggestionOutputSchema>;
 
+export const PerspectiveSchema = z.enum(["tech", "design", "marketing", "business", "ops"]);
+export const IdeaSuggestionOutputSchema = z.object({
+  ideas: z.array(
+    z.object({
+      perspective: PerspectiveSchema,
+      problem: z.string(),
+      why: z.string(),
+      sites: z.array(z.string()),
+      queries: z.array(z.string()),
+    }),
+  ),
+});
+export type IdeaSuggestionOutput = z.output<typeof IdeaSuggestionOutputSchema>;
+
 /**
  * JSON Schema for the claude CLI's --json-schema and for the API when zodOutputFormat is not
  * usable. It describes the input side, since what the model emits is what we parse. Input mode

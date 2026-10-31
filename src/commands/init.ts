@@ -13,13 +13,17 @@ import {
 import { existingConfig, writeConfig } from "../config/write.js";
 import { resolveLlm } from "../llm/adapter.js";
 import {
+  MAX_IDEAS,
+  MAX_IDEA_QUERIES,
+  MAX_IDEA_SITES,
   MAX_QUERY_SUGGESTIONS,
   MAX_REPO_CANDIDATES,
+  ideaSuggestionRequest,
   queryId,
   querySuggestionRequest,
   repoInferenceRequest,
 } from "../llm/prompts.js";
-import { type LlmClient, LlmError } from "../llm/schema.js";
+import { type IdeaSuggestionOutput, type LlmClient, LlmError } from "../llm/schema.js";
 import { type Proposal, type ProposedText, readProposal } from "../proposal/parse.js";
 import { DISCOVERY_PROMPT } from "../proposal/prompt.js";
 import { type DiscoveredFeed, FeedCheckError, discoverFeeds, isTransient } from "../sources/discover.js";
@@ -118,9 +122,9 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
   }
   if (proposal) noteProposal(p, proposal);
 
-  const contextInput = await askContext(p, proposal);
+  let contextInput = await askContext(p, proposal);
   // The prompts read the defaults (language, llm) the parsed context fills in.
-  const context = ContextSchema.parse(contextInput);
+  let context = ContextSchema.parse(contextInput);
   // Looked for while the sources are asked (the CLI probe can take seconds), and only waited
   // for by a step that needs Claude. Stopped once the answers are in, so no probe outlives init.
   const lookup = new AbortController();
@@ -133,15 +137,25 @@ async function init(dir: string, deps: Partial<InitDeps>, proposal: Proposal | u
   let sources: SourcesInput;
   try {
     const session = newSession(p, context, { llm, env, signal });
-    let proposed: FeedInput[] = [];
+    const ideas = await askIdeas(session);
+    if (ideas.problems.length > 0) {
+      contextInput = { ...contextInput, problems: [...context.problems, ...ideas.problems] };
+      context = ContextSchema.parse(contextInput);
+      // Later suggestions from Claude take the new interests into account.
+      session.context = context;
+    }
+    session.ideaQueries = ideas.queries;
     if (proposal) {
       // Offered in place of Claude's suggestions; with none proposed, Claude is still asked.
       const suggestions = cleanSuggestions(
         proposal.queries.map((q) => ({ query: q.query, topic: q.topic, hint: q.evidence || undefined })),
       );
       if (suggestions.length > 0) session.suggestions = suggestions;
-      proposed = await addProposedFeeds(session, proposal);
     }
+    const proposed = await addProposedFeeds(session, {
+      repos: proposal?.repos ?? [],
+      sites: [...(proposal?.sites ?? []), ...ideas.sites],
+    });
     sources = await askSources(session, proposed);
   } finally {
     lookup.abort();
@@ -273,7 +287,7 @@ async function askChannels(p: Prompter): Promise<ChannelInput[]> {
 }
 
 // The proposed entries come first, all picked, so accepting the proposal is one keypress;
-// more can be typed after them.
+// more can be typed after them, which is asked about so Enter does not seem to skip that.
 async function askListWithProposals(
   p: Prompter,
   proposed: readonly ProposedText[],
@@ -281,26 +295,26 @@ async function askListWithProposals(
 ): Promise<string[]> {
   const seen = new Set<string>();
   const unique = proposed.filter((e) => once(seen, e.text.toLowerCase())).slice(0, opts.max);
-  const picked =
-    unique.length === 0
-      ? []
-      : await p.multiselect({
-          message: `${opts.message} (proposed; space to toggle)`,
-          options: unique.map((e) => ({
-            value: e.text,
-            label: displayLine(e.text, SHOWN_MAX_CHARS),
-            hint: displayLine(e.evidence, HINT_MAX_CHARS) || undefined,
-          })),
-          initialValues: unique.map((e) => e.text),
-        });
-  if (picked.length >= opts.max) return picked;
-  const typed = await askList(p, {
-    ...opts,
-    min: Math.max(0, opts.min - picked.length),
-    max: opts.max - picked.length,
-    taken: picked,
+  if (unique.length === 0) return askList(p, opts);
+  const picked = await p.multiselect({
+    message: `${opts.message} (proposed; space to toggle, enter to confirm)`,
+    options: unique.map((e) => ({
+      value: e.text,
+      label: displayLine(e.text, SHOWN_MAX_CHARS),
+      hint: displayLine(e.evidence, HINT_MAX_CHARS) || undefined,
+    })),
+    initialValues: unique.map((e) => e.text),
   });
+  if (picked.length >= opts.max) return picked;
+  const min = Math.max(0, opts.min - picked.length);
+  if (min > 0) p.note(`Add at least ${min} of your own.`);
+  else if (!(await askAddOwn(p, picked.length))) return picked;
+  const typed = await askList(p, { ...opts, min, max: opts.max - picked.length, taken: picked });
   return [...picked, ...typed];
+}
+
+function askAddOwn(p: Prompter, picked: number): Promise<boolean> {
+  return p.confirm({ message: `Add your own as well? (${picked} picked)`, initialValue: false });
 }
 
 // One text prompt per entry; an empty answer ends the list once min entries are in. An entry
@@ -381,6 +395,8 @@ export interface SourceSession {
   checked: WeakMap<FeedInput, Item | undefined>;
   /** Asked once (or taken from a proposal); later rounds offer what is left of them. */
   suggestions?: QuerySuggestion[];
+  /** From the ideas picked; offered with the suggestions, which Claude is still asked for. */
+  ideaQueries?: QuerySuggestion[];
   tavilyNoted?: boolean;
 }
 
@@ -401,6 +417,70 @@ export function newSession(
     ids: new Set(),
     keys: new Set(),
     checked: new WeakMap(),
+  };
+}
+
+type Ideas = { problems: string[]; sites: { url: string; evidence: string }[]; queries: QuerySuggestion[] };
+
+/**
+ * Asks Claude for interests the answers so far may miss (tech, design, marketing and more), each
+ * with sites and queries that would bring news on it. The sites and queries of the ideas picked
+ * are offered with the rest of the sources, and checked the same way.
+ */
+async function askIdeas(s: SourceSession): Promise<Ideas> {
+  const { p, signal } = s;
+  const none: Ideas = { problems: [], sites: [], queries: [] };
+  const room = MAX_PROBLEMS - s.context.problems.length;
+  if (room <= 0) return none;
+  const wanted = await p.confirm({
+    message: "Ask Claude for ideas from technology, design and marketing angles you may have missed?",
+    initialValue: true,
+  });
+  if (!wanted) return none;
+  const llm = await getLlm(s);
+  if (!llm) return none;
+  let reply: IdeaSuggestionOutput;
+  try {
+    reply = await p.spin("Asking Claude for ideas", () => llm.generate(ideaSuggestionRequest(s.context), { signal }), signal);
+  } catch (err) {
+    throwIfCancelled(signal);
+    if (!(err instanceof LlmError)) throw err;
+    llmFailed(s, err);
+    return none;
+  }
+
+  const seen = new Set(s.context.problems.map((t) => t.toLowerCase()));
+  const ideas = reply.ideas
+    .map((idea) => ({ ...idea, problem: cleanQuery(idea.problem) }))
+    .filter((idea) => idea.problem !== "" && once(seen, idea.problem.toLowerCase()))
+    .slice(0, MAX_IDEAS);
+  if (ideas.length === 0) {
+    p.note("Claude had nothing to add.");
+    return none;
+  }
+  // None picked to begin with: each brings more news every morning.
+  const picked = await p.multiselect({
+    message: "Ideas to add to what you want to hear about (space to select, enter to confirm)",
+    options: ideas.map((idea) => ({
+      value: idea.problem,
+      label: `[${idea.perspective}] ${displayLine(idea.problem, SHOWN_MAX_CHARS)}`,
+      hint: displayLine(idea.why, HINT_MAX_CHARS) || undefined,
+    })),
+  });
+  if (picked.length > room) p.warn(`Only ${plural(room, "more interest")} fit; kept the first ${room}.`);
+  const chosen = ideas.filter((idea) => picked.includes(idea.problem)).slice(0, room);
+  return {
+    problems: chosen.map((idea) => idea.problem),
+    sites: chosen.flatMap((idea) =>
+      idea.sites
+        .slice(0, MAX_IDEA_SITES)
+        .map((url) => parseHttpUrl(url.trim())?.href)
+        .filter((url) => url !== undefined)
+        .map((url) => ({ url, evidence: `idea: ${idea.perspective}` })),
+    ),
+    queries: chosen.flatMap((idea) =>
+      idea.queries.slice(0, MAX_IDEA_QUERIES).map((query) => ({ query, topic: "news" as const, hint: `idea: ${idea.perspective}` })),
+    ),
   };
 }
 
@@ -695,7 +775,7 @@ function siteFeed(s: SourceSession, pageUrl: string, feedUrl: string, title?: st
  * have a feed. Unlike a name typed in, a proposed repository GitHub cannot check is left out:
  * nobody typed it, so nobody vouches for it.
  */
-async function addProposedFeeds(s: SourceSession, proposal: Proposal): Promise<FeedInput[]> {
+async function addProposedFeeds(s: SourceSession, proposal: Pick<Proposal, "repos" | "sites">): Promise<FeedInput[]> {
   const { p, signal } = s;
   const added: FeedInput[] = [];
   const keep = (feed: FeedInput | undefined) => {
@@ -768,7 +848,7 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
   // A run reads the same key (from process.env, which env is outside tests), so a query asked
   // for here is one a run can fetch.
   if (!tavilyApiKey(s.env)) {
-    const proposed = s.suggestions?.length ?? 0;
+    const proposed = (s.suggestions?.length ?? 0) + (s.ideaQueries?.length ?? 0);
     if (!s.tavilyNoted) {
       p.note(
         `TAVILY_API_KEY is not set, so web search queries are skipped${proposed > 0 ? ` (${plural(proposed, "proposed query", "proposed queries")} left out)` : ""}.`,
@@ -802,7 +882,10 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
 
   // None picked to begin with, proposed or not: each costs a credit every morning.
   const candidates: QuerySuggestion[] = [];
-  const offered = (s.suggestions ?? []).filter((q) => !s.keys.has(queryKey(q.query)));
+  const offered = cleanSuggestions([...(s.suggestions ?? []), ...(s.ideaQueries ?? [])]).filter(
+    (q) => !s.keys.has(queryKey(q.query)),
+  );
+  let addOwn = true;
   if (offered.length > 0) {
     const picked = await p.multiselect({
       message: "Search queries to run every morning (space to select)",
@@ -813,13 +896,11 @@ async function askQueries(s: SourceSession): Promise<QueryInput[]> {
       })),
     });
     candidates.push(...offered.filter((q) => picked.includes(q.query)));
+    addOwn = await askAddOwn(p, picked.length);
   }
-  const typed = await askList(p, {
-    message: "Add a search query",
-    placeholder: "Qwen model release",
-    min: 0,
-    max: MAX_TYPED_QUERIES,
-  });
+  const typed = addOwn
+    ? await askList(p, { message: "Add a search query", placeholder: "Qwen model release", min: 0, max: MAX_TYPED_QUERIES })
+    : [];
   // Control characters alone clean to nothing.
   candidates.push(...typed.map(cleanQuery).filter((q) => q !== "").map((query) => ({ query, topic: "news" as const })));
 
