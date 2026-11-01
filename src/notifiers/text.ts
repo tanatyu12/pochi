@@ -1,5 +1,5 @@
 import type { Insight, Item } from "../types.js";
-import { collapseWhitespace, plural } from "../util/text.js";
+import { collapseWhitespace, plural, stripControlChars } from "../util/text.js";
 import type { Briefing } from "./types.js";
 import { failedLabel, fetchedText, quietLine } from "./voice.js";
 
@@ -12,8 +12,16 @@ export function relatedShown(f: Insight): { shown: Item[]; more: number } {
   return { shown: related.slice(0, MAX_RELATED_SHOWN), more: Math.max(0, related.length - MAX_RELATED_SHOWN) };
 }
 
-/** What a dry run prints: plain text for a terminal. */
+/**
+ * What a dry run prints: plain text for a terminal. Titles, summaries and source names come
+ * from feeds and the model, so control characters are dropped: no escape sequence reaches the
+ * terminal. Tabs and newlines stay.
+ */
 export function toText(b: Briefing): string {
+  return stripControlChars(renderText(b));
+}
+
+function renderText(b: Briefing): string {
   const head = `Pochi · ${b.project} · ${b.date}\n`;
   const counts = b.personality ? fetchedText(b) : `${b.collected} items from ${b.attempted} sources`;
   const foot = `\n${counts}` + failedText(b) + "\n";
@@ -33,9 +41,14 @@ export function toText(b: Briefing): string {
 
 /**
  * What the file channel writes. Titles, summaries and source names come from feeds and the model,
- * so they are escaped: a heading or link in them cannot change the report's structure.
+ * so they are escaped: a heading or link in them cannot change the report's structure. Control
+ * characters are dropped as in toText, since the report may well be read with cat.
  */
 export function toMarkdown(b: Briefing): string {
+  return stripControlChars(renderMarkdown(b));
+}
+
+function renderMarkdown(b: Briefing): string {
   const head = `# Pochi · ${escapeMarkdown(b.project)} · ${b.date}\n`;
   const foot = `\n---\n\n${fetchedText(b)}` + failedText(b, escapeMarkdown) + "\n";
   if (b.insights.length === 0) return `${head}\n${quietLine(b) ?? "No relevant updates today."}\n${foot}`;
@@ -76,9 +89,13 @@ function failedText(b: Briefing, escape = (s: string) => s): string {
 }
 
 /**
- * Backslash-escapes what would start emphasis, code, a link, inline HTML or a heading. Kept to
- * these so the file still reads well as plain text.
+ * Backslash-escapes what would start emphasis, code, a link, inline HTML or a heading, and a
+ * line-leading list item, rule or code fence ("- ", "+ ", "1. ", "---", "~~~"). Kept to these
+ * so the file still reads well as plain text.
  */
 export function escapeMarkdown(s: string): string {
-  return s.replace(/[\\`*_[\]<>#]/g, "\\$&");
+  return s
+    .replace(/[\\`*_[\]<>#]/g, "\\$&")
+    .replace(/^([ \t]*)([-+~])/gm, "$1\\$2")
+    .replace(/^([ \t]*\d+)([.)])/gm, "$1\\$2");
 }
