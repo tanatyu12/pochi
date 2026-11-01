@@ -193,12 +193,18 @@ function consecutiveRuns(values: readonly number[]): number[][] {
   return runs;
 }
 
+// Building a formatter costs far more than using one, and counting a month of runs every minute
+// asks for thousands of offsets.
+const offsetFormats = new Map<string, Intl.DateTimeFormat>();
+
 /** The offset of timeZone from UTC at the given instant, in minutes (Asia/Tokyo is 540). */
 export function offsetMinutes(timeZone: string, at: Date): number {
-  const name =
-    new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "longOffset" })
-      .formatToParts(at)
-      .find((p) => p.type === "timeZoneName")?.value ?? "GMT";
+  let format = offsetFormats.get(timeZone);
+  if (format === undefined) {
+    format = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "longOffset" });
+    offsetFormats.set(timeZone, format);
+  }
+  const name = format.formatToParts(at).find((p) => p.type === "timeZoneName")?.value ?? "GMT";
   const m = /^GMT([+-])(\d{2}):(\d{2})$/.exec(name);
   if (!m) return 0;
   return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
@@ -307,7 +313,9 @@ export function nextRuns(cal: Calendar, timeZone: string, from: Date, n: number)
     for (const h of expand(cal.hour, "hour")) {
       for (const m of expand(cal.minute, "minute")) {
         const at = zonedInstant(timeZone, year, month, date, h, m);
-        if (at.getTime() > start && runs.length < n) runs.push(at);
+        if (at.getTime() <= start) continue;
+        runs.push(at);
+        if (runs.length === n) return runs;
       }
     }
   }
