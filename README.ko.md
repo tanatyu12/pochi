@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/pochi/actions/workflows/ci.yml"><img src="https://github.com/OWNER/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml"><img src="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-9a6fd8" alt="MIT 라이선스"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A522.18-9a6fd8" alt="Node 22.18 이상">
 </p>
@@ -96,7 +96,7 @@
 Pochi는 npm으로 배포하지 않습니다. 이 리포지토리를 자신의 복사본으로 만들어 실행합니다. 정기 실행이 제대로 동작하도록 GitHub의 **Use this template**으로 만드는 것을 권장합니다. clone해도 됩니다.
 
 ```sh
-git clone https://github.com/OWNER/pochi && cd pochi
+git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
 ```
@@ -122,7 +122,7 @@ pochi run --dry-run   # 오늘의 브리핑을 출력합니다
 
 ## 리포지토리에서 감시 목록까지
 
-`--print-prompt`가 출력하는 프롬프트는 에이전트에게 코드, 문서, 설정을 읽게 하며, 비밀 정보는 열지 않게 합니다. 기술 스택, 비즈니스, 시장과 경쟁사, 운영이라는 네 가지 관점에서 과제와 정보원을 근거와 함께 제안하도록 합니다. 다음은 Pochi 자신의 리포지토리에 대해 받은 제안의 일부입니다.
+`--print-prompt`가 출력하는 프롬프트는 에이전트에게 코드, 문서, 설정을 읽게 하며, 비밀 정보는 열지 않게 합니다. 기술 스택, 디자인, 비즈니스, 시장과 마케팅, 운영이라는 다섯 가지 관점에서 과제와 정보원을 근거와 함께 제안하도록 합니다. 다음은 Pochi 자신의 리포지토리에 대해 받은 제안의 일부입니다.
 
 ```json
 "problems": [

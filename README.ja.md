@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/pochi/actions/workflows/ci.yml"><img src="https://github.com/OWNER/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml"><img src="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-9a6fd8" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A522.18-9a6fd8" alt="Node 22.18 以上">
 </p>
@@ -94,7 +94,7 @@
 Pochi は npm では配布していません。このリポジトリを自分用にコピーして使います。GitHub の **Use this template** から作るのがおすすめです（フォークだと定期実行が動きません）。clone でもかまいません。
 
 ```sh
-git clone https://github.com/OWNER/pochi && cd pochi
+git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
 ```
@@ -120,7 +120,7 @@ pochi run --dry-run   # 今日のブリーフィングを画面に出す
 
 ## リポジトリから情報源を決める
 
-`--print-prompt` が出すプロンプトは、エージェントにコード・ドキュメント・設定を読ませます。`.env` などの秘密のファイルは開かせません。技術基盤、ビジネス、市場と競合、運用の4つの観点から、課題と情報源を根拠つきで挙げさせます。Pochi 自身のリポジトリで試したときの提案から、一部を抜き出しました。
+`--print-prompt` が出すプロンプトは、エージェントにコード・ドキュメント・設定を読ませます。`.env` などの秘密のファイルは開かせません。技術基盤、デザイン、ビジネス、市場とマーケティング、運用の5つの観点から、課題と情報源を根拠つきで挙げさせます。Pochi 自身のリポジトリで試したときの提案から、一部を抜き出しました。
 
 ```json
 "problems": [

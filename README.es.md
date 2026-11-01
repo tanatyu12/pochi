@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/pochi/actions/workflows/ci.yml"><img src="https://github.com/OWNER/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml"><img src="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-9a6fd8" alt="Licencia MIT"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A522.18-9a6fd8" alt="Node 22.18 o posterior">
 </p>
@@ -92,7 +92,7 @@ Necesitas Node.js 22.18 o posterior y una de estas opciones: la CLI [`claude`](h
 Pochi no está en npm: se ejecuta desde tu propia copia de este repositorio. Haz clic en **Use this template** (recomendado, para que funcionen las ejecuciones programadas) o clónalo:
 
 ```sh
-git clone https://github.com/OWNER/pochi && cd pochi
+git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
 ```
@@ -118,7 +118,7 @@ pochi run --dry-run   # muestra el resumen de hoy
 
 ## De tu repositorio a una lista de vigilancia
 
-El prompt le pide al agente que lea tu código, tu documentación y tu configuración, sin tocar nada secreto, desde cuatro ejes: tu stack técnico, tu negocio, tu mercado y competencia, y tu forma de operar. Cada propuesta cita su evidencia. Esto es parte de lo que propuso para el propio Pochi (abreviado):
+El prompt le pide al agente que lea tu código, tu documentación y tu configuración, sin tocar nada secreto, desde cinco ejes: tu stack técnico, tu diseño, tu negocio, tu mercado y cómo llegas a él, y tu forma de operar. Cada propuesta cita su evidencia. Esto es parte de lo que propuso para el propio Pochi (abreviado):
 
 ```json
 "problems": [
