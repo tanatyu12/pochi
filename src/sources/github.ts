@@ -1,7 +1,7 @@
 import * as z from "zod";
 import type { GithubFeed } from "../config/schema.js";
 import type { FetchDefaults, Item } from "../types.js";
-import { fetchText, HttpError } from "../util/http.js";
+import { fetchText, HttpError, isServerSide } from "../util/http.js";
 import { log } from "../util/log.js";
 import { parseApi } from "./api.js";
 import { fetchFeedEntries, fetchFeedItems, toItems, type RawEntry } from "./rss.js";
@@ -137,14 +137,14 @@ export async function fetchGithubItems(
 }
 
 // GitHub renders body_html within a time limit that a hundred long release notes pass (nodejs/node
-// answers 502 every time), so a server error is not retried as HTML: the markdown bodies come back
-// at once and read well enough as text.
+// answers 502, or drops the connection, every time), so a server-side failure is not retried as
+// HTML: the markdown bodies come back at once and read well enough as text.
 async function fetchReleaseNotes(repo: string, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<Release[]> {
   try {
     return await fetchReleases(repo, "html", signal, env, { server: 0 });
   } catch (err) {
-    if (!(err instanceof HttpError && err.status !== undefined && err.status >= 500)) throw err;
-    log.debug(`${repo}: GitHub could not render the release notes (HTTP ${err.status}), reading them as markdown`);
+    if (!(err instanceof HttpError && isServerSide(err)) || signal?.aborted) throw err;
+    log.debug(`${repo}: GitHub could not render the release notes (${err.message}), reading them as markdown`);
     return fetchReleases(repo, "json", signal, env);
   }
 }
