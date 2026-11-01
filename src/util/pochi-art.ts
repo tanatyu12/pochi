@@ -11,6 +11,11 @@ export function isFancy(stream: NodeJS.WriteStream = process.stdout): boolean {
 // A light purple, as a 256-color code since Terminal.app has no truecolor.
 const COAT = 183;
 
+/** Text in Pochi's color. */
+export function purple(text: string): string {
+  return `\x1b[38;5;${COAT}m${text}\x1b[0m`;
+}
+
 /**
  * Sitting, facing right, as a silhouette. What makes it a dog rather than a fox: the step from
  * forehead to a blunt snout, the line of the mouth, the collar (the gap at the neck) and the tail
@@ -54,7 +59,7 @@ export function renderSprite(rows: readonly string[]): string[] {
       const bottom = (rows[y + 1]?.[x] ?? ".") !== ".";
       line += top && bottom ? "█" : top ? "▀" : bottom ? "▄" : " ";
     }
-    lines.push(`\x1b[38;5;${COAT}m${line}\x1b[0m`);
+    lines.push(purple(line));
   }
   return lines;
 }

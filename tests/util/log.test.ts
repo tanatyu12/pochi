@@ -96,4 +96,18 @@ describe("log", () => {
     expect(stderr).toHaveBeenCalledWith("pochi: error: boom\n");
     expect(stdout).not.toHaveBeenCalled();
   });
+
+  it("marks the severity instead of naming it on a color terminal", () => {
+    vi.stubEnv("NO_COLOR", "");
+    vi.stubEnv("POCHI_PLAIN", "");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const wasTTY = process.stderr.isTTY;
+    process.stderr.isTTY = true;
+    try {
+      log.info("collected 3 items from tvly-secret");
+    } finally {
+      process.stderr.isTTY = wasTTY;
+    }
+    expect(stderr).toHaveBeenCalledWith("  \x1b[38;5;183m›\x1b[0m collected 3 items from tvly-***\n");
+  });
 });
