@@ -137,7 +137,13 @@ id は feeds と queries を通して一意とし、feeds か queries のどち�
 | publishedAt | ISO 8601（任意） |
 | content | プレーンテキスト。maxContentChars まで |
 
-URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid、gclid、末尾のスラッシュを除去する。
+URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid、gclid、末尾のスラッシュを除去する。ただし `#/` か `#!` で始まるフラグメントはハッシュルーティングのサイトではページそのものを指すので残す。フラグメントのない URL の正規化結果は以前と変わらないので、状態ファイルの既存のキーはそのまま使える。
+
+1つのフィードの中で、正規化 URL が同じでフラグメント（アンカー）だけが違う記事が複数あるとき（`/changelog#2026-10-29` と `/changelog#2026-10-30` など）は、それぞれ別の記事として残し、アンカー付きの正規化 URL を urlKey と（guid がなければ）id に使う。アンカーを落とした URL で引くと、状態ファイルが最初の1件の URL でほかをすべて既知とみなし、二度と通知されないため。そのページを指す記事がフィード内に1件だけなら、キーは従来どおりアンカーを落とした URL から作る（Tavily など別ソースの同じページと重複を除ける）。
+
+日付（`parseDate`）は ISO 8601（オフセットは `+09:00` と `+0900` のどちらも可）と RFC 2822 だけを受け付ける。RFC 2822 は V8 が US のタイムゾーン略称しか解釈しないので自前で組み立てる。略称は V8 と同じもの（UT / UTC / GMT / Z / EST / EDT / CST / CDT / MST / MDT / PST / PDT。CST は V8 と同じく米国中部）に加え、JST、KST、HKT、SGT、IST（インド）、CET、CEST、EET、EEST、WET、WEST、BST、MSK、AEST、AEDT、ACST、ACDT、AWST、NZST、NZDT などを解釈し、知らない略称の日付は日付なしとする。2桁の年は RFC 2822 に従い 00〜49 を 20xx、50〜99 を 19xx とする。存在しない日（2月30日など）や範囲外の時刻は日付なしとする。
+
+応答の文字コードは BOM、Content-Type の charset、先頭 1024 バイトにある XML 宣言の encoding か HTML の `<meta charset>` の順に決め、知らないラベルは UTF-8 とする（charset のない `application/rss+xml` で Shift_JIS を宣言するフィードのため）。BOM なしで UTF-16 を名乗るものは ASCII として読めている以上 UTF-16 ではないので無視する。
 
 ### 状態ファイル state/notified.json
 
@@ -214,7 +220,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - `parseFeedText` は feedsmith で RSS / Atom / RDF / JSON Feed を共通の RawEntry に変換する。feedsmith は XML のエンティティを1段デコードした値を返すので、本文は HTML（`html`）か文字どおりのテキスト（JSON Feed の content_text、Atom の type="text" と text/* の MIME）かを区別して持つ。Atom の type が html / xhtml / text/html / application/xhtml+xml なら HTML、それ以外の MIME（base64 など）は使えないものとして扱う。解析できなければ入力を含まない FeedParseError を投げる（「not a feed」または「malformed feed」）
   - 本文は content:encoded → description（RSS / RDF）、content → summary（Atom。空白だけ、または使えない type の content は飛ばす）、content_html → content_text → summary（JSON Feed）の順に採る。日付は pubDate / published / date_published を優先し、なければ dc:date / updated / date_modified。Atom のリンクは rel="alternate"（rel なしを含む）のうち、メディアタイプ（; 以降の引数は無視）が text/html のものを優先する。alternate がなければリンクなしとする（self / enclosure などは記事のページではない）。RDF は rdf:about を guid にする。RSS で link がなければ、絶対 URL の permalink guid を使う
   - タイトル：RSS / RDF は装飾タグ（b、em、strong、span、a、br など）だけを除いてからエンティティをデコードする。デコード後は CDATA のタグとエスケープされたタグ名を区別できないため、`<canvas>` のようなタグ名は残す。Atom は type に従い、html なら HTML として1段だけテキストにする（本文向けの二重エスケープ解除はしない）。JSON Feed と Atom の text はそのまま使う
-  - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、guid または正規化 URL が同じ記事は最も新しいものだけを残してから、最新 itemsPerFeed 件を取る。since があれば、その時刻以降の日付を持つ記事を maxItemsPerFeed 件まで追加で取る（実行の間隔中に itemsPerFeed 件より多く更新されたフィードを取りこぼさないため。日付のない記事は増やさない）。plain text の本文も HTML の本文と同じ見出し優先の切り詰めを行う。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
+  - `toItems` は記事を日付の新しい順に並べ（日付なしは元の順で最後）、guid またはアンカー付きの正規化 URL が同じ記事は最も新しいものだけを残してから、最新 itemsPerFeed 件を取る。since があれば、その時刻以降の日付を持つ記事を maxItemsPerFeed 件まで追加で取る（実行の間隔中に itemsPerFeed 件より多く更新されたフィードを取りこぼさないため。日付のない記事は増やさない）。plain text の本文も HTML の本文と同じ見出し優先の切り詰めを行う。相対リンクはフィードの URL（リダイレクト後）を基準に解決し、http(s) のリンクがない記事は捨てる。kind を渡せば github.ts からも使える
   - `fetchFeedEntries` は取得と解析をまとめ、リダイレクト後の URL も返す。全文を含むフィード（WordPress に多い）は 2MB を超えるので、上限は `FEED_MAX_BYTES`（10MB）とする。`fetchFeedItems` はそれに `toItems` を続け、件数を絞る前に entry を選ぶ filter を受け取れる。`fetchRssItems` は `fetchFeedItems` を呼ぶだけの薄い関数
 - **github.ts**
   - releases は REST API `https://api.github.com/repos/<repo>/releases?per_page=100` から取る。releases.atom は最新10件しか持たず、canary が続くと stable が窓から押し出されるため。`accept: application/vnd.github.html+json` で `body_html` を受け取り、rss.ts の `toItems`（kind は github）で変換する。draft は捨て、プレリリースは作者が付けた `prerelease` フラグで判定する。応答の上限は 8MB
