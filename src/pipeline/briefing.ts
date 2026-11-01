@@ -64,10 +64,10 @@ export interface BriefingResult {
 }
 
 /**
- * Load state → collect → drop known items → triage → analyze → deliver → save state. Returns
- * what happened, also when the LLM or a channel failed (briefingError turns that into the error
- * to report); throws a PochiError when sources all fail, the state cannot be saved, or the run is
- * interrupted before delivery.
+ * Check the LLM → load state → collect → drop known items → triage → analyze → deliver → save
+ * state. Returns what happened, also when the LLM or a channel failed (briefingError turns that
+ * into the error to report); throws a PochiError when the LLM is unusable, sources all fail, the
+ * state cannot be saved, or the run is interrupted before delivery.
  */
 export async function runBriefing(input: BriefingInput, deps: BriefingDeps = {}): Promise<BriefingResult> {
   const { sources, llm, notifiers, store, dryRun } = input;
@@ -77,6 +77,13 @@ export async function runBriefing(input: BriefingInput, deps: BriefingDeps = {})
   const today = toIsoDate(now);
   const date = briefingDate(input.context, now, deps.timeZone);
 
+  // A revoked key or an unknown model fails here, before any source (Tavily is billed) is fetched.
+  try {
+    await llm.preflight?.({ signal });
+  } catch (err) {
+    if (signal?.aborted) throw interrupted();
+    throw err;
+  }
   const state = await store.load({ now });
   // Resolved once, so every step (and the prompts) uses the same window.
   const context = {

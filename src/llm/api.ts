@@ -1,6 +1,7 @@
 import * as z from "zod";
 import { parseHttpUrl } from "../util/hash.js";
 import { HttpError, parseRetryAfter, readText } from "../util/http.js";
+import { log } from "../util/log.js";
 import { sleep } from "../util/time.js";
 import { VERSION } from "../version.js";
 import {
@@ -40,6 +41,8 @@ const MAX_RETRY_AFTER_MS = 60_000;
 // A reply holds at most MAX_TOKENS of text; this only guards against a misbehaving gateway.
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_ERROR_BYTES = 64 * 1024;
+// Looking a model up answers at once; a slower API is left to the first real call to judge.
+const PREFLIGHT_TIMEOUT_MS = 10_000;
 
 // Only the fields read below; the rest of the Message is ignored so additions to it change nothing.
 const MessageSchema = z.object({
@@ -76,7 +79,8 @@ export interface ApiLlmOptions {
  */
 export function createApiLlm(opts: ApiLlmOptions): LlmClient {
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
-  const url = endpoint(opts.baseUrl);
+  const base = apiBase(opts.baseUrl);
+  const url = `${base}/v1/messages`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
     "anthropic-version": API_VERSION,
@@ -115,14 +119,67 @@ export function createApiLlm(opts: ApiLlmOptions): LlmClient {
       }
       return parseReply(message, req, model);
     },
+    async preflight({ signal }: { signal?: AbortSignal } = {}): Promise<void> {
+      if (!opts.apiKey && !opts.authToken) {
+        throw new LlmError("auth", "No Anthropic credentials found; set ANTHROPIC_API_KEY");
+      }
+      const tiers = new Map<string, LlmTier[]>();
+      for (const tier of ["triage", "analyze"] as const) {
+        const model = opts.models[tier];
+        tiers.set(model, [...(tiers.get(model) ?? []), tier]);
+      }
+      const gateway = Boolean(opts.baseUrl?.trim());
+      await Promise.all(
+        [...tiers].map(([model, of]) => checkModel({ base, headers, model, tiers: of, gateway, signal })),
+      );
+    },
   };
 }
 
-function endpoint(baseUrl: string | undefined): string {
+function apiBase(baseUrl: string | undefined): string {
   const base = baseUrl?.trim() || DEFAULT_BASE_URL;
   // The value is not quoted: a gateway URL may carry credentials.
   if (!parseHttpUrl(base)) throw new LlmError("unavailable", "ANTHROPIC_BASE_URL is not an http(s) URL");
-  return `${base.replace(/\/+$/, "")}/v1/messages`;
+  return base.replace(/\/+$/, "");
+}
+
+const CONFIG_FIELD: Record<LlmTier, string> = { triage: "llm.triageModel", analyze: "llm.analyzeModel" };
+
+/**
+ * GET /v1/models/{model}: costs no tokens, and fails the way every message would with a key that
+ * was revoked (401/403) or a model name the API does not know (404). Anything else (a 5xx, a
+ * timeout, no network) says nothing lasting, so it is left to the first call and its retries. A
+ * gateway (ANTHROPIC_BASE_URL) need not serve this endpoint, so a 404 from one is not trusted.
+ */
+async function checkModel(check: {
+  base: string;
+  headers: Record<string, string>;
+  model: string;
+  tiers: LlmTier[];
+  gateway: boolean;
+  signal: AbortSignal | undefined;
+}): Promise<void> {
+  const { model, signal } = check;
+  const deadline = AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS);
+  const both = signal ? AbortSignal.any([deadline, signal]) : deadline;
+  const { "content-type": _, ...headers } = check.headers;
+  let res: Response;
+  try {
+    res = await fetch(`${check.base}/v1/models/${encodeURIComponent(model)}`, { method: "GET", headers, signal: both });
+  } catch (err) {
+    if (signal?.aborted) throw signal.reason;
+    log.debug(`could not look up ${model} before the run; the first call will tell`, err);
+    return;
+  }
+  // Only the status and the request id are used; the body is not needed.
+  await res.body?.cancel().catch(() => {});
+  const where = [`HTTP ${res.status}`, model, requestId(res)].filter(Boolean).join(", ");
+  if (res.status === 401 || res.status === 403) throw new LlmError("auth", `${STATUS_MESSAGES.auth} (${where})`);
+  if (res.status === 404 && !check.gateway) {
+    const fields = check.tiers.map((t) => CONFIG_FIELD[t]).join(" and ");
+    throw new LlmError("unavailable", `Anthropic API does not know the model; check ${fields} in context.yml (${where})`);
+  }
+  if (!res.ok) log.debug(`looking up ${model} before the run returned ${where}; the first call will tell`);
 }
 
 interface Call {

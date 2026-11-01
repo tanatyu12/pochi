@@ -131,6 +131,12 @@ export interface LlmClient {
   /** Set in the CLI mode. */
   readonly backend?: CliBackend;
   generate<T>(req: GenerateRequest<T>, opts?: { signal?: AbortSignal }): Promise<T>;
+  /**
+   * Checks, without spending tokens, what can be checked before a run fetches anything: the
+   * credentials and, where the backend can tell, the models. Throws an LlmError when the client
+   * cannot work; anything it cannot tell (a gateway, a network hiccup) is left to the first call.
+   */
+  preflight?(opts?: { signal?: AbortSignal }): Promise<void>;
 }
 
 export type LlmErrorKind =

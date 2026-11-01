@@ -6,6 +6,7 @@ import {
   type GenerateRequest,
   GroupingOutputSchema,
   type LlmClient,
+  LlmError,
   type TriageOutput,
 } from "../../src/llm/schema.js";
 import type { Briefing, Delivery, Notifier } from "../../src/notifiers/types.js";
@@ -225,6 +226,24 @@ describe("runBriefing", () => {
     const p = runBriefing(input(memoryStateStore(), []), { ...deps, signal: controller.signal });
     setTimeout(() => controller.abort(), 10);
     await expect(p).rejects.toMatchObject({ exitCode: ExitCode.INTERRUPTED, message: "interrupted" });
+  });
+
+  it("checks the LLM before it loads the state or fetches anything", async () => {
+    const fetches = mockFetch({ [FEED]: feed(["Breaking change in lib"]) });
+    const store = memoryStateStore();
+    const load = vi.spyOn(store, "load");
+    const unusable: LlmClient = {
+      ...llm,
+      preflight: async () => {
+        throw new LlmError("auth", "Anthropic API rejected ANTHROPIC_API_KEY");
+      },
+    };
+    await expect(runBriefing(input(store, [], { llm: unusable }), deps)).rejects.toMatchObject({
+      kind: "auth",
+      exitCode: ExitCode.LLM,
+    });
+    expect(fetches.calls).toEqual([]);
+    expect(load).not.toHaveBeenCalled();
   });
 
   it("throws when every source fails", async () => {
