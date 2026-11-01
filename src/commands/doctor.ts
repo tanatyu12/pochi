@@ -10,7 +10,7 @@ import type { SpawnFn } from "../llm/cli.js";
 import { LlmError } from "../llm/schema.js";
 import { fetchEach, type SourceConfig, sourceConfigs, sourceInfo } from "../sources/index.js";
 import { tavilyApiKey } from "../sources/tavily.js";
-import { inspectState, pruneState, resolveStatePath, StateError } from "../state/store.js";
+import { type EntryStatus, inspectState, pruneState, resolveStatePath, StateError } from "../state/store.js";
 import { configureLog, redact } from "../util/log.js";
 import { isFancy, purple } from "../util/pochi-art.js";
 import { displayLine, plural } from "../util/text.js";
@@ -251,9 +251,9 @@ async function checkState(
     return;
   }
   const { entries } = found.state;
-  const counts = { n: 0, i: 0, r: 0 };
+  const counts: Record<EntryStatus, number> = { n: 0, i: 0, r: 0, u: 0 };
   for (const entry of entries.values()) counts[entry.s]++;
-  let detail = `${plural(entries.size, "entry", "entries")} (n ${counts.n} · i ${counts.i} · r ${counts.r})`;
+  let detail = `${plural(entries.size, "entry", "entries")} (n ${counts.n} · i ${counts.i} · r ${counts.r} · u ${counts.u})`;
   if (config) {
     const { ttlDays } = config.context.state;
     // A copy, so counting the expired entries changes nothing.
