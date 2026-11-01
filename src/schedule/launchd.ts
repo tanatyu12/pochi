@@ -127,7 +127,7 @@ function str(s: string): string {
   return `<string>${s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</string>`;
 }
 
-// "--" may not appear inside an XML comment.
+// "--" may not appear inside an XML comment, nor may it end with "-" ("--->").
 function comment(s: string): string {
-  return s.replaceAll("--", "- -");
+  return s.replace(/-(?=-)/g, "- ").replace(/-$/, "- ");
 }

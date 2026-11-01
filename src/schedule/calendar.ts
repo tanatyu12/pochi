@@ -69,13 +69,19 @@ export function parseTime(time: string): { hour: number; minute: number } {
  * Shorthands (@daily) and the L, W and # extensions are rejected rather than half supported.
  */
 export function parseCron(expr: string): Calendar {
-  const parts = expr.trim().split(/\s+/);
+  // A newline would end the one-line comment the expression is echoed into (the workflow, the plist).
+  if (/[^\S \t]/.test(expr.trim())) throw new CalendarError("a cron expression must be on one line");
+  const parts = cronFields(expr);
   if (parts.length !== 5) {
     throw new CalendarError(`"${expr}" must have 5 fields (minute hour day-of-month month day-of-week)`);
   }
   const fields = FIELD_ORDER.map((name, i) => parseField(parts[i]!, name));
   const [minute, hour, dayOfMonth, month, weekday] = fields as [Field, Field, Field, Field, Field];
   return { minute, hour, dayOfMonth, month, weekday };
+}
+
+function cronFields(expr: string): string[] {
+  return expr.trim().split(/[ \t]+/);
 }
 
 function parseField(text: string, name: FieldName): Field {
@@ -280,7 +286,8 @@ export function describeSchedule(schedule: Schedule, timeZone: string): string {
       case "monthly":
         return `monthly on the 1st ${at}`;
       case "cron":
-        return `cron "${schedule.cronjob}"`;
+        // Normalized, so the summary stays one line whatever the config holds.
+        return `cron "${cronFields((schedule.cronjob ?? "").replace(/\s+/g, " ")).join(" ")}"`;
     }
   })();
   return `${what} (${timeZone})`;
