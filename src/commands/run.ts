@@ -126,6 +126,7 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
     collected: collected.items.length,
     attempted: collected.attempted,
     failedSources: collected.failures.map((f) => f.sourceName),
+    personality: context.notify.personality,
   };
 
   if (dryRun) {

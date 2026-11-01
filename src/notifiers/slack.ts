@@ -6,6 +6,7 @@ import { collapseWhitespace, plural, truncate, truncateUnits } from "../util/tex
 import { sleep } from "../util/time.js";
 import { relatedShown } from "./text.js";
 import type { Briefing, Delivery, DeliveryFailure, Notifier } from "./types.js";
+import { failedLabel, fetchedText, quietLine } from "./voice.js";
 
 export const MAX_ITEMS_PER_MESSAGE = 45;
 /** Slack allows 3000 per section; the margin covers counting differences. */
@@ -90,7 +91,7 @@ export function buildSlackMessages(b: Briefing, opts: { postWhenEmpty: boolean }
       {
         payload: {
           text: `Pochi: no relevant updates for ${escapeMrkdwn(b.project)}`,
-          blocks: [headerBlock(b, ""), mrkdwnSection("No relevant updates today."), context],
+          blocks: [headerBlock(b, ""), mrkdwnSection(quietLine(b) ?? "No relevant updates today."), context],
         },
         itemIds: [],
       },
@@ -215,9 +216,10 @@ function mrkdwnSection(text: string): unknown {
 }
 
 function contextBlock(b: Briefing): unknown {
-  let text = `Collected ${plural(b.collected, "item")} from ${plural(b.attempted, "source")}`;
+  let text = fetchedText(b);
   if (b.failedSources.length > 0) {
-    const prefix = " · Failed: ";
+    const label = failedLabel(b);
+    const prefix = ` · ${label[0]!.toUpperCase()}${label.slice(1)}: `;
     text += prefix + fitEscaped(b.failedSources.join(", "), MAX_CONTEXT_CHARS - text.length - prefix.length);
   }
   return { type: "context", elements: [{ type: "mrkdwn", text }] };

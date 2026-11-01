@@ -28,6 +28,7 @@ llm:
 notify:
   minImpact: Low        # High | Medium | Low
   postWhenEmpty: false  # deliver a "No relevant updates" note on quiet days
+  personality: true     # Pochi's voice in the report's footer and quiet-day note
   channels:             # where the briefing goes, in this order
     - type: slack       # the webhook is read from SLACK_WEBHOOK_URL only
     # - type: file      # writes <dir>/<YYYY-MM-DD>.md

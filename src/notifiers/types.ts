@@ -13,6 +13,8 @@ export interface Briefing {
   attempted: number;
   /** Names of the sources that failed. */
   failedSources: string[];
+  /** Pochi's voice in the footer and quiet-day note (notify.personality). */
+  personality?: boolean;
 }
 
 export interface DeliveryFailure {
