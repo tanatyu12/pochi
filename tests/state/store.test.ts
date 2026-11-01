@@ -340,6 +340,14 @@ describe("saveState", () => {
     expect([...loaded.entries]).toEqual([...state.entries].sort(([a], [b]) => a.localeCompare(b)));
   });
 
+  it("keeps the count of briefings, ignoring a value that is not one", async () => {
+    await saveState({ ...emptyState(), briefings: 99 }, path, { now: NOW });
+    expect(await readFile(path, "utf8")).toContain('\n  "briefings": 99,\n');
+    expect((await loadState(path)).briefings).toBe(99);
+    await writeFile(path, JSON.stringify({ version: 1, briefings: -1, entries: {} }));
+    expect((await loadState(path)).briefings).toBeUndefined();
+  });
+
   it("writes an empty state that loads back", async () => {
     await saveState(emptyState(), path, { now: NOW });
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual({

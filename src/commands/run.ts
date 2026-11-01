@@ -7,6 +7,7 @@ import { createNotifiers } from "../notifiers/index.js";
 import { buildSlackMessages, type SlackMessage } from "../notifiers/slack.js";
 import { toText } from "../notifiers/text.js";
 import type { Briefing, Delivery, Notifier } from "../notifiers/types.js";
+import { isMilestone } from "../notifiers/voice.js";
 import { type FilterResult, filterAndAnalyze } from "../pipeline/filter.js";
 import { calendarOf, longestGapDays } from "../schedule/calendar.js";
 import { collectAll, stateKeys } from "../sources/index.js";
@@ -126,6 +127,8 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
     throw interrupted();
   }
 
+  // Counted only once it is delivered, so a failed delivery mentions the same number next time.
+  const number = (state.briefings ?? 0) + 1;
   const briefing: Briefing = {
     project: context.project.name,
     date: today,
@@ -134,6 +137,7 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
     attempted: collected.attempted,
     failedSources: collected.failures.map((f) => f.sourceName),
     personality: context.notify.personality,
+    ...(filtered.insights.length > 0 && isMilestone(number) && { milestone: number }),
   };
 
   if (dryRun) {
@@ -151,6 +155,7 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   );
   if (sent.length < notifiers.length) delivered.clear();
   recordFiltered(state, filtered, delivered, today);
+  if (delivered.size > 0) state.briefings = number;
   // A failed save after a delivery means tomorrow repeats it, so it wins over everything else (1).
   await save(filtered);
   if (opts.json) stdout(toJson(briefing, filtered, { dryRun, sent }));

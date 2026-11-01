@@ -18,10 +18,19 @@ export function quietLine(b: Briefing): string | undefined {
   return QUIET_LINES[Number.parseInt(sha256Hex(b.date).slice(0, 8), 16) % QUIET_LINES.length];
 }
 
+const MILESTONES = new Set([10, 50, 100, 200, 300, 365, 500, 1000]);
+
+/** Whether the nth briefing is mentioned in its footer. */
+export function isMilestone(n: number): boolean {
+  return MILESTONES.has(n);
+}
+
 /** The footer's count of what was collected. */
 export function fetchedText(b: Briefing): string {
   const counts = `${plural(b.collected, "item")} from ${plural(b.attempted, "source")}`;
-  return b.personality ? `Fetched by Pochi · ${counts}` : `Collected ${counts}`;
+  if (!b.personality) return `Collected ${counts}`;
+  // Every milestone ends in 0 or 5, so it takes "th".
+  return `Fetched by Pochi · ${counts}` + (b.milestone === undefined ? "" : ` · ${b.milestone}th briefing`);
 }
 
 /** Leads the list of sources that failed, lowercase. */

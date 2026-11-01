@@ -45,6 +45,17 @@ export const SITTING: readonly string[] = [
   ".....ssssssssss...sss...",
 ];
 
+/** SITTING with the tail swung up over the back; the two in turn make it wag. */
+export const WAGGING: readonly string[] = [
+  ...SITTING.slice(0, 10),
+  ".......sss..............",
+  "......s...s....sssss....",
+  "......s..ss...ssssss....",
+  ".......sss...sssssss....",
+  "......sssssssssssssss...",
+  ...SITTING.slice(15),
+];
+
 /**
  * One terminal line per two rows of pixels ("▀", "▄" or "█"), so a pixel is about as wide as it
  * is tall.
@@ -64,10 +75,10 @@ export function renderSprite(rows: readonly string[]): string[] {
   return lines;
 }
 
-/** Pochi beside the name and what it does. */
-export function greeting(): string {
-  const lines = renderSprite(SITTING);
+/** Pochi beside the name and a line under it, by default what it does. */
+export function greeting(opts: { subtitle?: string; sprite?: readonly string[] } = {}): string {
+  const lines = renderSprite(opts.sprite ?? SITTING);
   lines[5] += `   ${styleText("bold", "pochi")}`;
-  lines[6] += `   ${styleText("dim", "a daily briefing for your project")}`;
+  lines[6] += `   ${styleText("dim", opts.subtitle ?? "a daily briefing for your project")}`;
   return `\n${lines.map((l) => `  ${l}`).join("\n")}\n`;
 }

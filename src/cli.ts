@@ -6,6 +6,7 @@ import { doctorCommand } from "./commands/doctor.js";
 import { runInit } from "./commands/init.js";
 import { runCommand } from "./commands/run.js";
 import { scheduleCommand } from "./commands/schedule.js";
+import { woofCommand } from "./commands/woof.js";
 import { DEFAULT_CONFIG_DIR } from "./config/load.js";
 import { ExitCode, PochiError, exitCodeOf } from "./errors.js";
 import { redact } from "./util/log.js";
@@ -62,6 +63,7 @@ export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
   // addCommand does not copy the parent's settings, so this one needs its own exitOverride.
   program.addCommand(doctorCommand({ signal: opts.signal }).exitOverride());
   program.addCommand(scheduleCommand());
+  program.addCommand(woofCommand().exitOverride(), { hidden: true });
   return program;
 }
 

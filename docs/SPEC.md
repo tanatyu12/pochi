@@ -90,6 +90,7 @@ llm:
 notify:
   minImpact: Low             # これ未満の記事は通知しない（通知先によらない）
   postWhenEmpty: false       # 関連記事が0件の日も「No relevant updates」を届ける
+  personality: true          # レポートのフッターと0件の日の文面をポチの言葉にする（下記「ポチの表示」）
   channels:                  # 既定は [{ type: slack }]。届ける順
     - { type: slack }        # Webhook は SLACK_WEBHOOK_URL から
     - { type: file, dir: reports }   # <dir>/<YYYY-MM-DD>.md に Markdown で書く
@@ -141,7 +142,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 ### 状態ファイル state/notified.json
 
 ```json
-{ "version": 1, "updatedAt": "2026-10-25T22:17:03Z",
+{ "version": 1, "updatedAt": "2026-10-25T22:17:03Z", "briefings": 42,
   "entries": { "<id>": { "s": "n", "f": "2026-10-20", "l": "2026-10-25" } } }
 ```
 
@@ -364,6 +365,20 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
     - 対話：name と description を入力の初期値にする。problems と exclude は案を大文字小文字を区別せずに重複を除いて全選択の multiselect で出し（hint は axis と evidence）、続けて手入力で足せる（選んだ案や入力済みと同じものは受け付けない。選んだ数を上限から引く。problems を1件も選ばなければ手入力が1件必要）。language は English / Japanese ならそれを、それ以外は Other を選んだうえでその値を初期値にする。続けて提案の repos（大文字小文字を区別せずに重複を除く）を全選択の multiselect で出し（Claude は要らないので、裏で進む LLM の解決を待たない）、`verifyRepo` を同時に4件まで実行する。not_found / empty / 確認できなかったもの（手で入力したものではないので「それでも追加するか」は聞かない）は warn を出して除外し、movedTo・tags・プレリリースは手入力と同じに扱う。sites は全選択の multiselect の後、選んだものを discoverFeeds で同時に4件まで探し、提案の順に1件ずつ確定する（複数フィードなら選ばせる）。確認できなかったフィードや開けなかったページは、手で入力したものではないので「それでも追加するか」は聞かずに warn を出して除外する。repo や site が既に足したフィードと重なれば、どれを skip したかを warn で示す。残ったソースは最初の回のメニューに「n so far」として加わり、手で足したソースと一緒に Trial Fetch で確かめる。queries があれば Claude に提案を求めず（LLM の解決も待たない。TAVILY_API_KEY がなければ、除外した提案の件数を note に含める）、手入力と同じく整えて空になったものと重複を除き、案を multiselect で出す（毎朝1クレジットずつかかるので、初期状態では選ばない）。topic は案の値を引き継ぎ、id は手入力と同じ `queryIdFrom` で作る
   - 対話の間は、ログを warn 以上に絞る（取得処理の info で画面が崩れないようにする）
   - **前の設問に戻る（Shift+Tab）**：対話 CLI の定番どおり Esc と Ctrl-C は中止のまま、Web フォームの Tab / Shift+Tab に倣って Shift+Tab で1問戻る（clack のプロンプトに AbortSignal を渡し、Shift+Tab の keypress で abort して `PromptBack` にする）。init の流れは1本道のまま書き、`replayingPrompter`（`src/util/replay.ts`）が答えをすべて記録する。PromptBack が来たら init を最初から実行し直し、戻り先より前の答えは何も表示せずにそのまま返し、戻り先の設問は前の答えを初期値にして聞き直す。リストの手入力は1件ずつが1問なので、直前の1件に戻る。最初の設問では同じ設問を聞き直す。やり直しで通信と課金を繰り返さないよう、init の間は fetch と LLM の呼び出しを、要求の内容とその実行での何回目かで記録して返す（`src/commands/initCache.ts`。同じ要求を1回の実行で2回するときも、初回と同じ順に答えが返る）。Claude の検出は実行をまたいで1回だけ。設定を書き出した後は `freeze` し、Shift+Tab は同じ設問を聞き直すだけ
+
+### ポチの表示（util/pochi-art.ts、notifiers/voice.ts、commands/woof.ts）
+
+ツール名の Pochi（柴犬）を、うるさくない形で表に出す。絵文字は使わない。
+
+- ターミナル：stdout / stderr が TTY で、`NO_COLOR` も `POCHI_PLAIN` も設定されていない（空文字は未設定扱い）ときだけ（`isFancy`）。パイプ、cron、launchd、Actions の出力は従来のまま
+  - 絵：座った柴犬のシルエット（`SITTING`、24×21 ドット）を薄紫（256色の 183）1色で、ハーフブロック1文字に上下2ドットで描く。目は描かない。犬に見せる手がかりは、額から口先への段差、口の線、首輪（首の1行の切り抜き）、背中に巻いた尻尾
+  - init：intro の前に絵と `pochi` / 「a daily briefing for your project」を出す
+  - run：設定を読んだ直後に `pochi · <project> · <date>`（dry run なら ` · dry run`）を1行出す（--quiet では出さない）。ログは `pochi: info:` の代わりに記号（debug `·`、info `›`、warn `!`、error `×`）を付けて出す。ログの書き先を差し替えたとき（テスト、init のスピナー中）は従来の形式。実行を止めた PochiError も `×` で出す
+  - doctor：状態の列を色分けし（ok 緑、warn 黄、fail 赤、skip と - は薄く）、セクション名を太字にする。失敗がなければ集計の後に「Pochi is ready to fetch.」を足す。write を渡したときは色を付けない
+- レポート（`notify.personality`、既定 true。false なら従来の文面）：タイトルは変えない。フッターを `Fetched by Pochi · <n> items from <m> sources`（失敗は `; couldn't fetch: ...`、Slack は ` · Couldn't fetch: ...`）にし、0件の日は3つの文から日付の SHA-256 で1つ選ぶ（同じ日の通知先はすべて同じ文になる）
+- 通算回数：1件以上届けた実行の数を状態ファイルの `briefings` に数える（届けられなかった実行は数えない。読めない値は無視する）。今回が 10・50・100・200・300・365・500・1000 回目で、届ける記事があれば、フッターに ` · <n>th briefing` を足す
+- `pochi woof`（--help に出さない）：TTY では絵の尻尾を6回振り（`SITTING` と `WAGGING` を 160ms ごとに描き直す）、`<n> briefings fetched so far` を添える。TTY でなければ `Woof. ...` を1行出す。状態ファイルは読むだけ
+- README 用の素材：`node scripts/logo.mjs` が `SITTING` から `docs/pochi.svg` を作る（ライトテーマでは濃い紫）。`docs/demo.tape` は vhs で `docs/demo.gif` を録る
 
 ### 定期実行（schedule/、commands/schedule.ts）
 
