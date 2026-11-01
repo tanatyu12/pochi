@@ -10,6 +10,7 @@ import { pLimit } from "../../util/concurrency.js";
 import { normalizeUrl, parseHttpUrl } from "../../util/hash.js";
 import { HttpError } from "../../util/http.js";
 import { displayLine, plural } from "../../util/text.js";
+import { settle } from "../../util/settle.js";
 import { sourceIdFrom } from "./ids.js";
 import { type FeedInput, feedKey, keyOf, labelOf, once, repoKey } from "./keys.js";
 import { askNews, mayOfferNews } from "./searches.js";
@@ -22,7 +23,6 @@ import {
   errorLine,
   getLlm,
   llmFailed,
-  settle,
   throwIfCancelled,
 } from "./session.js";
 
