@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import * as z from "zod";
 import { ExitCode, exitCodeOf, PochiError } from "../../src/errors.js";
 import {
   AnalysisOutputSchema,

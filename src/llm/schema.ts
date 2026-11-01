@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { ImpactSchema } from "../config/schema.js";
 import { ExitCode, PochiError } from "../errors.js";
 
