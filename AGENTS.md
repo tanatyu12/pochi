@@ -39,7 +39,7 @@ Vitest's global setup (`tests/setup/build.ts`) builds the bundle before every ru
 - An env var set to an empty string counts as unset (GitHub Actions expands missing secrets to `""`). Use `?.trim() || undefined` as the existing code does.
 - Do not add a shebang to `src/cli.ts`; `scripts/build.mjs` adds it, and `tests/bundle.test.ts` checks there is exactly one.
 - `VERSION` (`src/version.ts`) is injected at build time and is `0.0.0-dev` under tsx and vitest.
-- API mode calls `messages.parse` and must not send `temperature` or `tool_choice` (current models reject them; `tests/llm/api.test.ts` asserts this).
+- API mode POSTs to `/v1/messages` with `fetch` (`src/llm/api.ts`, no SDK) and must not send `temperature` or `tool_choice` (current models reject them; `tests/llm/api.test.ts` asserts this). It takes credentials and `ANTHROPIC_BASE_URL` from the adapter rather than reading env itself.
 - Fetched text reaches the LLM only HTML-escaped inside `<untrusted_items>` (see `src/llm/prompts.ts`). Keep that fencing for any new prompt input.
 - Fail on a missing or unusable LLM before fetching anything or spending tokens. Items triaged as irrelevant are stored so they are never re-sent to the LLM.
 
@@ -62,7 +62,7 @@ Each list is the minimum set of places to touch; the exhaustive switches will po
 
 ## Dependencies
 
-- The runtime dependency list is deliberately small (seven packages). Don't add one when Node built-ins or a few lines will do; heavier parsers such as cheerio or rss-parser were rejected on purpose. Discuss before adding any runtime dependency.
+- The runtime dependency list is deliberately small (six packages). Don't add one when Node built-ins or a few lines will do; heavier parsers such as cheerio or rss-parser were rejected on purpose. Discuss before adding any runtime dependency.
 - Dependabot opens weekly update PRs; leave version bumps to it unless a change needs one.
 
 ## Security
