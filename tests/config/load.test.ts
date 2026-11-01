@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConfigError, loadConfig, parseContext, parseSources } from "../../src/config/load.js";
+import { ConfigError, configEnvOverrides, loadConfig, parseContext, parseSources } from "../../src/config/load.js";
 
 const EXAMPLE_DIR = new URL("../../config/", import.meta.url);
 const CONTEXT = "version: 1\nproject: { name: app, description: '' }\nproblems: [p]\n";
@@ -138,6 +138,17 @@ describe("loadConfig", () => {
       expect(err.message).toMatch(/invalid YAML at line \d+, column \d+ \(\w+\)/);
       expect(err.message).not.toContain("SECRET");
     });
+  });
+});
+
+describe("configEnvOverrides", () => {
+  it("does list the config env vars that are set and not blank", () => {
+    expect(configEnvOverrides({})).toEqual([]);
+    expect(configEnvOverrides({ POCHI_CONTEXT_YAML: "version: 1", POCHI_SOURCES_YAML: " " })).toEqual(["POCHI_CONTEXT_YAML"]);
+    expect(configEnvOverrides({ POCHI_CONTEXT_YAML: "a", POCHI_SOURCES_YAML: "b" })).toEqual([
+      "POCHI_CONTEXT_YAML",
+      "POCHI_SOURCES_YAML",
+    ]);
   });
 });
 

@@ -34,6 +34,8 @@ pochi schedule uninstall
 
 Run `npm run build` first: the job calls `dist/pochi.mjs`.
 
+Install reads the config the way `pochi run` does, so `POCHI_CONTEXT_YAML` and `POCHI_SOURCES_YAML`, when set in your shell, replace the files. `pochi init` therefore does not install the job while either is set; unset them and run `pochi schedule install`. When a file the job needs cannot be written or read (the plist, the workflow, `logs/`, `.env`), install stops with exit code 2 and names the path.
+
 ## On this machine (launchd, cron)
 
 launchd and cron do not see your shell's environment, so put the keys in a `.env` at the repository root and keep it private:

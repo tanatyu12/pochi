@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { ConfigError, DEFAULT_CONFIG_DIR, parseContext } from "../config/load.js";
+import { ConfigError, configEnvOverrides, DEFAULT_CONFIG_DIR, parseContext } from "../config/load.js";
 import {
   type Context,
   type ChannelConfig,
@@ -256,9 +256,8 @@ async function init(
     }
     if (ignored[i] === undefined) p.note(`Could not check whether git ignores ${path}.`);
   });
-  for (const name of ["POCHI_CONTEXT_YAML", "POCHI_SOURCES_YAML"]) {
-    if (env[name]?.trim()) p.warn(`${name} is set and takes precedence over the files just written.`);
-  }
+  const overrides = configEnvOverrides(env);
+  for (const name of overrides) p.warn(`${name} is set and takes precedence over the files just written.`);
 
   const configDir = dir === DEFAULT_CONFIG_DIR ? "" : ` --config-dir ${shellQuote(dir)}`;
   const types = new Set(context.notify.channels.map((c) => c.type));
@@ -266,7 +265,12 @@ async function init(
   // runs pochi, so a setup without Slack is run locally.
   const onActions = types.has("slack") && (await askWhereToRun(p));
   let installed = false;
-  if (!onActions && !runsFromBundle(deps.schedule)) {
+  if (!onActions && overrides.length > 0) {
+    // schedule install validates and plans from what loadConfig reads, which would not be these files.
+    p.warn(
+      `The schedule was not installed: ${overrides.join(" and ")} would be used instead of the files just written. Unset ${overrides.length > 1 ? "them" : "it"}, then run \`node dist/pochi.mjs schedule install${configDir}\`.`,
+    );
+  } else if (!onActions && !runsFromBundle(deps.schedule)) {
     // The job would call the source through tsx, which a scheduled run cannot do.
     p.warn(
       `The schedule was not installed: init is running from source. Run \`npm run build\`, then \`node dist/pochi.mjs schedule install${configDir}\`.`,
