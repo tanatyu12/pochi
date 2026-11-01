@@ -166,7 +166,7 @@ export function extractJson(text: string): unknown {
   let tagged: unknown;
   // Fences open and close at the start of a line; a ``` mentioned mid-sentence is prose.
   for (const match of trimmed.matchAll(/^```[^\n]*\n([\s\S]*?)^```/gm)) {
-    const value = tryParse(match[1]!);
+    const value = tryParse(match[1] ?? "");
     if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
     found = value;
     if ((value as { pochi?: unknown }).pochi === PROPOSAL_VERSION) tagged = value;

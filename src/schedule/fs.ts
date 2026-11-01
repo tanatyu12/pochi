@@ -1,4 +1,6 @@
+import { readFile, rm } from "node:fs/promises";
 import { ConfigError } from "../config/load.js";
+import { isEnoent } from "../util/fs.js";
 
 /**
  * A file the job needs could not be read or written: a ConfigError, so install, uninstall and
@@ -23,7 +25,17 @@ export async function unlessMissing<T>(action: string, path: string, run: () => 
   try {
     return await run();
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if (isEnoent(err)) return undefined;
     throw fsFailure(action, path, err);
   }
+}
+
+/** The file's text, or undefined when it does not exist. */
+export function readIfExists(path: string): Promise<string | undefined> {
+  return unlessMissing("read", path, () => readFile(path, "utf8"));
+}
+
+/** Whether there was a file to remove. */
+export async function removeIfExists(path: string): Promise<boolean> {
+  return (await unlessMissing("remove", path, () => rm(path).then(() => true))) ?? false;
 }

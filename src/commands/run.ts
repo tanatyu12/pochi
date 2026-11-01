@@ -12,7 +12,7 @@ import { tavilyApiKey } from "../sources/tavily.js";
 import { fileStateStore, memoryStateStore, resolveStatePath } from "../state/store.js";
 import type { Insight } from "../types.js";
 import { configureLog, log } from "../util/log.js";
-import { isFancy, purple } from "../util/pochi-art.js";
+import { isFancy, purple } from "../util/pochiArt.js";
 import { displayLine } from "../util/text.js";
 
 export interface RunOptions {
@@ -35,7 +35,7 @@ export interface RunDeps {
   resolveLlm?: typeof defaultResolveLlm;
   retryDelayMs?: number;
   slackIntervalMs?: number;
-  /** Read only for GITHUB_ACTIONS; process.env when left out. */
+  /** Where config overrides, secrets, POCHI_STATE_PATH and GITHUB_ACTIONS come from; process.env when left out. */
   env?: NodeJS.ProcessEnv;
 }
 
@@ -61,27 +61,28 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const now = deps.now?.() ?? new Date();
   const dryRun = opts.dryRun ?? false;
+  const env = deps.env ?? process.env;
 
-  const { context, sources } = await loadConfig({ configDir: opts.configDir });
-  if (!opts.quiet && isFancy(process.stderr)) {
+  const { context, sources } = await loadConfig({ configDir: opts.configDir, env });
+  if (!opts.quiet && isFancy(process.stderr, env)) {
     const about = `· ${displayLine(context.project.name, 80)} · ${briefingDate(context, now, deps.timeZone)}${dryRun ? " · dry run" : ""}`;
     process.stderr.write(`\n  ${purple("pochi")} ${styleText("dim", about)}\n\n`);
   }
   // A dry run delivers nothing, so it needs no webhook.
-  const notifiers = dryRun ? [] : createNotifiers(context, { slackIntervalMs: deps.slackIntervalMs });
-  if (sources.feeds.length === 0 && !tavilyApiKey()) {
+  const notifiers = dryRun ? [] : createNotifiers(context, { env, slackIntervalMs: deps.slackIntervalMs });
+  if (sources.feeds.length === 0 && !tavilyApiKey(env)) {
     throw new ConfigError("sources.yml has only queries and TAVILY_API_KEY is not set, so there is nothing to fetch");
   }
-  const { client } = await (deps.resolveLlm ?? defaultResolveLlm)(context.llm, { signal });
+  const { client } = await (deps.resolveLlm ?? defaultResolveLlm)(context.llm, { env, signal });
   // --no-state starts empty and saves nothing; a dry run reads the state but never writes it.
   const store =
-    opts.state === false ? memoryStateStore() : fileStateStore(resolveStatePath({ flag: opts.state }), { readOnly: dryRun });
+    opts.state === false ? memoryStateStore() : fileStateStore(resolveStatePath({ flag: opts.state, env }), { readOnly: dryRun });
 
   // The generated workflow commits the state file, so on Actions it holds no briefing text.
-  const storeAnalyses = (deps.env ?? process.env).GITHUB_ACTIONS?.trim() !== "true";
+  const storeAnalyses = env.GITHUB_ACTIONS?.trim() !== "true";
   const result = await runBriefing(
     { context, sources, llm: client, notifiers, store, dryRun, storeAnalyses },
-    { now: () => now, timeZone: deps.timeZone, signal, retryDelayMs: deps.retryDelayMs },
+    { now: () => now, timeZone: deps.timeZone, signal, retryDelayMs: deps.retryDelayMs, env },
   );
   const { briefing, filtered, sent, delivered } = result;
   if (dryRun) {

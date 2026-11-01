@@ -325,11 +325,26 @@ describe("runCommand", () => {
     const reports = join(dir, "reports");
     await writeFile(join(dir, "config", "context.yml"), withChannels(`[{ type: slack }, { type: file, dir: "${reports}" }]`));
     routes({ slack: reply.status(404) });
-    expect(await exitOf(run(fakeLlm(), {}, { env: { GITHUB_ACTIONS: "true" } }))).toBe(ExitCode.DELIVERY);
+    expect(await exitOf(run(fakeLlm(), {}, { env: { ...process.env, GITHUB_ACTIONS: "true" } }))).toBe(ExitCode.DELIVERY);
     const entries = Object.values(await readState()) as { s: string; c?: string[]; a?: unknown }[];
     const waiting = entries.filter((e) => e.s === "r");
     expect(waiting.length).toBeGreaterThan(0);
     expect(waiting.every((e) => e.c?.join() === "file" && e.a === undefined)).toBe(true);
+  });
+
+  it("does read the config, the webhook and the state path from the env it is given, not process.env", async () => {
+    const fetch = routes();
+    const elsewhere = join(dir, "other", "state.json");
+    const env = {
+      POCHI_SOURCES_YAML: `version: 1\nfeeds:\n  - { id: a, type: rss, name: "Blog A", url: "${FEED_A}" }\n`,
+      SLACK_WEBHOOK_URL: WEBHOOK,
+      POCHI_STATE_PATH: elsewhere,
+    };
+    vi.stubEnv("SLACK_WEBHOOK_URL", "");
+    expect(await exitOf(run(fakeLlm(), { state: undefined }, { env }))).toBe(ExitCode.OK);
+    expect(fetch.callsTo(FEED_B)).toHaveLength(0);
+    expect(slackTexts(fetch)).toEqual(["Pochi: 1 update for my-app (1 High)"]);
+    expect(Object.keys(JSON.parse(await readFile(elsewhere, "utf8")).entries).length).toBeGreaterThan(0);
   });
 
   it("names the file channel when only it fails, keeping the items for tomorrow", async () => {

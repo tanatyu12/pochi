@@ -6,10 +6,12 @@ import {
   calendarOf,
   convertZone,
   describeSchedule,
+  longestGapDays,
   nextRuns,
   offsetMinutes,
   parseCron,
   toCron,
+  wallTime,
 } from "../../src/schedule/calendar.js";
 
 const NOW = new Date("2026-10-28T03:00:00Z"); // Wed 12:00 in Tokyo
@@ -183,6 +185,58 @@ describe("nextRuns", () => {
   it("finds rare days and returns none for impossible ones", () => {
     expect(nextRuns(parseCron("0 0 29 2 *"), "UTC", NOW, 1)[0]?.toISOString()).toBe("2028-02-29T00:00:00.000Z");
     expect(nextRuns(parseCron("0 0 31 2 *"), "UTC", NOW, 1)).toEqual([]);
+  });
+});
+
+describe("nextRuns across daylight saving time", () => {
+  it("does keep the wall-clock time when the offset changes", () => {
+    // New York leaves daylight saving time on 2026-11-01 at 02:00.
+    const runs = nextRuns(parseCron("17 6 * * *"), "America/New_York", new Date("2026-10-30T12:00:00Z"), 3);
+    expect(runs.map((d) => d.toISOString())).toEqual([
+      "2026-10-31T10:17:00.000Z", // 06:17 EDT
+      "2026-11-01T11:17:00.000Z", // 06:17 EST
+      "2026-11-02T11:17:00.000Z",
+    ]);
+    expect(runs.map((d) => wallTime(d, "America/New_York"))).toEqual([
+      "Sat 2026-10-31 06:17",
+      "Sun 2026-11-01 06:17",
+      "Mon 2026-11-02 06:17",
+    ]);
+  });
+
+  it("does move a run in the skipped spring hour to the same offset after it", () => {
+    // 2027-03-14 02:30 does not exist in New York; the clock jumps from 02:00 to 03:00.
+    const [run] = nextRuns(parseCron("30 2 14 3 *"), "America/New_York", NOW, 1);
+    expect(run?.getTime()).toBeGreaterThan(new Date("2027-03-14T06:00:00Z").getTime());
+    expect(run?.getTime()).toBeLessThan(new Date("2027-03-14T08:00:00Z").getTime());
+  });
+});
+
+describe("longestGapDays", () => {
+  it("does find the longest wait between runs, in whole days", () => {
+    expect(longestGapDays(parseCron("17 6 * * *"), "UTC", NOW)).toBe(1);
+    expect(longestGapDays(parseCron("17 6 * * 1,4"), "Asia/Tokyo", NOW)).toBe(4);
+    expect(longestGapDays(parseCron("17 6 1 * *"), "UTC", NOW)).toBe(31);
+  });
+
+  it("does not count the hour daylight saving time adds to a week as a day", () => {
+    expect(longestGapDays(parseCron("17 6 * * 0"), "America/New_York", NOW)).toBe(7);
+  });
+
+  it("is at least one day for runs within a day", () => {
+    expect(longestGapDays(parseCron("0 * * * *"), "UTC", NOW)).toBe(1);
+  });
+
+  it("is undefined without two runs in five years", () => {
+    expect(longestGapDays(parseCron("0 0 31 2 *"), "UTC", NOW)).toBeUndefined();
+    expect(longestGapDays(parseCron("0 0 29 2 *"), "UTC", NOW)).toBeUndefined();
+  });
+});
+
+describe("wallTime", () => {
+  it("does show the weekday, date and time on the zone's clock", () => {
+    expect(wallTime(new Date("2026-10-28T21:17:00Z"), "Asia/Tokyo")).toBe("Thu 2026-10-29 06:17");
+    expect(wallTime(new Date("2026-10-28T21:17:00Z"), "UTC")).toBe("Wed 2026-10-28 21:17");
   });
 });
 

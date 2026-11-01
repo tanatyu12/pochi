@@ -1,10 +1,22 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { CONFIG_ENV_NAMES, type ConfigEnvName } from "../config/load.js";
+import type { SecretEnvName } from "../util/log.js";
 import { toCron } from "./calendar.js";
-import { fsStep, unlessMissing } from "./fs.js";
+import { fsStep, readIfExists, removeIfExists } from "./fs.js";
 import type { Job, Scheduler } from "./types.js";
 
 export const WORKFLOW_PATH = ".github/workflows/daily_briefing.yml";
+
+/** The repository secrets the run step reads, named from the lists the code reads them by. */
+const RUN_SECRETS: readonly (ConfigEnvName | SecretEnvName)[] = [
+  ...CONFIG_ENV_NAMES,
+  "ANTHROPIC_API_KEY",
+  "TAVILY_API_KEY",
+  "SLACK_WEBHOOK_URL",
+  "GITHUB_TOKEN",
+];
+const secret = (name: SecretEnvName) => name;
 
 /**
  * The actions the generated workflow uses. Dependabot cannot see inside this template, so these
@@ -34,18 +46,15 @@ export function githubScheduler(): Scheduler {
       await fsStep("write", path, () => writeFile(path, content));
       return [
         `Commit and push ${WORKFLOW_PATH} to the default branch; scheduled workflows run only there.`,
-        "Set the repository secrets it reads (gh secret set NAME): POCHI_CONTEXT_YAML and POCHI_SOURCES_YAML (the config files' contents), ANTHROPIC_API_KEY, and SLACK_WEBHOOK_URL or TAVILY_API_KEY when used.",
+        `Set the repository secrets it reads (gh secret set NAME): ${CONFIG_ENV_NAMES.join(" and ")} (the config files' contents), ${secret("ANTHROPIC_API_KEY")}, and ${secret("SLACK_WEBHOOK_URL")} or ${secret("TAVILY_API_KEY")} when used.`,
         "Try it from the Actions tab with dry_run checked before the first scheduled run.",
       ];
     },
     async uninstall(job) {
-      const path = workflowPath(job);
-      return (await unlessMissing("remove", path, () => rm(path).then(() => true))) ?? false;
+      return removeIfExists(workflowPath(job));
     },
     async inspect(job) {
-      const path = workflowPath(job);
-      const content = await unlessMissing("read", path, () => readFile(path, "utf8"));
-      return { content };
+      return { content: await readIfExists(workflowPath(job)) };
     },
   };
 }
@@ -92,12 +101,7 @@ jobs:
       - run: npm run build
       - name: Run pochi
         env:
-          POCHI_CONTEXT_YAML: \${{ secrets.POCHI_CONTEXT_YAML }}
-          POCHI_SOURCES_YAML: \${{ secrets.POCHI_SOURCES_YAML }}
-          ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
-          TAVILY_API_KEY: \${{ secrets.TAVILY_API_KEY }}
-          SLACK_WEBHOOK_URL: \${{ secrets.SLACK_WEBHOOK_URL }}
-          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+${RUN_SECRETS.map((name) => `          ${name}: \${{ secrets.${name} }}`).join("\n")}
           DRY_RUN: \${{ inputs.dry_run }}
         run: |
           if [ "$DRY_RUN" = "true" ]; then
