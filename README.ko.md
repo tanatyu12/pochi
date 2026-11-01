@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/pochi/actions/workflows/ci.yml"><img src="https://github.com/OWNER/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml"><img src="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-9a6fd8" alt="MIT 라이선스"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A522.18-9a6fd8" alt="Node 22.18 이상">
 </p>
@@ -96,7 +96,7 @@
 Pochi는 npm으로 배포하지 않습니다. 이 리포지토리를 자신의 복사본으로 만들어 실행합니다. 정기 실행이 제대로 동작하도록 GitHub의 **Use this template**으로 만드는 것을 권장합니다. clone해도 됩니다.
 
 ```sh
-git clone https://github.com/OWNER/pochi && cd pochi
+git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
 ```

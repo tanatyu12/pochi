@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OWNER/pochi/actions/workflows/ci.yml"><img src="https://github.com/OWNER/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml"><img src="https://github.com/tanatyu12/pochi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-9a6fd8" alt="Licence MIT"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A522.18-9a6fd8" alt="Node 22.18 ou plus récent">
 </p>
@@ -92,7 +92,7 @@ Il vous faut Node.js 22.18 ou plus récent, et au choix la CLI [`claude`](https:
 Pochi n'est pas publié sur npm : vous l'exécutez depuis votre propre copie de ce dépôt. Cliquez sur **Use this template** (recommandé, pour que les exécutions planifiées fonctionnent) ou clonez-le :
 
 ```sh
-git clone https://github.com/OWNER/pochi && cd pochi
+git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
 ```

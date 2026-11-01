@@ -5,6 +5,14 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tanatyu12/pochi.git"
+  },
+  "homepage": "https://github.com/tanatyu12/pochi#readme",
+  "bugs": {
+    "url": "https://github.com/tanatyu12/pochi/issues"
+  },
   "engines": {
     "node": ">=22.18"
   },
