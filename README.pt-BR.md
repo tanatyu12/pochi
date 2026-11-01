@@ -118,7 +118,7 @@ pochi run --dry-run   # mostra o resumo de hoje
 
 ## Do repositório à lista de acompanhamento
 
-O prompt pede ao agente que leia o seu código, a documentação e a configuração, sem tocar em nada secreto, sob quatro ângulos: a stack técnica, o negócio, o mercado e os concorrentes, e a operação. Cada sugestão cita a sua evidência. Este é um trecho do que ele propôs para o próprio Pochi (resumido):
+O prompt pede ao agente que leia o seu código, a documentação e a configuração, sem tocar em nada secreto, sob cinco ângulos: a stack técnica, o design, o negócio, o mercado e como alcançá-lo, e a operação. Cada sugestão cita a sua evidência. Este é um trecho do que ele propôs para o próprio Pochi (resumido):
 
 ```json
 "problems": [

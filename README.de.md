@@ -118,7 +118,7 @@ pochi run --dry-run   # gibt das heutige Briefing aus
 
 ## Vom Repository zur Watchlist
 
-Der Prompt bittet den Agenten, deinen Code, deine Doku und deine Konfiguration zu lesen, aber nichts Geheimes, und zwar entlang von vier Achsen: dein Tech-Stack, dein Geschäft, dein Markt und deine Wettbewerber sowie dein Betrieb. Jeder Vorschlag nennt seine Belege. Hier ein Teil dessen, was er für Pochi selbst vorgeschlagen hat (gekürzt):
+Der Prompt bittet den Agenten, deinen Code, deine Doku und deine Konfiguration zu lesen, aber nichts Geheimes, und zwar entlang von fünf Achsen: dein Tech-Stack, dein Design, dein Geschäft, dein Markt und wie du ihn erreichst, sowie dein Betrieb. Jeder Vorschlag nennt seine Belege. Hier ein Teil dessen, was er für Pochi selbst vorgeschlagen hat (gekürzt):
 
 ```json
 "problems": [

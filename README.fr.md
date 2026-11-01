@@ -118,7 +118,7 @@ pochi run --dry-run   # affiche le résumé du jour
 
 ## Du dépôt à la liste de veille
 
-Le prompt demande à l'agent de lire votre code, votre documentation et votre configuration, sans rien de secret, selon quatre axes : votre stack technique, votre activité, votre marché et vos concurrents, et votre fonctionnement au quotidien. Chaque proposition cite ses éléments à l'appui. Voici une partie de ce qu'il a proposé pour Pochi lui-même (abrégé) :
+Le prompt demande à l'agent de lire votre code, votre documentation et votre configuration, sans rien de secret, selon cinq axes : votre stack technique, votre design, votre activité, votre marché et la façon de l'atteindre, et votre fonctionnement au quotidien. Chaque proposition cite ses éléments à l'appui. Voici une partie de ce qu'il a proposé pour Pochi lui-même (abrégé) :
 
 ```json
 "problems": [
