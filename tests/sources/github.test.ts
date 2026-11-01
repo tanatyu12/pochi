@@ -254,6 +254,13 @@ describe("fetchGithubItems", () => {
     expect(call?.headers.get("authorization")).toBe("Bearer ghp_example");
   });
 
+  it("takes GITHUB_TOKEN from the env it is given", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "ghp_process");
+    const fm = mockFetch({ [releasesApi(next.repo)]: reply.json([]) });
+    await fetchGithubItems(next, { ...defaults, env: { GITHUB_TOKEN: "ghp_given" } });
+    expect(fm.calls[0]?.headers.get("authorization")).toBe("Bearer ghp_given");
+  });
+
   it("works without a token", async () => {
     vi.stubEnv("GITHUB_TOKEN", "");
     const fm = mockFetch({ [releasesApi(next.repo)]: reply.json([]) });
