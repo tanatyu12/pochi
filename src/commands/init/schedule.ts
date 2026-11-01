@@ -64,10 +64,24 @@ export function validTime(value: string): string | undefined {
   }
 }
 
-/** Runs in the next 30 days, capped: a cron job every minute is not worth counting. */
+// A cron job every minute is not worth counting further.
+const MAX_COUNTED_RUNS = 1000;
+
+/** Runs in the next 30 days, capped at MAX_COUNTED_RUNS. */
 export function runsPerMonth(schedule: Schedule, timeZone: string, now: Date): number {
   const end = now.getTime() + 30 * 86_400_000;
-  return nextRuns(calendarOf(schedule), schedule.timezone ?? timeZone, now, 1000).filter((r) => r.getTime() < end).length;
+  const calendar = calendarOf(schedule);
+  const zone = schedule.timezone ?? timeZone;
+  // Each run costs time zone lookups, so asking for the cap at once took a daily schedule
+  // 1000 days ahead (most of a second), on every replay of init. Ask for a month's worth
+  // first and more only while the runs have not passed the 30 days.
+  for (let limit = 32; ; limit = Math.min(limit * 8, MAX_COUNTED_RUNS)) {
+    const runs = nextRuns(calendar, zone, now, limit);
+    const last = runs.at(-1);
+    if (limit === MAX_COUNTED_RUNS || runs.length < limit || last === undefined || last.getTime() >= end) {
+      return runs.filter((r) => r.getTime() < end).length;
+    }
+  }
 }
 
 /** Whether a setup posting to Slack runs on GitHub Actions rather than on this machine. */
