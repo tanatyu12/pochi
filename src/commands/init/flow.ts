@@ -9,6 +9,7 @@ import { type Watchlist, discoveryPrompt } from "../../proposal/prompt.js";
 import { configureLog } from "../../util/log.js";
 import { type Prompter, PromptBack, PromptCancelled, createClackPrompter } from "../../util/prompter.js";
 import { replayingPrompter } from "../../util/replay.js";
+import { shellQuote } from "../../util/shell.js";
 import { type ScheduleDeps, runsFromBundle } from "../schedule.js";
 import { createInitCache } from "./cache.js";
 import { askContext, noteProposal } from "./context.js";
@@ -17,7 +18,7 @@ import { askIdeas } from "./ideas.js";
 import { type QuerySuggestion, cleanQuery, cleanSuggestions, once } from "./keys.js";
 import { askSchedule, askWhereToRun, install, offerInstall, runsPerMonth } from "./schedule.js";
 import { lookUpLlm, newSession } from "./session.js";
-import { gitCheckIgnored, shellQuote } from "./shell.js";
+import { gitCheckIgnored } from "./shell.js";
 import { askSources } from "./sources.js";
 
 const MAX_WATCHED = 10;

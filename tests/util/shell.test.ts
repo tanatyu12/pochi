@@ -15,5 +15,6 @@ describe("shellQuote", () => {
     expect(shellQuote("my config")).toBe("'my config'");
     expect(shellQuote("a'b")).toBe("'a'\\''b'");
     expect(shellQuote("")).toBe("''");
+    expect(shellQuote("$HOME")).toBe("'$HOME'");
   });
 });
