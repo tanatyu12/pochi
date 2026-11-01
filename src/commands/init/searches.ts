@@ -1,4 +1,5 @@
-import { type Context, DomainSchema } from "../../config/schema.js";
+import { localeOf } from "../../config/languages.js";
+import { DomainSchema } from "../../config/schema.js";
 import { MAX_QUERY_SUGGESTIONS, querySuggestionRequest } from "../../llm/prompts.js";
 import { LlmError } from "../../llm/schema.js";
 import { tavilyApiKey } from "../../sources/tavily.js";
@@ -30,16 +31,9 @@ const MAX_TYPED_QUERIES = 10;
 // Tavily's free plan, per month.
 const TAVILY_FREE_CREDITS = 1000;
 
-// Google News editions by the summary language; the rest search the English one.
-const LOCALES: Record<string, string> = { English: "en-US", Japanese: "ja-JP" };
-
-function localeOf(context: Context): string {
-  return LOCALES[context.language] ?? "en-US";
-}
-
 function newsFeed(s: SourceSession, query: string, sites: string[] | undefined): FeedInput {
   const id = queryIdFrom(query, s.ids);
-  return { id, type: "googlenews", query, ...(sites && sites.length > 0 && { sites }), locale: localeOf(s.context) };
+  return { id, type: "googlenews", query, ...(sites && sites.length > 0 && { sites }), locale: localeOf(s.context.language) };
 }
 
 /** Typed from the sources menu: the words, then the sites to keep to. */

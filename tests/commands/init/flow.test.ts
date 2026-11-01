@@ -226,11 +226,11 @@ describe("runInit", () => {
   });
 
   it("asks for another language when Other is chosen and leaves exclude out when empty", async () => {
-    const { deps: d } = deps(["app", "", "Problem", "", "", "other", "German", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, ON_ACTIONS]);
+    const { deps: d } = deps(["app", "", "Problem", "", "", "other", "Swahili", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: dir }, d);
     const text = await readFile(join(dir, "context.yml"), "utf8");
     expect(text).not.toContain("exclude");
-    expect((await loadConfig({ configDir: dir, env: {} })).context.language).toBe("German");
+    expect((await loadConfig({ configDir: dir, env: {} })).context.language).toBe("Swahili");
   });
 
   it("starts the channels from files, which need no secret", async () => {
@@ -665,15 +665,24 @@ describe("runInit --from", () => {
   });
 
   it("leaves a language it does not list to Other, filled in", async () => {
-    const from = await writeProposal({ pochi: "proposal/v1", language: "German", problems: [{ text: "News" }] });
+    const from = await writeProposal({ pochi: "proposal/v1", language: "Swahili", problems: [{ text: "News" }] });
     const configDir = join(dir, "config");
-    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "other", "German", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, ON_ACTIONS]);
+    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "other", "Swahili", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir, from }, d);
     expect(prompter.initial["Language for the summaries"]).toBe("other");
-    expect(prompter.initial.Language).toBe("German");
+    expect(prompter.initial.Language).toBe("Swahili");
     // Nothing proposed for exclude, so it is asked as before.
     expect(prompter.asked).toContain("What should be dropped even if it looks related? (1/30, empty to finish)");
-    expect((await loadConfig({ configDir, env: {} })).context.language).toBe("German");
+    expect((await loadConfig({ configDir, env: {} })).context.language).toBe("Swahili");
+  });
+
+  it("picks the listed language a proposal names by another name", async () => {
+    const from = await writeProposal({ pochi: "proposal/v1", language: "中文", problems: [{ text: "News" }] });
+    const configDir = join(dir, "config");
+    const { prompter, deps: d } = deps(["app", "", ["News"], false, "", "Chinese (Simplified)", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, ON_ACTIONS]);
+    await runInit({ configDir, from }, d);
+    expect(prompter.initial["Language for the summaries"]).toBe("Chinese (Simplified)");
+    expect((await loadConfig({ configDir, env: {} })).context.language).toBe("Chinese (Simplified)");
   });
 
   it("still requires a problem when every proposed one is dropped, asking for it outright", async () => {
