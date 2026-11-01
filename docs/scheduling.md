@@ -11,6 +11,8 @@ schedule:
   cronjob: "17 6 * * 1-5"    # interval: cron only
 ```
 
+`cronjob` is read the way cron (Vixie cron, as on most Linux and macOS) reads it. When both the day of the month and the day of the week are restricted, a day matches if either does: `0 9 1,15 * 1` runs on the 1st, the 15th and every Monday. But if either of the two fields starts with `*` (such as `*/2`), a day must match both: `0 9 */2 * 1` runs only on odd-dated Mondays. Install writes a step back as `*/2`, so the crontab line and the workflow keep that meaning. launchd cannot run on "either" days, so install refuses those with `--backend launchd`; use `--backend cron`.
+
 | Backend | Runs on | Keys come from | State file |
 | --- | --- | --- | --- |
 | `launchd` (default on macOS) | this Mac; a run missed while asleep runs on wake | `.env` in the repository | stays on this machine |

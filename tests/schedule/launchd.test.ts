@@ -38,8 +38,16 @@ describe("startCalendarInterval", () => {
     expect(startCalendarInterval(parseCron("* * * * *"))).toEqual([[]]);
   });
 
+  it("does require both days when one field starts with *, as cron then does", () => {
+    const dicts = startCalendarInterval(parseCron("0 9 */2 * 1"));
+    expect(dicts).toHaveLength(16);
+    expect(dicts[0]).toEqual([["Day", 1], ["Weekday", 1], ["Hour", 9], ["Minute", 0]]);
+    expect(dicts.at(-1)).toEqual([["Day", 31], ["Weekday", 1], ["Hour", 9], ["Minute", 0]]);
+  });
+
   it("refuses day of month with weekday, and too many combinations", () => {
     expect(() => startCalendarInterval(parseCron("0 6 1 * 1"))).toThrow("day of the month or a weekday");
+    expect(() => startCalendarInterval(parseCron("0 9 1,15 * 1"))).toThrow("day of the month or a weekday");
     expect(() => startCalendarInterval(parseCron("*/5 9-17 * * *"))).toThrow("more than 100 launchd intervals");
   });
 });

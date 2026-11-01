@@ -2,7 +2,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ConfigError } from "../config/load.js";
-import { type Calendar, CalendarError, type Field } from "./calendar.js";
+import { type Calendar, CalendarError, eitherDay, type Field } from "./calendar.js";
 import type { ExecFn } from "./exec.js";
 import { fsStep, unlessMissing } from "./fs.js";
 import type { Job, Scheduler } from "./types.js";
@@ -92,10 +92,11 @@ export function launchdScheduler(deps: { exec: ExecFn; home: string; uid: number
 /**
  * One dictionary per combination of the restricted fields; a missing key matches everything.
  * launchd requires every key in a dictionary to match, so day of month and weekday together
- * cannot keep cron's "either" and are refused.
+ * cannot keep cron's "either" and are refused. With one of them written starting with "*"
+ * ("*\/2"), cron requires both as well, which launchd can do.
  */
 export function startCalendarInterval(cal: Calendar): [string, number][][] {
-  if (cal.dayOfMonth !== "*" && cal.weekday !== "*") {
+  if (eitherDay(cal)) {
     throw new CalendarError(
       "launchd cannot run on a day of the month or a weekday (cron's rule when both are set); use one, or --backend cron",
     );
