@@ -268,6 +268,13 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - codex には環境変数をそのまま渡す。CODEX_API_KEY があれば codex はそれで動く（利用者が codex 用に設定したものとして扱う）
   - CLIモードの claude（`claude --version` を含む）には ANTHROPIC_API_KEY と ANTHROPIC_AUTH_TOKEN を除いた環境変数（`cliEnv`）を渡す。どちらかがあると claude はログインではなくそれで動き、API の従量課金になるため。ただし ANTHROPIC_BASE_URL が空でないとき（ゲートウェイや LiteLLM 経由の構成）は何も除かない。claude はキーかトークンでゲートウェイに認証するため。Bedrock / Vertex の設定は、利用者が claude 用に設定したものとして常に残す
   - `--version` は cli.ts の `withPrivateDir` と `runIn` で実行する（専用の一時ディレクトリを cwd とし、shell: false。10秒でタイムアウトし、SIGINT、5秒後に SIGKILL。中断は signal の reason、なければ AbortError）。終了コード0で何か出力したときだけ成功とし、その1行目（200字まで）を `cliVersion` として doctor に渡す
+  - `withPrivateDir` の後片付け（rm）の失敗（EBUSY / EACCES など）は debug に出すだけで投げない（呼び出しの答えや元の例外を隠さないため）。CLI に渡す入力ファイル（claude の system.md、codex の schema.json と system.md）は `writeInput` で権限600で書き、書けなければ（ENOSPC など）エラーコードだけを付けた unavailable にする（以降の呼び出しも同じく失敗するため、run を止める）
+  - **preflight**（`LlmClient.preflight?({ signal })`）：トークンを使わずに確かめられることを、記事の取得より前に確かめる。runBriefing が最初に呼ぶ（pipeline は注入された client を呼ぶだけで、ファイルや環境変数は読まない）。判断できないこと（ネットワークの不調、5xx、ゲートウェイ）は最初の呼び出しに任せ、確実に使えないときだけ LlmError を投げる
+    - APIモード：両方のモデル（同じなら1回）を `GET /v1/models/{model}` で同時に引く（ヘッダーとキーは messages と同じ、10秒でタイムアウト）。401 / 403 は auth、404 は unavailable（「check llm.triageModel / llm.analyzeModel」）。ANTHROPIC_BASE_URL があるとき、ゲートウェイがこのエンドポイントを持つとは限らないので 404 は信じない。キーの取り消しやモデル名の誤りで、Tavily などの課金のあるソースを取得してから3で止まるのを防ぐ
+    - claude：`claude auth status --json`（`cliEnv` の環境、専用の一時ディレクトリ、10秒）で loggedIn が false なら auth。API キー・Bedrock・Vertex も loggedIn に数えられる。auth status は 2.1.41 で入ったので（claude の changelog）、それより古い版（や版の読めない出力）には聞かない（"auth status" をプロンプトとして答えてしまうおそれがある）。JSON が読めない、起動できないなどは確かめずに続ける
+    - codex：`codex login status` が 0 以外で "Not logged in" を出したら auth。codex exec は CODEX_API_KEY（と OPENAI_API_KEY）でも動くが login status はそれを数えないので、どちらかがあれば聞かない。それ以外の失敗は確かめずに続ける
+    - CLIモードではモデル名の誤りは確かめられない（どちらの CLI もプロンプトを送らずにモデルを確かめる方法がない）。また login の確認はローカルの記録を読むだけなので、取り消されたログインは最初の呼び出しで分かる
+  - codex で triageModel がなければ、Triage も codex の既定（大きい）モデルになる。どの小さいモデルを使えるかはアカウントによるので既定を決めず、debug で「triageModel を設定すると安くなる」と示す（docs/configuration.md にも書く）
 - **api.ts**
   - `createApiLlm({ models, apiKey?, authToken?, baseUrl?, timeoutMs?, maxRetries?, retryBaseMs? })` は adapter が解決したモデル名と、環境変数から読んだ ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL（前後の空白を除き、空なら未設定）を受け取る。api.ts 自身は環境変数を読まない。既定のモデルは `DEFAULT_API_MODELS`（claude-haiku-5-5 / claude-sonnet-5-5）
   - SDK は使わず、`fetch` で `${ANTHROPIC_BASE_URL ?? https://api.anthropic.com}/v1/messages` に POST する。ヘッダーは `content-type: application/json`、`anthropic-version: 2023-06-01`、キーがあれば `x-api-key`、なくトークンだけあれば `authorization: Bearer`。どちらもなければ送らずに auth。ANTHROPIC_BASE_URL が http(s) でなければ値を出さずに unavailable（resolveLlm の時点で失敗する）。使うのは1つのエンドポイントだけで、SDK はバンドルの約半分（約1.2MB）を占めていた。テストは `mockFetch` で fetch を差し替える
@@ -303,14 +310,15 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - pretriaged には状態 r の既知の記事を渡す。Triage を飛ばして Analyze に回す
   - analyzed には状態 r で分析結果（a）を保存してある記事から組み立てた `Insight` を渡す。LLM を呼ばずに insights に加え（maxItemsPerRun にも数えない）、minImpact に届かなければ related ごと irrelevant にする
   - maxItemsPerRun は pretriaged と新しい記事を合わせた上限。先に pretriaged を、残りの枠に新しい記事を、それぞれ日付の新しい順（日付なしは後ろ）に採る。ただし新しい記事のために枠の半分（切り捨て。新しい記事がそれより少なければその件数）を残し、溜まった r が新しい記事を締め出さないようにする。あふれた pretriaged は pending（r のまま）、あふれた新しい記事は未決とする
-  - Triage は maxItemsPerCall（既定40）件ずつ、関連する記事と pretriaged を Analyze に15件ずつ渡す。どちらも0件なら LLM を呼ばない。バッチは1つずつ順に送る（同時に送ると、止める判定や連続失敗の数え方が実行順に左右されるため）。止まった後や中断の後は、残りのバッチを送らない
+  - Triage は maxItemsPerCall（既定40）件ずつ、関連する記事と pretriaged を Analyze に15件ずつ渡す。どちらも0件なら LLM を呼ばない。1段のバッチは `STAGE_CONCURRENCY`（APIモード3、CLIモード2。CLIモードは1件ごとにプロセスを起こすため）まで同時に送る（1回の呼び出しが数分かかりうるので、1つずつでは実行が長くなる。`filterAndAnalyze` の `concurrency` で変えられ、テストは順序を数えるときに1を渡す）。止まった後や中断の後は新しいバッチを送らず、送信中のバッチは終わるのを待ってその回答を使う（中断なら signal で止まる）。バッチは終わった順に結果を足すが、段の終わりに各リスト（relevant、irrelevant、undecided、pending、insights）の今回足した分を入力の順に並べ直す（`inInputOrder`）ので、グルーピングのプロンプトと同じ impact・日付の insight の順は、1つずつ送ったときと同じで実行順に左右されない。1つのバッチの分割（二分探索）はその中で順に送る
   - 回答の ID はバッチ内の短縮 ID で記事に戻す。未知の ID は破棄し、同じ ID は最初の回答だけを使う。回答のない記事は、Triage なら未決、Analyze なら pending。バッチの記事のどれにも合う ID がない回答は invalid_output として扱う。Analyze の title が空なら記事のタイトルで補う
   - 一時的な失敗（rate_limit / timeout / transport）のバッチは `RETRY_DELAY_MS`（10秒）待ってから1回再試行する（api.ts と claude は自前で再試行済みなので、間を空けないと同じ制限に当たる）。再試行しても rate_limit なら、制限はすぐには解けない（CLIモードではサブスクリプションの利用上限）ので、auth と同じく以降を止める
-  - 再試行や分割をしても1件も回答を得られなかったバッチが2つ続いたら、以降を止める（`MAX_FAILED_IN_A_ROW`）。続く timeout・transport（原因不明の claude のエラーを含む）、設定の誤りによる bad_request などがここで止まる。回答を得たバッチ（i にした記事があるバッチを含む）を挟めば数え直す
+  - 再試行や分割をしても1件も回答を得られなかったバッチが（終わった順に）2つ続いたら、以降を止める（`MAX_FAILED_IN_A_ROW`）。続く timeout・transport（原因不明の claude のエラーを含む）、設定の誤りによる bad_request などがここで止まる。回答を得たバッチ（i にした記事があるバッチを含む）を挟めば数え直す
   - バッチの中身が原因の失敗（max_tokens / refusal / invalid_output / too_large / bad_request）は同じまま再送せず、二分探索で原因を探す。半分ずつ順に1回送り、中身の原因で失敗した側をさらに分ける。両方の半分が失敗したら、大きさが原因（too_large / max_tokens）なら両方とも分け続け、それ以外は特定の記事のせいではない（モデルの出力の問題など）とみなして分けるのをやめ、記事を未決（Analyze なら pending）にする。1つの元のバッチで分割に使う呼び出しは `2 + 4·⌈log₂n⌉` 回まで（40件なら26回）で、使い切ったら残りを未決にする
   - 1件の記事が中身の原因で失敗したとき（分割の結果でも、最初から1件のバッチでも）、この実行で既に何かが回答を得ていれば、その記事をもう一度だけ送る（たまたまの失敗で記事を永久に捨てないため）。また中身の原因で失敗したら、その記事が原因とみなして irrelevant（状態 i）にし、warn を出す（`stats.dropped`）。まだ何も回答を得ていなければ、モデルや設定の問題でありうるので未決にする。原因が1件なら呼び出しは約 2 + 2·log₂n 回。既知の制限：大きさ以外の原因の記事が同じバッチの両方の半分にあると絞り込めず、翌日も同じ結果になりうる
   - stats の失敗数は、分けた分も含めて1件も回答を得られなかった（i にした記事もない）、送ったバッチだけを数える。止まった後や中断の後に飛ばしたバッチは数えない
-  - auth と unavailable は再試行せず、以降のバッチ（Analyze を含む）も呼ばずに未決（Analyze なら pending）とする。LlmError 以外の例外はそのまま投げる
+  - auth と unavailable は再試行せず、以降のバッチ（Analyze を含む）も呼ばずに未決（Analyze なら pending）とする。同時に送っていたバッチは回答を使う
+  - LlmError 以外の例外（バグなど）が出たら、新しいバッチを送らず、送信中のバッチが終わるのを待ってから `FilterFailure` を投げる。`partial` はそれまでの判定で、判定の済んでいない記事は未決、分析の済んでいない記事は pending にしたもの（中断と同じ形）、`cause` が元の例外。runBriefing は partial を中断のときと同じく記録して保存し（dry-run では保存しない。保存の失敗は warn に出すだけで元の例外を隠さない）、元の例外を投げる（課金済みの Triage の判定を捨てないため）
   - 中断（signal）は再試行せず、例外も投げない。各バッチを送る前に signal を確かめ、中断されていれば送らない。それまでの判定を返し、送れなかったバッチは未決（Analyze なら pending）、`aborted: true` とする。中断の後は error を入れない（Slack 送信の `aborted` と同じ作り）
   - minImpact 未満の記事は状態 i として記録し、通知しない
   - 並び順は影響度（High → Low）、同じ影響度なら日付の新しい順（日付なしは後ろ）
@@ -334,14 +342,14 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 - **commands/run.ts**
   1. 設定を読む（失敗すれば終了コード2。`--verbose` と `--quiet` の併用も2）
   2. dry-run でなければ `createNotifiers` で通知先を作る（slack で SLACK_WEBHOOK_URL がなければ2。空白だけは未設定扱い）。feeds が空で queries があり、TAVILY_API_KEY がなければ2（取得するソースがない）
-  3. LLM を解決する（失敗すれば3）。手順2と3は記事の取得や LLM の課金より前に済ませる
+  3. LLM を解決する（失敗すれば3）。runBriefing は最初に `preflight` を呼ぶ（キーの取り消し、ログアウト、APIモードのモデル名の誤りなら3）。手順2と3と preflight は記事の取得や LLM の課金より前に済ませる。dry-run でも同じく確かめる（dry-run も Triage と Analyze で課金されるため）
   4. 状態ファイルを読み、期限切れのエントリを削除する。dry-run では `readOnly` で読む（壊れたファイルを退避しない）。`--no-state` なら読まずに空の状態から始め、保存もしない
   5. 記事を収集する（全ソースが失敗すれば5）。まず遡る日数（以下 maxItemAgeDays。`itemAgeDays`）を決める：context.yml に maxItemAgeDays があればそれ。なければスケジュールの実行間隔の最長（`longestGapDays`。日単位で四捨五入、最小1日。毎日なら1、金・土なら6、週1なら7、月1なら31）に1日足した日数で、前回の実行（updatedAt）からそれ以上空いていれば、その日数（切り上げ）に1日足した日数。5年以内に2回の実行がなければ14日。いずれも ttlDays - 1 を超えない（期限切れの状態の記事が新規に戻らないように）。状態ファイルに updatedAt があれば、その1日前（未来の時刻なら今から1日前。時差と公開日のずれの分の重なりで、重複は状態で除く）を since とし、ただし maxItemAgeDays より前には遡らない。updatedAt がなければ（初回）maxItemAgeDays 前を since とする（各フィードは itemsPerFeed 件に加え、その間の記事を maxItemsPerFeed 件まで取る。Tavily は start_date）。状態の sources にそのソースの起点があれば、updatedAt の代わりにそれを使う（`sourceWindow`）。そのソースの遡る日数は、maxItemAgeDays を設定していなければ、起点からの日数（切り上げ）に1日足した日数まで広げる（ttlDays - 1 まで。前回失敗したソースが、止まっていた間の記事を古すぎるとして捨てないように。updatedAt から実行の遡る日数を決めるのと同じ考え方）。収集が中断されたら（collectAll は signal の reason をそのまま投げる）PochiError の interrupted（130）に変えて投げる
   6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が u の記事は新しい記事と同じく Triage に回す（古さでは i にしない）。r の記事は除外せず、分析結果（a）があればそこから `Insight` を組み立てて `analyzed` として、代表（p）がその中にあればその `related` に加え、どちらでもなければ `pretriaged` として手順7に渡す。ただし r と u のうち初めて見た日（全キーの f の最小値、`firstSeen`）から maxItemAgeDays（ただし最低14日。毎日の実行で通知先が週末止まっても失わないように）を超えたものは渡さず、状態 i にして打ち切る。新規でそのソースの遡る日数より古い記事は状態 i にする（日付のない記事は新しいものとして扱う）
   7. Triage と Analyze を実行する（状態 r の記事は `pretriaged` として渡す）。その間に、関連ありの記事（pretriaged を含む）が2件以上あれば、同じ話題（同じ事件・発表・リリース・判決など1つの出来事を、別の媒体が報じたものや転載。話題が近いだけの別の出来事は含めない）を報じた記事のまとまりを Triage のモデルに1回だけ聞く（`groupingRequest`。各記事はタイトル・ソース・URL・公開日と本文の先頭200字）。まとまりごとに代表（公式発表 > 報道 > 転載の順で一次情報に近く、本文の多いもの。モデルが選び、まとまりにない id なら先頭）だけを Analyze に送り、ほかの記事は代表と同じ扱いにする（insight の `related` に新しい順で付け、代表が無関係・保留なら同じく irrelevant・pending に入れる）。まとめる呼び出しが失敗したら warn を出し、まとめずに続ける。結果が `aborted` なら通知せず、irrelevant を i、undecided を u、pending と insights を r（insights は分析結果と、それまでに届いていた通知先を付けて）として記録して保存し、130 で終える。Analyze と Triage に伝える「今日」と、briefing の日付（ヘッダー、レポートのファイル名）は `briefingDate`：context.schedule.timezone（なければ実行環境のタイムゾーン。`BriefingDeps.timeZone` で渡せる）での日付。日本時間 8:30 の実行が UTC の前日の日付にならないように。状態ファイルの f / l と古さの判定は UTC の日付のまま
   8. channels の順に各通知先へ届ける（filter の結果に error があっても届ける）。各通知先には、その通知先が既に受け取った insight（状態の c）を除いた briefing を渡す（除いた結果が空なら milestone も付けない）。中断されたら残りの通知先には届けない（各通知先の前に signal を確かめる。ファイルの書き込みは中断できないため）。dry-run のときは stdout に出し、状態は書かない（filter の error があれば出力後に3）
   9. 状態を保存する。irrelevant は i、undecided は u、pending は r、それまでと今回とを合わせて全通知先に届いた insights は n、どれかに届いていない insights は r として、届いた通知先（c）と分析結果（a）を付けて記録する（どちらも `related` の記事を代表と同じ状態で、r なら c と代表の id（p）を付けて記録する）。翌日は Triage も Analyze も払い直さず、届いていない通知先にだけ送る。中断で途中までしか届けられなかったときも、届いた通知先の分は記録する。updatedAt は必ず今回の時刻にし、sources を更新する（状態ファイルの節）。1件以上どこかに新しく届いたら briefings を1つ増やす。保存に失敗すれば1（送信済みの記事が翌日また届くため、ほかの失敗より優先する）。保存の後、通知が中断されていれば130、filter の結果に error があれば3、どれかの通知先で失敗していれば4（`delivery failed: slack (2 updates not delivered)`）。3 を 4 より優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
-  - 収集中や LLM の解決中に中断されたら（signal の reason が投げられる）130 にする
+  - 収集中や LLM の解決中、preflight 中に中断されたら（signal の reason が投げられる）130 にする
   - フラグ：`--dry-run`、`--state <path>`、`--no-state`、`--json`、`--config-dir <dir>`（既定 config）、`--verbose`、`--quiet`
   - stdout：dry-run では人が読むテキスト（見出し、insight ごとに `[影響度] title`・URL・要約・Action・ソース名・同じ話題の別記事（`Also:` で3件まで、残りは件数）、最後に収集件数と失敗したソース）。`--json` では1つの JSON（date、dryRun、collected、attempted、failedSources、stats、insights（同じ話題の別記事は `related` に id・title・url・source）、dry-run で slack が通知先にあれば Slack に送るはずだった `messages`、届けたなら通知先ごとの `delivered`（`{ slack: [...], file: [...] }`）、filter の error があれば kind と message）。ログは常に stderr
   - テストのために `runCommand(opts, deps)` の deps で now・signal・stdout・resolveLlm・待ち時間を差し替えられる
@@ -415,7 +423,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 | 0 | 成功（一部のソースやバッチの失敗、「関連記事なし」を含む） |
 | 1 | 内部エラー、または送信後の状態保存の失敗 |
 | 2 | 設定・使い方のエラー |
-| 3 | LLM が使えない、または全バッチの失敗 |
+| 3 | LLM が使えない（キーやログインが拒否された、モデルがないを含む）、または全バッチの失敗 |
 | 4 | 通知の失敗（Slack への送信、レポートの書き込み。一部の失敗も含む） |
 | 5 | 全ソースの失敗 |
 | 130 | 中断 |

@@ -30,9 +30,9 @@ language: English    # the language of the summaries
 | Key | Default | Notes |
 | --- | --- | --- |
 | `llm.provider` | `auto` | `api`, `claude`, `codex`, or `auto`: an API key if `ANTHROPIC_API_KEY` is set, else the `claude` CLI, else `codex` |
-| `llm.triageModel` | `claude-haiku-5-5` (api), `haiku` (claude) | The model that reads every new item. Codex uses its own default |
+| `llm.triageModel` | `claude-haiku-5-5` (api), `haiku` (claude) | The model that reads every new item. Codex uses its own default for both stages, so with codex, setting a smaller model here cuts the cost of triage |
 | `llm.analyzeModel` | `claude-sonnet-5-5` (api), `sonnet` (claude) | The model that writes up the relevant ones |
-| `llm.maxItemsPerCall` | `40` | Items per LLM request |
+| `llm.maxItemsPerCall` | `40` | Items per LLM request. Up to 3 requests run at once in the API mode, 2 in the CLI mode |
 | `llm.maxItemsPerRun` | `150` | Items per run; the rest wait for the next run |
 | `notify.minImpact` | `Low` | `High`, `Medium` or `Low`: drop anything below |
 | `notify.postWhenEmpty` | `false` | Deliver a "No relevant updates" note on quiet days |
