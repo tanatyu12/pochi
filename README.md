@@ -26,8 +26,21 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="docs/configuration.md">Configuration</a> ·
-  <a href="docs/scheduling.md">Scheduling</a> ·
-  <a href="README.ja.md">日本語</a>
+  <a href="docs/scheduling.md">Scheduling</a>
+</p>
+
+<p align="center">
+  <sub>
+    <a href="README.md">English</a> ·
+    <a href="README.ja.md">日本語</a> ·
+    <a href="README.zh-CN.md">简体中文</a> ·
+    <a href="README.zh-TW.md">繁體中文</a> ·
+    <a href="README.es.md">Español</a> ·
+    <a href="README.fr.md">Français</a> ·
+    <a href="README.de.md">Deutsch</a> ·
+    <a href="README.pt-BR.md">Português</a> ·
+    <a href="README.ko.md">한국어</a>
+  </sub>
 </p>
 
 <p align="center">
@@ -148,6 +161,8 @@ Two files in `config/`, both written by `pochi init`:
 
 - **`context.yml`**: what your project is, the problems you care about, what to exclude, the language of the briefing, and where to deliver it.
 - **`sources.yml`**: the GitHub repositories, feeds, Google News searches and Tavily queries to watch.
+
+The briefing can be written in any language. `pochi init` offers English, Japanese, Chinese, Spanish, French, German, Portuguese and Korean, and its news searches use that language's Google News edition. Labels such as High and Action stay in English ([docs/configuration.md](docs/configuration.md)).
 
 <details>
 <summary>A minimal example</summary>
