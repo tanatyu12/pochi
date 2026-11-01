@@ -168,13 +168,15 @@ async function checkLlm(
       command: deps.command,
       signal: deps.signal,
     });
+    // The same check a run makes before fetching: a revoked key, a mistyped API model or a
+    // logged-out CLI. It uses no tokens; what it cannot tell (no network, a 5xx) passes.
+    await client.preflight?.({ signal: deps.signal });
     // Without a configured model, codex uses the one its login defaults to.
     const tiers = `triage ${models.triage ?? "codex default"} · analyze ${models.analyze ?? "codex default"}`;
     if (client.mode === "cli") {
       report.ok("LLM", `cli mode (${client.backend})`, `${cliVersion} · ${tiers}`);
     } else {
-      // A key is only known to be valid once a request is billed, which doctor does not do.
-      report.ok("LLM", "api mode", `${tiers} (the key is not checked against the API)`);
+      report.ok("LLM", "api mode", `${tiers} (key and models checked, no tokens used)`);
     }
   } catch (err) {
     if (!(err instanceof LlmError)) throw err;

@@ -95,7 +95,7 @@ Or answer a few questions instead: `pochi init`.
 **2. Check, then try a run** that posts nothing:
 
 ```sh
-pochi doctor          # config, LLM, keys and state; calls no model, costs nothing
+pochi doctor          # config, LLM key or login, keys and state; sends no prompt, costs nothing
 pochi run --dry-run   # prints today's briefing
 ```
 
@@ -136,7 +136,7 @@ Only items new to you reach the LLM, and only the relevant ones reach the strong
 | Command | |
 | --- | --- |
 | `pochi init` | Create the config interactively, or `--from` an agent's proposal |
-| `pochi doctor` | Check the config, LLM, keys and state without calling a model or sending anything |
+| `pochi doctor` | Check the config, that the LLM key or login works, keys and state, without sending a prompt or anything else |
 | `pochi run` | Collect, filter and deliver today's briefing (`--dry-run` to only print it) |
 | `pochi schedule install` | Run it on the schedule in `context.yml`, with launchd, cron or GitHub Actions |
 
