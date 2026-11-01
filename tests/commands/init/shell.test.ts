@@ -28,4 +28,8 @@ describe("gitCheckIgnored", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("answers no paths with no answers, without running git", async () => {
+    expect(await gitCheckIgnored([])).toEqual([]);
+  });
 });

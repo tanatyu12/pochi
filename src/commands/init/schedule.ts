@@ -15,7 +15,7 @@ type ScheduleInput = NonNullable<ContextInput["schedule"]>;
  */
 export async function askSchedule(p: Prompter, previous: Schedule | undefined, timeZone: string): Promise<ScheduleInput> {
   const custom = previous?.interval === "monthly" || previous?.interval === "cron" ? previous : undefined;
-  const interval = await p.select({
+  const choice = await p.select({
     message: "When should pochi run?",
     options: [
       { value: "daily" as const, label: "Every day" },
@@ -24,14 +24,16 @@ export async function askSchedule(p: Prompter, previous: Schedule | undefined, t
     ],
     initialValue: custom ? "keep" : previous?.interval === "weekly" ? "weekly" : "daily",
   });
-  if (interval === "keep") return custom!;
+  if (choice === "keep" && custom) return custom;
+  // Keep is offered only with a custom schedule to keep.
+  const interval = choice === "weekly" ? "weekly" : "daily";
   let days: Weekday[] = [];
   if (interval === "weekly") {
     const before = previous?.day === undefined ? ["monday" as const] : [previous.day].flat();
     for (;;) {
       days = await p.multiselect({
         message: "Days to run on (space to select)",
-        options: WEEK.map((d) => ({ value: d, label: d[0]!.toUpperCase() + d.slice(1) })),
+        options: WEEK.map((d) => ({ value: d, label: d.charAt(0).toUpperCase() + d.slice(1) })),
         initialValues: before,
       });
       if (days.length > 0) break;

@@ -8,7 +8,7 @@ import type { GoogleNewsFeed } from "../../../src/config/schema.js";
 import { LlmError } from "../../../src/llm/schema.js";
 import { googleNewsUrl } from "../../../src/sources/googlenews.js";
 import { mockFetch, reply } from "../../helpers/mockFetch.js";
-import { scriptedPrompter } from "../../helpers/scriptedPrompter.js";
+import { type ScriptedPrompter, scriptedPrompter } from "../../helpers/scriptedPrompter.js";
 import {
   API,
   BASE_ROUTES,
@@ -53,6 +53,17 @@ describe("askSources: repositories", () => {
         message: expect.stringMatching(/owner\/repo/),
       });
     }
+  });
+
+  it("goes back to the menu when an answer replayed without validation is not usable", async () => {
+    // Going back replays answers without validating them again.
+    const scripted = scriptedPrompter(["repo", "next.js", "site", "not a url", "repo", "vercel/next.js", "done"]);
+    const prompter: ScriptedPrompter = { ...scripted, text: (opts) => scripted.text({ ...opts, validate: undefined }) };
+    const result = await askSources(newSession(prompter, CONTEXT));
+    expect(scripted.remaining).toEqual([]);
+    expect(scripted.shown).toContain("warn: Without Claude, enter the repository as owner/repo.");
+    expect(scripted.shown).toContain("warn: Enter an absolute http(s) URL.");
+    expect(result.feeds).toEqual([{ id: "next-js", type: "github", name: "vercel/next.js", repo: "vercel/next.js" }]);
   });
 
   it("goes back to the choice of source when a repository is missing or has nothing to watch", async () => {

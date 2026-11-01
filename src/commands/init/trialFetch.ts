@@ -34,11 +34,14 @@ export async function trialFetch(
   if (signal?.aborted || fetched.some((o) => "aborted" in o)) throw new PromptCancelled();
   // Each outcome carries the config it was fetched for.
   const byConfig = new Map(fetched.map((o) => [o.source, o]));
-  const outcomes = configs.map((source): SourceOutcome => {
+  const outcomes = configs.flatMap((source): SourceOutcome[] => {
     const feed = checkedFeed(source);
-    if (!feed) return byConfig.get(source)!;
+    if (!feed) {
+      const outcome = byConfig.get(source);
+      return outcome ? [outcome] : [];
+    }
     const latest = s.checked.get(feed);
-    return { source, items: latest ? [latest] : [] };
+    return [{ source, items: latest ? [latest] : [] }];
   });
 
   const rejected = new Set<string>();

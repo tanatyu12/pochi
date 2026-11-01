@@ -10,11 +10,13 @@ export function shellQuote(value: string): string {
 // One git call for paths that share a directory. It runs in that directory so a --config-dir
 // inside another repository is checked against that one.
 export async function gitCheckIgnored(paths: string[]): Promise<(boolean | undefined)[]> {
+  const [first] = paths;
+  if (first === undefined) return [];
   const names = paths.map((path) => basename(path));
   let stdout: string;
   try {
     ({ stdout } = await promisify(execFile)("git", ["check-ignore", "--", ...names], {
-      cwd: dirname(resolve(paths[0]!)),
+      cwd: dirname(resolve(first)),
     }));
   } catch (err) {
     // 1 means none is ignored; anything else (128 outside a repository, ENOENT without git) means unknown.
