@@ -35,3 +35,28 @@ jobs:
       - run: npm run build
       - name: Smoke test the bundle
         run: node dist/pochi.mjs --version
+
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Also the workflow `pochi schedule install --backend github` writes into users' repositories.
+      # --print puts a summary before it; the workflow starts after the first blank line.
+      - name: Render the briefing workflow
+        run: |
+          set -o pipefail
+          POCHI_CONTEXT_YAML="$(cat config/context.example.yml)" POCHI_SOURCES_YAML="$(cat config/sources.example.yml)" \
+            node dist/pochi.mjs schedule install --backend github --print | sed '1,/^$/d' > "$RUNNER_TEMP/daily_briefing.yml"
+      # shellcheck comes with the runner image, and actionlint runs it on every script.
+      - name: Install actionlint
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
+      - run: '"$RUNNER_TEMP/actionlint" -color .github/workflows/*.yml "$RUNNER_TEMP/daily_briefing.yml"'
