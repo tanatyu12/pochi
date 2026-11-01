@@ -246,6 +246,32 @@ describe("runBriefing", () => {
     expect(load).not.toHaveBeenCalled();
   });
 
+  it("saves what was decided before an unexpected error, then throws that error", async () => {
+    const store = memoryStateStore();
+    const bug = new TypeError("bug");
+    const broken: LlmClient = {
+      mode: "api",
+      generate: (req, opts) => (req.tier === "analyze" ? Promise.reject(bug) : llm.generate(req, opts)),
+    };
+    await expect(runBriefing(input(store, [fakeNotifier().notifier], { llm: broken }), deps)).rejects.toBe(bug);
+
+    // The triage answers were kept: the next run only analyzes the relevant item.
+    const next = counting();
+    const { notifier, received } = fakeNotifier();
+    await runBriefing(input(store, [notifier], { llm: next.llm }), deps);
+    expect(next.tiers()).toEqual(["analyze"]);
+    expect(received[0]?.insights.map((f) => f.item.title)).toEqual(["Breaking change in lib"]);
+  });
+
+  it("saves nothing after an unexpected error on a dry run", async () => {
+    const store = memoryStateStore();
+    const save = vi.spyOn(store, "save");
+    const bug = new TypeError("bug");
+    const broken: LlmClient = { mode: "api", generate: () => Promise.reject(bug) };
+    await expect(runBriefing(input(store, [], { llm: broken, dryRun: true }), deps)).rejects.toBe(bug);
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it("throws when every source fails", async () => {
     mockFetch({ [FEED]: reply.status(404) });
     await expect(runBriefing(input(memoryStateStore(), []), deps)).rejects.toMatchObject({ exitCode: ExitCode.SOURCES });

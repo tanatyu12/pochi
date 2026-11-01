@@ -11,7 +11,7 @@ import {
   type LlmErrorKind,
   type TriageOutput,
 } from "../../src/llm/schema.js";
-import { ANALYZE_BATCH_SIZE, filterAndAnalyze, RETRY_DELAY_MS } from "../../src/pipeline/filter.js";
+import { ANALYZE_BATCH_SIZE, FilterFailure, filterAndAnalyze, RETRY_DELAY_MS } from "../../src/pipeline/filter.js";
 import type { Item } from "../../src/types.js";
 import { configureLog, resetLog } from "../../src/util/log.js";
 
@@ -235,6 +235,8 @@ describe("filterAndAnalyze short ids", () => {
 describe("filterAndAnalyze failures", () => {
   // Transient failures are retried after RETRY_DELAY_MS; the tests do not wait for it.
   const NOW = { retryDelayMs: 0 };
+  // One batch at a time, for the tests that count calls in the order batches are sent.
+  const SEQ = { ...NOW, concurrency: 1 };
 
   it.each(["rate_limit", "timeout", "transport"] as const)("retries a batch that failed with %s once", async (kind) => {
     const llm = fakeLlm({ triage: (call, n) => (n === 0 ? fail(kind) : relevantAll(call, n)) });
@@ -271,8 +273,8 @@ describe("filterAndAnalyze failures", () => {
   });
 
   it("leaves a batch that fails twice undecided and carries on", async () => {
-    // Batch 2 (calls 1 and 2) fails both times; batches 1 and 3 succeed.
-    const llm = fakeLlm({ triage: (call, n) => (n === 1 || n === 2 ? fail() : relevantAll(call, n)) });
+    // Batch 2 fails both times; batches 1 and 3 succeed.
+    const llm = fakeLlm({ triage: (call, n) => (call.titles.includes("Title 3") ? fail() : relevantAll(call, n)) });
     const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6), NOW);
     expect(llm.of("triage")).toHaveLength(4);
     expect(titles(result.undecided)).toEqual(["Title 3", "Title 4"]);
@@ -415,7 +417,7 @@ describe("filterAndAnalyze failures", () => {
 
   it.each(["auth", "unavailable"] as const)("stops calling after %s, without retrying", async (kind) => {
     const llm = fakeLlm({ triage: (call, n) => (n === 1 ? fail(kind) : relevantAll(call, n)) });
-    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6), NOW);
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6), SEQ);
     // Batch 1 succeeded, but analyze has no call left to make, so the stage reports the error.
     expect(result.error?.kind).toBe(kind);
     expect(llm.of("triage")).toHaveLength(2);
@@ -426,7 +428,7 @@ describe("filterAndAnalyze failures", () => {
 
   it("stops calling when rate_limit outlasts the retry", async () => {
     const llm = fakeLlm({ triage: () => fail("rate_limit") });
-    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6), NOW);
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6), SEQ);
     expect(llm.of("triage")).toHaveLength(2);
     expect(result.undecided).toHaveLength(6);
     expect(result.error?.kind).toBe("rate_limit");
@@ -486,7 +488,7 @@ describe("filterAndAnalyze failures", () => {
 
   it("does not report an error when analyze only partly fails", async () => {
     const llm = fakeLlm({ analyze: (call, n) => (n < 2 ? fail() : insightAll()(call, n)) });
-    const result = await filterAndAnalyze(llm.client, makeContext(), items(20), NOW);
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(20), SEQ);
     expect(result.stats).toMatchObject({ analyzeBatches: 2, analyzeFailed: 1 });
     expect(result.pending).toHaveLength(15);
     expect(result.insights).toHaveLength(5);
@@ -553,7 +555,7 @@ describe("filterAndAnalyze failures", () => {
 
   it("stops the run when every request is rejected as bad_request", async () => {
     const llm = fakeLlm({ triage: () => fail("bad_request") });
-    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 4 } }), items(12), NOW);
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 4 } }), items(12), SEQ);
     // Batches 1 and 2 with their two halves each; two batches in a row with no answer stop the run.
     expect(llm.of("triage")).toHaveLength(6);
     expect(result.error?.kind).toBe("bad_request");
@@ -572,7 +574,7 @@ describe("filterAndAnalyze failures", () => {
 
   it("stops after transient failures in two batches in a row", async () => {
     const llm = fakeLlm({ triage: () => fail("transport") });
-    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(8), NOW);
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(8), SEQ);
     // Two batches, each sent twice; batches 3 and 4 are skipped.
     expect(llm.of("triage")).toHaveLength(4);
     expect(result.error?.kind).toBe("transport");
@@ -582,7 +584,7 @@ describe("filterAndAnalyze failures", () => {
   it("counts transient failures again after an answer", async () => {
     // Batches 1 and 3 fail (calls 0-1 and 3-4), batch 2 answers in between, batch 4 answers.
     const llm = fakeLlm({ triage: (call, n) => ([0, 1, 3, 4].includes(n) ? fail("timeout") : relevantAll(call, n)) });
-    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(8), NOW);
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(8), SEQ);
     expect(llm.of("triage")).toHaveLength(6);
     expect(result.stats.triageFailed).toBe(2);
     expect(result.error).toBeUndefined();
@@ -590,7 +592,7 @@ describe("filterAndAnalyze failures", () => {
 
   it("stops a run of single-item batches that are all rejected", async () => {
     const llm = fakeLlm({ triage: () => fail("bad_request") });
-    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 1 } }), items(5), NOW);
+    const result = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 1 } }), items(5), SEQ);
     expect(llm.of("triage")).toHaveLength(2);
     expect(result.error?.kind).toBe("bad_request");
     expect(result.undecided).toHaveLength(5);
@@ -613,15 +615,27 @@ describe("filterAndAnalyze failures", () => {
     expect(titles(result.pending)).toEqual(["Title 1", "Title 2"]);
   });
 
-  it("does not catch errors that are not LlmErrors", async () => {
+  it("does not catch errors that are not LlmErrors, and returns what was decided with them", async () => {
     const bug = new TypeError("bug");
     const llm = fakeLlm({
-      triage: () => {
-        throw bug;
+      triage: (call, n) => {
+        if (call.titles.includes("Title 3")) throw bug;
+        return { decisions: call.ids.map((id, i) => ({ id, relevant: i === 0, reason: "r" })) };
       },
     });
-    await expect(filterAndAnalyze(llm.client, makeContext(), items(2))).rejects.toBe(bug);
-    expect(llm.calls).toHaveLength(1);
+    const err = await filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6), SEQ).then(
+      () => expect.unreachable("expected a rejection"),
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(FilterFailure);
+    const { partial, cause } = err as FilterFailure;
+    expect(cause).toBe(bug);
+    // Batch 1 answered; batch 2 threw, so batch 3 was never sent and analyze never ran.
+    expect(llm.calls).toHaveLength(2);
+    expect(titles(partial.irrelevant)).toEqual(["Title 2"]);
+    expect(titles(partial.pending)).toEqual(["Title 1"]);
+    expect(titles(partial.undecided).sort()).toEqual(["Title 3", "Title 4", "Title 5", "Title 6"]);
+    expect(partial.insights).toEqual([]);
   });
 });
 
@@ -777,5 +791,144 @@ describe("filterAndAnalyze same story", () => {
     const one = fakeLlm();
     await filterAndAnalyze(one.client, makeContext(), items(1));
     expect(one.of("group")).toEqual([]);
+  });
+});
+
+describe("filterAndAnalyze concurrency", () => {
+  interface Waiting {
+    call: Call;
+    answer: () => void;
+    reject: (err: unknown) => void;
+  }
+
+  /** A client whose calls wait until the test answers them, so tests decide the order they finish in. */
+  function gatedLlm(mode: LlmClient["mode"] = "api") {
+    const waiting: Waiting[] = [];
+    const calls: Call[] = [];
+    let inFlight = 0;
+    let most = 0;
+    const client: LlmClient = {
+      mode,
+      generate<T>(req: GenerateRequest<T>, opts: { signal?: AbortSignal } = {}): Promise<T> {
+        const call = parseCall(req);
+        if ((req.schema as unknown) === GroupingOutputSchema) call.tier = "group";
+        calls.push(call);
+        most = Math.max(most, ++inFlight);
+        return new Promise<T>((resolve, reject) => {
+          const settle = (fn: () => void) => {
+            const i = waiting.indexOf(entry);
+            if (i === -1) return;
+            waiting.splice(i, 1);
+            inFlight--;
+            fn();
+          };
+          const reply = () =>
+            call.tier === "group" ? noGroups(call, 0) : call.tier === "triage" ? relevantAll(call, 0) : insightAll()(call, 0);
+          const entry: Waiting = {
+            call,
+            answer: () => settle(() => resolve(reply() as T)),
+            reject: (err) => settle(() => reject(err)),
+          };
+          waiting.push(entry);
+          opts.signal?.addEventListener("abort", () => entry.reject(opts.signal!.reason), { once: true });
+        });
+      },
+    };
+    return { client, waiting, calls, most: () => most };
+  }
+
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  /** Answers whatever is waiting, last sent first, until the promise settles. */
+  async function answerLastFirst<T>(llm: ReturnType<typeof gatedLlm>, promise: Promise<T>): Promise<T> {
+    let done = false;
+    void promise.then(
+      () => (done = true),
+      () => (done = true),
+    );
+    while (!done) {
+      await tick();
+      for (const w of [...llm.waiting].reverse()) w.answer();
+    }
+    return promise;
+  }
+
+  it.each([
+    ["api", 3],
+    ["cli", 2],
+  ] as const)("sends batches of a stage at once in the %s mode, up to %i", async (mode, most) => {
+    const llm = gatedLlm(mode);
+    const promise = filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(10));
+    await tick();
+    expect(llm.waiting).toHaveLength(most);
+    const result = await answerLastFirst(llm, promise);
+    expect(llm.most()).toBe(most);
+    expect(result.insights).toHaveLength(10);
+  });
+
+  it("keeps the order a sequential run has when batches finish last first", async () => {
+    const llm = gatedLlm();
+    const promise = filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 8 } }), items(32));
+    const result = await answerLastFirst(llm, promise);
+    const expected = Array.from({ length: 32 }, (_, i) => `Title ${i + 1}`);
+    // Grouping is asked about the relevant items in the order they were collected.
+    expect(llm.calls.find((c) => c.tier === "group")?.titles).toEqual(expected);
+    expect(titles(result.insights.map((f) => f.item))).toEqual(expected);
+  });
+
+  it("keeps the answers of batches in flight when another stops the run", async () => {
+    const llm = gatedLlm();
+    const promise = filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(8));
+    await tick();
+    expect(llm.waiting.map((w) => w.call.titles)).toEqual([
+      ["Title 1", "Title 2"],
+      ["Title 3", "Title 4"],
+      ["Title 5", "Title 6"],
+    ]);
+    llm.waiting[1]!.reject(new LlmError("auth", "failed: auth"));
+    await tick();
+    for (const w of [...llm.waiting]) w.answer();
+    const result = await promise;
+    // Batch 4 is not sent once batch 2 has stopped the run; nor is analyze.
+    expect(llm.calls).toHaveLength(3);
+    expect(result.error?.kind).toBe("auth");
+    expect(titles(result.pending)).toEqual(["Title 1", "Title 2", "Title 5", "Title 6"]);
+    expect(titles(result.undecided).sort()).toEqual(["Title 3", "Title 4", "Title 7", "Title 8"]);
+  });
+
+  it("stops every batch in flight on an abort", async () => {
+    const controller = new AbortController();
+    const llm = gatedLlm();
+    const promise = filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(8), {
+      signal: controller.signal,
+    });
+    await tick();
+    expect(llm.waiting).toHaveLength(3);
+    controller.abort(new Error("stop"));
+    const result = await promise;
+    expect(result.aborted).toBe(true);
+    expect(llm.calls).toHaveLength(3);
+    expect(result.undecided).toHaveLength(8);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("waits for the batches in flight before throwing an error that is not an LlmError", async () => {
+    const llm = gatedLlm();
+    const promise = filterAndAnalyze(llm.client, makeContext({ llm: { maxItemsPerCall: 2 } }), items(6));
+    const caught = promise.catch((e: unknown) => e);
+    await tick();
+    const bug = new TypeError("bug");
+    llm.waiting[0]!.reject(bug);
+    await tick();
+    // Batches 2 and 3 are still running, and their answers are kept.
+    expect(llm.waiting).toHaveLength(2);
+    for (const w of [...llm.waiting]) w.answer();
+    const err = await caught;
+    expect(err).toBeInstanceOf(FilterFailure);
+    expect((err as FilterFailure).cause).toBe(bug);
+    const { partial } = err as FilterFailure;
+    expect(titles(partial.undecided)).toEqual(["Title 1", "Title 2"]);
+    expect(titles(partial.pending)).toEqual(["Title 3", "Title 4", "Title 5", "Title 6"]);
+    expect(llm.calls).toHaveLength(3);
   });
 });
