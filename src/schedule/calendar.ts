@@ -1,4 +1,5 @@
 import type { Schedule } from "../config/schema.js";
+import { DAY_MS } from "../util/time.js";
 
 /** "*" or the values it matches, sorted and without duplicates. */
 export type Field = "*" | readonly number[];
@@ -208,6 +209,19 @@ export function convertZone(
     },
     warnings,
   };
+}
+
+/**
+ * The longest wait between two runs, in whole days and at least one (a daylight saving change
+ * does not make a day of a weekly gap). Undefined when there are not two runs in 5 years.
+ */
+export function longestGapDays(cal: Calendar, timeZone: string, from: Date): number | undefined {
+  // Enough runs to go round a weekly or monthly cycle several times.
+  const runs = nextRuns(cal, timeZone, from, 60);
+  if (runs.length < 2) return undefined;
+  let gap = 0;
+  for (let i = 1; i < runs.length; i++) gap = Math.max(gap, runs[i]!.getTime() - runs[i - 1]!.getTime());
+  return Math.max(1, Math.round(gap / DAY_MS));
 }
 
 /** The next n runs after from, reading the calendar on timeZone's clock. Looks up to 5 years ahead. */
