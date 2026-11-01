@@ -207,6 +207,7 @@ Todas as chaves estão em [docs/configuration.md](docs/configuration.md) (em ing
 
 - [Configuração](docs/configuration.md): todas as chaves, variáveis de ambiente e o arquivo de estado
 - [Agendamento](docs/scheduling.md): launchd, cron e GitHub Actions
+- [Atualização](docs/updating.md): trazer uma nova versão para a sua cópia
 - [Solução de problemas](docs/troubleshooting.md): `pochi doctor` e códigos de saída
 - [Segurança](SECURITY.md): como chaves e textos externos são tratados, e como relatar uma vulnerabilidade
 

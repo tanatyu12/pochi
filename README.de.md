@@ -207,6 +207,7 @@ Alle Schlüssel findest du in [docs/configuration.md](docs/configuration.md) (En
 
 - [Konfiguration](docs/configuration.md): alle Schlüssel, Umgebungsvariablen, die State-Datei
 - [Zeitplan](docs/scheduling.md): launchd, cron und GitHub Actions
+- [Aktualisieren](docs/updating.md): eine neue Version in deine Kopie übernehmen
 - [Fehlerbehebung](docs/troubleshooting.md): `pochi doctor` und Exit-Codes
 - [Sicherheit](SECURITY.md): wie Keys und nicht vertrauenswürdiger Text behandelt werden und wie du eine Schwachstelle meldest
 
