@@ -198,7 +198,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - リトライ：5xx と通信エラーは1回、429 は Retry-After（最大30秒）に従う。その他の 4xx はリトライしない
 - **util/log**
   - ログは stderr に出し、stdout は dry-run と `--json` の出力専用にする
-  - 全行を `redact()` に通し、Slack Webhook、`tvly-`、`sk-ant-` をマスクする
+  - 全行を `redact()` に通し、Slack Webhook、`tvly-`、`sk-ant-`、OpenAI 形式のキー（`sk-proj-` など）をマスクする。SLACK_WEBHOOK_URL、TAVILY_API_KEY、ANTHROPIC_API_KEY、ANTHROPIC_AUTH_TOKEN、CLAUDE_CODE_OAUTH_TOKEN、OPENAI_API_KEY、CODEX_API_KEY、GITHUB_TOKEN の値も形式によらず伏せる（`--verbose` では claude / codex の stderr も出るため）。制御文字（C0・DEL・C1、改行とタブは残す）も除く
 - **util/concurrency**：同時実行数を制限する pLimit を約20行で自作する
 
 ### 情報収集（sources/）
@@ -266,7 +266,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 例外の変換：APIConnectionTimeoutError と全体のタイムアウト → timeout、APIConnectionError → transport、401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx（529 を含む）→ transport、413 → too_large、本文が "prompt is too long" の 400 → too_large（本文は照合するだけで引用しない）、その他の 400 → bad_request（記事の中身が原因でありうるので分割の対象。設定の誤りなら filter が止める）、404 などその他 → unavailable。認証情報が見つからない → auth、SDK が送信前に拒否した要求 → unavailable。メッセージは SDK の文面を使わず、HTTP ステータス、エラー種別、モデル名、request-id で組み立てる。API エラーの本文はリクエストの内容を含みうるので、SDK の例外を cause にも残さない（接続エラーは残す）。呼び出し側による中断（APIUserAbortError）は LlmError にせず signal の reason を投げる
 - **cli.ts**
   - `createCliLlm({ models, spawn?, command?, env?, timeoutMs?, maxBytes? })` は adapter が解決したモデル名を受け取る。既定は `DEFAULT_CLI_MODELS`（haiku / sonnet）。spawn は差し替えられ、テストは `tests/helpers/fakeSpawn.ts` を使う
-  - 引数（`buildCliArgs`）：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --strict-mcp-config --safe-mode --model <m> --system-prompt <s>`。`--strict-mcp-config` は利用者の MCP サーバーを起動させないため。`--safe-mode` は CLAUDE.md・hooks・plugins・skills を無効にするため（認証とモデル選択は通常どおり動く。claude 2.1.310 で確認）
+  - 引数（`buildCliArgs`）：`-p --output-format json --json-schema <schema> --tools "" --permission-prompts none --no-session-persistence --strict-mcp-config --safe-mode --model <m> --system-prompt-file <f>`。システムプロンプト（プロジェクトの説明を含む）は argv に載せず、claude を動かす非公開の一時ディレクトリに権限600で書いてから渡す（argv はプロセス一覧から見えるため）。`--strict-mcp-config` は利用者の MCP サーバーを起動させないため。`--safe-mode` は CLAUDE.md・hooks・plugins・skills を無効にするため（認証とモデル選択は通常どおり動く。claude 2.1.310 で確認）
   - プロンプトは stdin で渡し、shell: false。cwd は呼び出しごとに `mkdtemp` で作る専用の一時ディレクトリ（`pochi-claude-*`、0700）とし、終わったら消す。共有の /tmp に他人が置いた .claude や CLAUDE.md を読ませないため。`node:child_process` だけを使うので Bun でも動く
   - stdout は 10MB を上限とし（超えたら停止して invalid_output）、300秒でタイムアウトさせる（SIGINT、5秒後に SIGKILL）。中断されたら同じ手順で止め、signal の reason を投げる（reason がなければ AbortError）。stderr は末尾 8KB を debug ログにだけ出す。claude が起動したプロセスが stdio を持ち続けても待ち続けないよう、停止中は exit の時点で確定させる。正常終了なら exit から1秒待っても close が来なければ、それまでの出力で確定させる。spawn が同期で投げた例外（引数の NUL など）は unavailable とし、メッセージにはコードだけを入れる
   - 出力の解析：stdout の JSON の封筒で type==="result" を確認する。全体が JSON として読めなければ最後の行を読む（前に通知が出ても読めるように）。エラーでも終了コード1で封筒が返り、is_error が true、subtype は "success" のまま、api_error_status に HTTP ステータスが入る（実機で確認）。ステータスの対応は api.ts と共通の `statusKind`（schema.ts）を使う：401 / 403 → auth、429 → rate_limit、408 → timeout、409 と 5xx → transport、413 → too_large、400 → bad_request、404 など → unavailable（存在しないモデル名は 404）。result が "Prompt is too long" なら、ステータスの有無によらず too_large（分ければ通る）。ステータスがない場合：subtype が error_max_structured_output_retries なら invalid_output、result が未ログインの文面（"Not logged in · Please run /login"）なら auth、terminal_reason が api_error（接続できない場合）なら transport、それ以外も transport（原因不明で恒久的とは限らないので、実行を止めずに1回再試行する。メッセージは terminal_reason で組み立てる）。prompt is too long 以外は実機で確認した
@@ -306,7 +306,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 
 - **notifiers/types.ts**：通知先の共通の型。`Briefing`（project、date、`Insight[]`、収集件数、取得したソース数、失敗したソース名）。`Insight`（types.ts）は Item と LLM が書いた title / summary / impact / action で、pipeline/filter が返す。`Notifier` は `name`（channel の type）と `deliver(briefing, { signal })` を持ち、`Delivery`（`{ deliveredIds, failures, aborted }`）を返す。deliver は例外を投げず、通知済みにする記事と終了コードは commands/run が決める。通知先を増やすときは Notifier を1つ書き、schema の channels と `createNotifiers` に足す
 - **notifiers/index.ts**：`createNotifiers(context)` が channels の順に Notifier を作る。slack で SLACK_WEBHOOK_URL がなければ（空白だけも未設定）ConfigError（2）
-- **notifiers/file.ts**：`<dir>/<date>.md` に Markdown（`toMarkdown`、notifiers/text.ts）を書く。dir がなければ作る。同じ日の2回目以降は `<date>-2.md`、`-3.md`（99まで）とし、前のレポートを上書きしない（その記事は通知済みなので、消えると読めなくなる）。一時ファイルに書いて fsync してから link で空いている名前に置くので、途中で落ちても半端なファイルが残らない。ハードリンクを使えないファイルシステム（EPERM / ENOTSUP など）では `wx` で直接書く（上書きはしないが、書き込み中に落ちると半端なファイルが残りうる）。書けなければ全 insight を failures にする。insight が0件なら postWhenEmpty のときだけ書く。同じ話題の別記事は Source の後に `Also: [title](<url>) · … · and N more`（3件まで）で並べる。タイトル・要約・Action・ソース名は1行にまとめ（行頭の `---` や `- ` で区切り線やリストにならないよう）、 `\ ` * _ [ ] < > #` はエスケープし、フィードや LLM の文で見出しやリンクを作らせない
+- **notifiers/file.ts**：`<dir>/<date>.md` に Markdown（`toMarkdown`、notifiers/text.ts）を書く。dir がなければ作る。レポートは権限600で書く。同じ日の2回目以降は `<date>-2.md`、`-3.md`（99まで）とし、前のレポートを上書きしない（その記事は通知済みなので、消えると読めなくなる）。一時ファイルに書いて fsync してから link で空いている名前に置くので、途中で落ちても半端なファイルが残らない。ハードリンクを使えないファイルシステム（EPERM / ENOTSUP など）では `wx` で直接書く（上書きはしないが、書き込み中に落ちると半端なファイルが残りうる）。書けなければ全 insight を failures にする。insight が0件なら postWhenEmpty のときだけ書く。同じ話題の別記事は Source の後に `Also: [title](<url>) · … · and N more`（3件まで）で並べる。タイトル・要約・Action・ソース名は1行にまとめ（行頭の `---` や `- ` で区切り線やリストにならないよう）、 `\ ` * _ [ ] < > #` と、行頭の `-` `+` `~` と `1.` `1)` の記号はエスケープし、フィードや LLM の文で見出し・リンク・リスト・区切り線・コードブロックを作らせない。dry run のテキストと Markdown からは制御文字（C0・DEL・C1、改行とタブは残す）を除く
 - **notifiers/text.ts**：`toText`（dry-run の stdout）と `toMarkdown`（file）
 - **notifiers/slack.ts**
   - `slackNotifier(webhookUrl, { postWhenEmpty })` が下の2つを Notifier にまとめる
@@ -385,10 +385,10 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 `pochi schedule install | uninstall | status [--backend launchd|cron|github]` で、context.yml の `schedule` どおりに `pochi run` を定期実行させる。`--backend` の既定は macOS が launchd、Linux が cron（それ以外は github を指定させる）。
 
 - 抽象化：`Scheduler` インターフェース（`zone`、`render`、`install`、`uninstall`、`inspect`）。バックエンドを足すときはこれを実装して `createScheduler` に加える。`render` が返した内容をそのまま `install` に渡すので、`--print` の表示と実際に入るものが一致する
-- calendar.ts：設定を cron と同じ意味の共通形式 `Calendar`（minute・hour・dayOfMonth・month・weekday）にする。cron 式のパース（数・`*`・範囲・リスト・刻み・名前。`@daily` と L・W・# は拒否）、cron への書き戻し、次回の実行時刻の計算を持つ
+- calendar.ts：設定を cron と同じ意味の共通形式 `Calendar`（minute・hour・dayOfMonth・month・weekday）にする。cron 式のパース（数・`*`・範囲・リスト・刻み・名前。`@daily` と L・W・# は拒否。区切りは空白とタブだけで、改行を含む式は拒否する。式は生成するファイルの1行コメントに入るため）、cron への書き戻し、次回の実行時刻の計算を持つ
 - タイムゾーン：launchd と cron はマシンの時刻、Actions は UTC で読むので、install 時に `convertZone` で移す。日をまたげば曜日もずらす。日付を指定していて日をまたぐもの（monthly を JST から UTC へ、など）や、時と分が1つの組にならないものは移せないので2で終え、`timezone` を登録先に合わせるよう案内する。夏時間で差が変わる組み合わせは warn（登録後は追従しない）
 - ジョブ：ID は `sh.pochi.<cwd の sha256 先頭8桁>`。`node --env-file-if-exists=<cwd>/.env <dist/pochi.mjs> run` を cwd で実行し、install 時の PATH を渡す（CLI モードの claude を見つけるため）。出力は `logs/pochi.log` に追記する（gitignore 済み）。tsx からの実行では install させず、`npm run build` を促す
-- launchd：`~/Library/LaunchAgents/<id>.plist`。`StartCalendarInterval` は制限されたフィールドの直積（100件まで）。launchd はキーを AND で見るので、日付と曜日の両方を指定した cron 式は拒否する。登録は bootout → bootstrap（失敗したら1回だけやり直す）。スリープ中に過ぎた実行は復帰時に1回走る
+- launchd：`~/Library/LaunchAgents/<id>.plist`。`StartCalendarInterval` は制限されたフィールドの直積（100件まで）。launchd はキーを AND で見るので、日付と曜日の両方を指定した cron 式は拒否する。登録は bootout → bootstrap（失敗したら1回だけやり直す）。スリープ中に過ぎた実行は復帰時に1回走る。plist の XML コメントでは `-` が続く箇所と末尾の `-` の後ろに空白を入れる（`--` と `--->` を作らない）
 - cron：crontab の `# pochi:<id>` で終わる行だけを差し替える（他の行には触れない）。パスは単引用符で囲み、`%` はエスケープする。改行を含むパスは拒否する
 - github：`.github/workflows/daily_briefing.yml` を書くだけで、commit と push は利用者に任せる（Secrets の設定方法を案内する）
 - install は設定を検証してから登録する。`--print` は何も変えずに内容を表示し、`--at HH:MM` は時刻をその場だけ上書きし、`--dry-run` は登録したジョブを `run --dry-run` にする。ローカルでは `.env` がない・他人が読める・必要なキー（slack なら SLACK_WEBHOOK_URL、provider: api なら ANTHROPIC_API_KEY、queries があれば TAVILY_API_KEY）がない場合に warn を出す。値は表示しない。github で provider が cli / claude / codex なら、runner には CLI がないので warn を出す
@@ -414,7 +414,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 
 - 起動条件は context.yml の `schedule` を UTC に移した cron（既定の 06:17 JST なら `17 21 * * *`。正時を避ける）と `workflow_dispatch`（入力で `dry_run` を指定できる。入力は env 経由でシェルに渡す）
 - `permissions: contents: write`、`concurrency` で多重実行を防ぎ、`timeout-minutes: 20`
-- 実行手順は checkout → setup-node（Node 24）→ `npm ci` → `npm run build` → `node dist/pochi.mjs run`
+- 実行手順は checkout（`persist-credentials: false`）→ setup-node（Node 24）→ `npm ci --ignore-scripts` → `npm run build` → `node dist/pochi.mjs run`。トークンを .git/config に残さず、依存パッケージのインストールスクリプトも動かさない（esbuild は postinstall なしでも動く）。push 用のトークンは状態ファイルをコミットするステップだけに、`GIT_CONFIG_*` の環境変数で `http.<server>/.extraheader` として渡す（ディスクにも argv にも載せない）
 - Secrets を env として渡す：POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、ANTHROPIC_API_KEY、TAVILY_API_KEY、SLACK_WEBHOOK_URL。加えて `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` を渡す（Actions が自動で発行するので登録は不要。GitHub API の無認証の回数制限は共有ランナーで使い切られうる）。設定の中身は絶対にログに出さない
 - dry_run 以外の実行では `git add -f state/notified.json` する。差分がなければ終了し、あれば `[skip ci]` 付きでコミットして `pull --rebase` し、push する。run が失敗しても（キャンセル以外）コミットする。失敗前に届けた分を記録しないと翌日また届くため
 
