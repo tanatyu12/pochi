@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { z } from "zod";
+import * as z from "zod";
 import { log } from "../util/log.js";
 import { type Exit, findFirstJsonObject, type RunOptions, runIn, type SpawnFn, withPrivateDir } from "./cli.js";
 import {

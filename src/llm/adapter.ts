@@ -52,7 +52,13 @@ export async function resolveLlm(llm: Context["llm"], opts: ResolveOptions = {})
     if (!key) throw new LlmError("auth", "llm.provider is api but ANTHROPIC_API_KEY is not set");
     const models = resolveModels(llm, DEFAULT_API_MODELS);
     log.info(`LLM: api mode (${models.triage} / ${models.analyze})`);
-    return { client: createApiLlm({ models, apiKey: key }), models };
+    const client = createApiLlm({
+      models,
+      apiKey: key,
+      authToken: env.ANTHROPIC_AUTH_TOKEN?.trim() || undefined,
+      baseUrl: env.ANTHROPIC_BASE_URL?.trim() || undefined,
+    });
+    return { client, models };
   }
 
   if (platform === "win32") {

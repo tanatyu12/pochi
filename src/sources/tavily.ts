@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import type { QueryConfig } from "../config/schema.js";
 import type { FetchDefaults, Item } from "../types.js";
 import { itemId, normalizeUrl, parseHttpUrl, urlKey } from "../util/hash.js";

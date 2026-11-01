@@ -10,6 +10,7 @@ import { DEFAULT_CLI_MODELS } from "../../src/llm/cli.js";
 import { LlmError, type LlmErrorKind, TriageOutputSchema } from "../../src/llm/schema.js";
 import { configureLog, resetLog } from "../../src/util/log.js";
 import { fakeSpawn, run } from "../helpers/fakeSpawn.js";
+import { mockFetch, reply } from "../helpers/mockFetch.js";
 
 const KEY = "sk-ant-api03-PLANTED-7f3a";
 const VERSION = "2.1.310 (Claude Code)\n";
@@ -45,6 +46,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   resetLog();
 });
 
@@ -57,6 +59,26 @@ describe("resolveLlm with provider auto", () => {
     expect(resolved.cliVersion).toBeUndefined();
     expect(mock.calls).toHaveLength(0);
     expect(logs.join("")).not.toContain(KEY);
+  });
+
+  it("sends the API mode's requests to ANTHROPIC_BASE_URL with the trimmed key", async () => {
+    const fetchMock = mockFetch({
+      "https://gateway.example.com/v1/messages": reply.json({
+        id: "msg_1",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: JSON.stringify({ decisions: [] }) }],
+      }),
+    });
+    const env = { ANTHROPIC_API_KEY: ` ${KEY}\n`, ANTHROPIC_BASE_URL: " https://gateway.example.com/ " };
+    const { client } = await resolveLlm(llmConfig(), { env });
+    await client.generate({ system: "s", prompt: "p", schema: TriageOutputSchema, tier: "triage" });
+    expect(fetchMock.calls[0]?.headers.get("x-api-key")).toBe(KEY);
+  });
+
+  it("fails before anything is sent when ANTHROPIC_BASE_URL is not an http(s) URL", async () => {
+    const env = { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: "gateway.example.com" };
+    const err = await expectLlmError(resolveLlm(llmConfig(), { env }), "unavailable");
+    expect(err.message).not.toContain("gateway.example.com");
   });
 
   it("uses the CLI mode when there is no key and claude --version succeeds", async () => {

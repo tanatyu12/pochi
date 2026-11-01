@@ -1,5 +1,5 @@
 import { open } from "node:fs/promises";
-import { z } from "zod";
+import * as z from "zod";
 import { ConfigError } from "../config/load.js";
 import { DomainSchema, MAX_DOMAINS, REPO_PATTERN } from "../config/schema.js";
 import { parseHttpUrl } from "../util/hash.js";
