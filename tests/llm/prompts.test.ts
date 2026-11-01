@@ -124,8 +124,11 @@ describe("content length", () => {
 
 describe("today", () => {
   it("tells triage the date and the age limit, and analyze the date", () => {
-    const triage = triageRequest(context, [item(1)], { today: "2026-10-28" }).system;
-    expect(triage).toContain("Today is 2026-10-28. The team only wants news from the last 14 days");
+    // run resolves the window before asking.
+    const resolved = { ...context, state: { ...context.state, maxItemAgeDays: 8 } };
+    const triage = triageRequest(resolved, [item(1)], { today: "2026-10-28" }).system;
+    expect(triage).toContain("Today is 2026-10-28. The team only wants news from the last 8 days");
+    expect(triageRequest(context, [item(1)], { today: "2026-10-28" }).system).toContain("- Today is 2026-10-28.\n");
     expect(analyzeRequest(context, [item(1)], { today: "2026-10-28" }).system).toContain("Today is 2026-10-28;");
   });
 

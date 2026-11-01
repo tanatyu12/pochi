@@ -7,6 +7,7 @@ import { buildSlackMessages, type SlackMessage } from "../notifiers/slack.js";
 import { toText } from "../notifiers/text.js";
 import type { Briefing, Delivery, Notifier } from "../notifiers/types.js";
 import { type FilterResult, filterAndAnalyze } from "../pipeline/filter.js";
+import { calendarOf, longestGapDays } from "../schedule/calendar.js";
 import { collectAll, stateKeys } from "../sources/index.js";
 import { tavilyApiKey } from "../sources/tavily.js";
 import {
@@ -69,7 +70,9 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   const today = toIsoDate(now);
   const dryRun = opts.dryRun ?? false;
 
-  const { context, sources } = await loadConfig({ configDir: opts.configDir });
+  const loaded = await loadConfig({ configDir: opts.configDir });
+  const { sources } = loaded;
+  let context = loaded.context;
   // A dry run delivers nothing, so it needs no webhook.
   const notifiers = dryRun ? [] : createNotifiers(context, { slackIntervalMs: deps.slackIntervalMs });
   if (sources.feeds.length === 0 && !tavilyApiKey()) {
@@ -80,21 +83,25 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   // --no-state starts empty and saves nothing; a dry run reads the state but never writes it.
   const statePath = opts.state === false ? undefined : resolveStatePath({ flag: opts.state });
   const state = statePath === undefined ? emptyState() : await loadState(statePath, { now, readOnly: dryRun });
+  // Resolved once, so every step (and the prompts) uses the same window.
+  context = { ...context, state: { ...context.state, maxItemAgeDays: itemAgeDays(context, state, now) } };
+  const maxAgeDays = context.state.maxItemAgeDays!;
+  log.debug(`looking back ${maxAgeDays} days`);
   const pruned = pruneState(state, context.state.ttlDays, today);
   if (pruned > 0) log.debug(`removed ${pruned} expired state entries`);
   // The saved time is where the next run's since starts, so it moves on only once every item
   // collected was decided: one left undecided is not in the state and would fall outside the window.
   const save = async (filtered: FilterResult) => {
     if (statePath === undefined || dryRun) return;
-    const kept = state.updatedAt ?? new Date(now.getTime() - context.state.maxItemAgeDays * DAY_MS);
+    const kept = state.updatedAt ?? new Date(now.getTime() - maxAgeDays * DAY_MS);
     await saveState(state, statePath, { now: filtered.undecided.length === 0 ? now : kept });
   };
 
-  const collected = await collectAll(sources, { signal, since: sinceLastRun(state, context, now) });
+  const collected = await collectAll(sources, { signal, since: sinceLastRun(state, maxAgeDays, now) });
   if (collected.attempted > 0 && collected.failures.length === collected.attempted) {
     throw new PochiError(`all ${collected.attempted} sources failed`, ExitCode.SOURCES);
   }
-  const { fresh, pretriaged } = sortKnown(state, collected.items, context, today);
+  const { fresh, pretriaged } = sortKnown(state, collected.items, maxAgeDays, today);
   log.info(
     `collected ${collected.items.length} items: ${fresh.length} new, ${pretriaged.length} awaiting analysis`,
   );
@@ -178,25 +185,26 @@ async function deliverAll(
 
 /**
  * Touches every known item. Those awaiting analysis (r) go to Analyze directly; the rest of the
- * known ones are dropped. New items older than maxItemAgeDays are recorded as irrelevant unseen.
- * Items still awaiting analysis maxItemAgeDays after they were first seen are given up on (i):
- * touch keeps them from expiring, so an item a channel keeps rejecting would otherwise be analyzed forever.
+ * known ones are dropped. New items older than maxAge days are recorded as irrelevant unseen.
+ * Items still awaiting analysis that long after they were first seen (and at least
+ * MIN_RETRY_DAYS, so a channel down over a weekend loses nothing) are given up on (i): touch
+ * keeps them from expiring, so an item a channel keeps rejecting would otherwise be analyzed forever.
  */
 function sortKnown(
   state: State,
   items: readonly Item[],
-  context: Context,
+  maxAge: number,
   today: string,
 ): { fresh: Item[]; pretriaged: Item[] } {
   const fresh: Item[] = [];
   const pretriaged: Item[] = [];
-  const maxAge = context.state.maxItemAgeDays;
+  const retryDays = Math.max(maxAge, MIN_RETRY_DAYS);
   let stale = 0;
   let givenUp = 0;
   for (const item of items) {
     const keys = stateKeys(item);
     const status = statusOf(state, keys);
-    if (status === "r" && daysBetween(firstSeen(state, keys)!, today) > maxAge) {
+    if (status === "r" && daysBetween(firstSeen(state, keys)!, today) > retryDays) {
       record(state, keys, "i", today);
       givenUp++;
     } else if (status !== undefined) {
@@ -210,21 +218,42 @@ function sortKnown(
     }
   }
   if (stale > 0) log.debug(`skipped ${stale} new items older than ${maxAge} days`);
-  if (givenUp > 0) log.info(`gave up on ${givenUp} items still not delivered ${maxAge} days after they were first seen`);
+  if (givenUp > 0) log.info(`gave up on ${givenUp} items still not delivered ${retryDays} days after they were first seen`);
   return { fresh, pretriaged };
 }
 
 /**
  * A day before the last run, so an entry dated just before it (or in another time zone) is not
- * missed; what was already seen is dropped by the state. Never further back than maxItemAgeDays,
- * since older items are dropped anyway. Without a saved run, sources take their newest few.
+ * missed; what was already seen is dropped by the state. Never further back than maxAge days,
+ * since older items are dropped anyway. Without a saved run (the first one), the whole window.
  */
-function sinceLastRun(state: State, context: Context, now: Date): Date | undefined {
-  if (state.updatedAt === undefined) return undefined;
-  const oldest = now.getTime() - context.state.maxItemAgeDays * DAY_MS;
+function sinceLastRun(state: State, maxAge: number, now: Date): Date {
+  const oldest = now.getTime() - maxAge * DAY_MS;
+  if (state.updatedAt === undefined) return new Date(oldest);
   // A clock that was ahead must not push since past now.
   const last = Math.min(state.updatedAt.getTime(), now.getTime());
   return new Date(Math.max(last - DAY_MS, oldest));
+}
+
+/** When the schedule cannot tell (no two runs in 5 years). */
+const FALLBACK_ITEM_AGE_DAYS = 14;
+const MIN_RETRY_DAYS = 14;
+
+/**
+ * How many days back a run looks: maxItemAgeDays when set; otherwise the schedule's longest gap
+ * between runs and a day to spare (a weekly run gets the week since the last one, a daily one
+ * about two days), or back to the last run when runs were missed. Kept short of ttlDays, or
+ * expired state entries would come back as new items.
+ */
+export function itemAgeDays(context: Context, state: State, now: Date): number {
+  const set = context.state.maxItemAgeDays;
+  if (set !== undefined) return set;
+  const zone = context.schedule.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const gap = longestGapDays(calendarOf(context.schedule), zone, now);
+  const sinceLast =
+    state.updatedAt === undefined ? 0 : Math.ceil((now.getTime() - state.updatedAt.getTime()) / DAY_MS);
+  const days = gap === undefined ? FALLBACK_ITEM_AGE_DAYS : Math.max(gap, sinceLast) + 1;
+  return Math.min(days, context.state.ttlDays - 1);
 }
 
 // An item without a date cannot be judged old, so it is treated as new.
