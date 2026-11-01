@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with `pochi doctor`. It checks where the config comes from and whether it is valid, which LLM and models a run would use, which keys are set (never their values), the state file and the report directory. It calls no model and sends nothing, so it costs nothing. Add `--fetch` to fetch every source and show its latest title.
+Start with `pochi doctor`. It checks where the config comes from and whether it is valid, which LLM and models a run would use, which keys are set (never their values), the state file and the report directory. It also makes the check a run makes before fetching: in API mode it looks up both models with your key, which costs no tokens, and in CLI mode it asks `claude` or `codex` whether you are logged in. It sends no prompt and delivers nothing, so it costs nothing. Add `--fetch` to fetch every source and show its latest title.
 
 ```sh
 pochi doctor --fetch
@@ -16,7 +16,7 @@ pochi run --dry-run --verbose
 
 `pochi run` and `pochi doctor` exit with one of these, so a scheduler or a script can tell what went wrong.
 
-A check that doctor fails exits with the code a run would end with for the same problem. For example, a `slack` channel without `SLACK_WEBHOOK_URL` fails with 2, as `pochi run` would; only `pochi run --dry-run`, which delivers nothing, works without it.
+A check that doctor fails exits with the code a run would end with for the same problem. For example, a `slack` channel without `SLACK_WEBHOOK_URL` fails with 2, as `pochi run` would; only `pochi run --dry-run`, which delivers nothing, works without it. A key the API turns down fails with 3. A state file that cannot be read or is not valid JSON fails with 1: a run would move it aside and start empty, notifying everything again.
 
 | Code | Meaning |
 | --- | --- |
@@ -29,6 +29,15 @@ A check that doctor fails exits with the code a run would end with for the same 
 | 130 | Interrupted |
 
 An item is marked as notified only when every channel received it, so after a 4 the next run tries it again.
+
+`pochi init` and `pochi schedule` use the same codes:
+
+| Command | Code | When |
+| --- | --- | --- |
+| `pochi init` | 2 | Not run in an interactive terminal (stdin and stdout must both be one), a wrong flag (such as `--print-prompt` with `--from`, or a `--news-site` that is not a domain), or a config that cannot be written |
+| `pochi init` | 130 | Cancelled (Ctrl-C or Esc), or you answered No to overwriting the existing config. Nothing is written |
+| `pochi schedule` | 0 | Done. `status` also ends with 0 when nothing is installed or the job differs from `context.yml`; it warns instead |
+| `pochi schedule` | 2 | An invalid config or schedule, an unknown `--backend`, no local scheduler on this platform, `install` run from source rather than `dist/pochi.mjs`, or `launchctl`, `crontab` or a file it needs failed |
 
 ## Common problems
 

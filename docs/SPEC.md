@@ -257,7 +257,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - signal で中断されたら、待っているソースは始めず、中断で止まった取得は失敗として記録せず、その reason を投げる（「全ソースの失敗」と区別するため）。中断と同時に起きた中断以外の失敗は warn を出す。全ソースの取得が終わってから中断された場合は結果をそのまま返す
   - 終了コードは決めない。全ソースの失敗（5）の判定は commands/run が `attempted` と `failures` から行う
   - `fetchSource` は1ソースを kind に応じて rss / github / tavily に振り分ける
-  - `fetchEach(configs, defaults, { signal?, concurrency? })` は同時実行数を守ってソースを取得し、入力の順に `{ items } / { error } / { aborted }` を返す。例外は投げず、中断の扱いは呼び出し側が決める。collectAll と doctor --fetch が共有する
+  - `fetchEach(configs, defaults, { signal?, concurrency? })` は同時実行数を守ってソースを取得し、入力の順に `kind` が `items` / `error` / `aborted` の結果を返す。例外は投げず、中断の扱いは呼び出し側が決める。collectAll と doctor --fetch が共有する
 
 ### LLM（llm/, pipeline/）
 
@@ -357,7 +357,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 - **commands/doctor.ts**：設定の読込元と妥当性、LLMモードとモデル、環境変数の有無（値は表示しない）、状態ファイルの件数を表示する。`--fetch` を付けると各ソースの最新タイトルも表示する。LLM の生成呼び出しと通知はしない（課金も通知もしない）
   - 出力は stdout に「区分ごとの見出し＋ `ok / warn / fail / skip / -`、ラベル、詳細」の行で、全行を `redact()` に通す。ラベルと詳細は制御文字（C0・DEL・C1）を除いて1行にし、200字までに切る（フィードのタイトルに含まれた ANSI / OSC シーケンスを端末に流さないため）。ログは warn 以上だけを stderr に出し（`--verbose` で debug まで）、終わったらログの設定を元に戻す
   - Config：`loadConfig` の読込元（ファイルパスか環境変数名）、project 名、feeds / queries の件数。失敗なら ConfigError を1件の fail として、その各行を続けて表示し、LLM と `--fetch` は skip。run の手順2と同じく、feeds が空で queries があり TAVILY_API_KEY がなければ fail、feeds があれば warn
-  - LLM：`resolveLlm` の結果（モード、モデル名、CLIモードなら `claude --version` の1行目）。APIモードではキーの有効性までは確かめない。状態ファイルはこの確認と並行して読み、表示は区分の順のまま
+  - LLM：`resolveLlm` の結果（モード、モデル名、CLIモードなら `claude --version` の1行目）。続けて run と同じく client の `preflight` を呼ぶ（APIモードはキーと両モデルを `GET /v1/models/{model}` で確かめ、CLIモードはログインを確かめる。トークンは使わない）。LlmError なら fail（3）。状態ファイルはこの確認と並行して読み、表示は区分の順のまま
   - 環境変数：ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、TAVILY_API_KEY、SLACK_WEBHOOK_URL、GITHUB_TOKEN、POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、POCHI_STATE_PATH を set / not set / blank だけで示す
   - Notify：channels ごとに1行。slack は SLACK_WEBHOOK_URL が未設定（空白だけも）なら run と同じく fail（2。`--dry-run` なら要らない旨を添える）、`https://hooks.slack.com/` で始まらなければ warn。判定は notifiers と同じ `slackWebhookUrl(env)`。doctor は env を deps で受け取り、loadConfig・resolveLlm・resolveStatePath・tavilyApiKey に渡す（process.env を直接読まない）。file は dir が書けるか（なければ、作れる祖先があるか）を確かめ、書けなければ fail（4）
   - 状態ファイル：パスは run と同じ優先順位（`--state` > `POCHI_STATE_PATH` > 既定）。`inspectState`（state/store）で読むだけで、壊れていても退避しない。エントリ数、n / i / r / u の件数、ttlDays を過ぎた件数を示す。ファイルがなければ ok、壊れていれば fail、不正なエントリがあれば warn
@@ -388,7 +388,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - 対話の間は、ログを warn 以上に絞る（取得処理の info で画面が崩れないようにする）
   - **前の設問に戻る（Shift+Tab）**：対話 CLI の定番どおり Esc と Ctrl-C は中止のまま、Web フォームの Tab / Shift+Tab に倣って Shift+Tab で1問戻る（clack のプロンプトに AbortSignal を渡し、Shift+Tab の keypress で abort して `PromptBack` にする）。init の流れは1本道のまま書き、`replayingPrompter`（`src/util/replay.ts`）が答えをすべて記録する。PromptBack が来たら init を最初から実行し直し、戻り先より前の答えは何も表示せずにそのまま返し、戻り先の設問は前の答えを初期値にして聞き直す。リストの手入力は1件ずつが1問なので、直前の1件に戻る。最初の設問では同じ設問を聞き直す。やり直しで通信と課金を繰り返さないよう、init の間は fetch と LLM の呼び出しを、要求の内容とその実行での何回目かで記録して返す（`src/commands/initCache.ts`。同じ要求を1回の実行で2回するときも、初回と同じ順に答えが返る）。Claude の検出は実行をまたいで1回だけ。設定を書き出した後は `freeze` し、Shift+Tab は同じ設問を聞き直すだけ
 
-### ポチの表示（util/pochi-art.ts、notifiers/voice.ts、commands/woof.ts）
+### ポチの表示（util/pochiArt.ts、notifiers/voice.ts、commands/woof.ts）
 
 ツール名の Pochi（柴犬）を、うるさくない形で表に出す。絵文字は使わない。
 
