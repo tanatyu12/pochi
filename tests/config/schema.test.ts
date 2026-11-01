@@ -22,7 +22,7 @@ describe("ContextSchema", () => {
       exclude: [],
       language: "English",
       llm: { provider: "auto", maxItemsPerCall: 40, maxItemsPerRun: 150 },
-      notify: { minImpact: "Low", postWhenEmpty: false, channels: [{ type: "slack" }] },
+      notify: { minImpact: "Low", postWhenEmpty: false, personality: true, channels: [{ type: "slack" }] },
       state: { ttlDays: 45 },
       schedule: { interval: "daily" },
     });

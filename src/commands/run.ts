@@ -1,3 +1,4 @@
+import { styleText } from "node:util";
 import { ConfigError, loadConfig } from "../config/load.js";
 import type { Context } from "../config/schema.js";
 import { ExitCode, PochiError } from "../errors.js";
@@ -24,6 +25,8 @@ import {
 } from "../state/store.js";
 import type { Insight, Item } from "../types.js";
 import { configureLog, log } from "../util/log.js";
+import { isFancy, purple } from "../util/pochi-art.js";
+import { displayLine } from "../util/text.js";
 import { DAY_MS, daysBetween, parseDate, toIsoDate } from "../util/time.js";
 
 export interface RunOptions {
@@ -73,6 +76,10 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
   const loaded = await loadConfig({ configDir: opts.configDir });
   const { sources } = loaded;
   let context = loaded.context;
+  if (!opts.quiet && isFancy(process.stderr)) {
+    const about = `· ${displayLine(context.project.name, 80)} · ${today}${dryRun ? " · dry run" : ""}`;
+    process.stderr.write(`\n  ${purple("pochi")} ${styleText("dim", about)}\n\n`);
+  }
   // A dry run delivers nothing, so it needs no webhook.
   const notifiers = dryRun ? [] : createNotifiers(context, { slackIntervalMs: deps.slackIntervalMs });
   if (sources.feeds.length === 0 && !tavilyApiKey()) {
@@ -126,6 +133,7 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
     collected: collected.items.length,
     attempted: collected.attempted,
     failedSources: collected.failures.map((f) => f.sourceName),
+    personality: context.notify.personality,
   };
 
   if (dryRun) {

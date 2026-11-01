@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { styleText } from "node:util";
 import { Command, CommanderError } from "commander";
 import { doctorCommand } from "./commands/doctor.js";
 import { runInit } from "./commands/init.js";
@@ -8,12 +9,13 @@ import { scheduleCommand } from "./commands/schedule.js";
 import { DEFAULT_CONFIG_DIR } from "./config/load.js";
 import { ExitCode, PochiError, exitCodeOf } from "./errors.js";
 import { redact } from "./util/log.js";
+import { isFancy } from "./util/pochi-art.js";
 import { VERSION } from "./version.js";
 
 export function createProgram(opts: { signal?: AbortSignal } = {}): Command {
   const program = new Command()
     .name("pochi")
-    .description("Daily tech briefing for your project, delivered to Slack or Markdown files")
+    .description("Daily briefing for your project, delivered to Slack or Markdown files")
     .version(VERSION)
     // Before .command(): subcommands copy the parent's settings when they are created.
     .exitOverride();
@@ -102,6 +104,10 @@ function formatError(err: unknown): string {
     return `pochi: internal error\n${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`;
   }
   const cause = err.cause instanceof Error ? err.cause.message : err.cause;
+  if (isFancy(process.stderr)) {
+    // Marked like log.error, so it reads as the last line of the run.
+    return `  ${styleText("red", "×")} ${err.message}\n${cause === undefined ? "" : `    ${styleText("dim", `cause: ${String(cause)}`)}\n`}`;
+  }
   return `pochi: ${err.message}\n${cause === undefined ? "" : `  cause: ${String(cause)}\n`}`;
 }
 
