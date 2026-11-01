@@ -168,6 +168,8 @@ LLM에 전달되는 것은 처음 보는 항목뿐이고, 더 강한 모델에 �
 - **`context.yml`**: 프로젝트 설명, 신경 쓰는 과제, 제외할 주제, 브리핑 언어, 전달 위치
 - **`sources.yml`**: 지켜볼 GitHub 리포지토리, 피드, Google 뉴스 검색어, Tavily 검색어
 
+브리핑은 어떤 언어로든 작성할 수 있습니다. `pochi init`에서는 영어, 일본어, 중국어, 스페인어, 프랑스어, 독일어, 포르투갈어, 한국어를 고를 수 있으며, 뉴스 검색도 해당 언어의 Google 뉴스 판을 사용합니다. High, Action 같은 레이블은 영어로 유지됩니다([docs/configuration.md](docs/configuration.md)).
+
 <details>
 <summary>최소 설정 예시</summary>
 

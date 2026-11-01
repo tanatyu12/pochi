@@ -162,6 +162,8 @@ Two files in `config/`, both written by `pochi init`:
 - **`context.yml`**: what your project is, the problems you care about, what to exclude, the language of the briefing, and where to deliver it.
 - **`sources.yml`**: the GitHub repositories, feeds, Google News searches and Tavily queries to watch.
 
+The briefing can be written in any language. `pochi init` offers English, Japanese, Chinese, Spanish, French, German, Portuguese and Korean, and its news searches use that language's Google News edition. Labels such as High and Action stay in English ([docs/configuration.md](docs/configuration.md)).
+
 <details>
 <summary>A minimal example</summary>
 

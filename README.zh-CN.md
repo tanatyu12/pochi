@@ -164,6 +164,8 @@ flowchart LR
 - **`context.yml`**：项目是做什么的、你关心的问题、要排除的话题、简报的语言，以及送达到哪里。
 - **`sources.yml`**：要关注的 GitHub 仓库、订阅源、Google 新闻搜索和 Tavily 查询。
 
+简报可以用任何语言撰写。`pochi init` 提供英语、日语、中文、西班牙语、法语、德语、葡萄牙语和韩语可选，新闻搜索也会使用该语言的 Google 新闻版本。High、Action 等标签保持英文（[docs/configuration.md](docs/configuration.md)）。
+
 <details>
 <summary>最小示例</summary>
 

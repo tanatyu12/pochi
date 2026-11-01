@@ -166,6 +166,8 @@ LLM が読むのは初めて見る記事だけで、大きなモデルが読む�
 - **`context.yml`**：プロジェクトの説明、気にかけている課題、除外したい話題、ブリーフィングの言語、届け先
 - **`sources.yml`**：見張る GitHub リポジトリ、フィード、Google ニュースの検索語、Tavily の検索語
 
+ブリーフィングはどの言語でも書けます。`pochi init` では英語、日本語、中国語、スペイン語、フランス語、ドイツ語、ポルトガル語、韓国語を選べ、ニュース検索もその言語の Google ニュースを使います。High や Action などのラベルは英語のままです（[docs/configuration.md](docs/configuration.md)）。
+
 <details>
 <summary>最小限の設定例</summary>
 
