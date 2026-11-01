@@ -4,6 +4,8 @@ import { ExitCode, exitCodeOf } from "../../src/errors.js";
 import {
   type AnalysisOutput,
   type GenerateRequest,
+  GroupingOutputSchema,
+  type GroupingOutput,
   type LlmClient,
   LlmError,
   type LlmErrorKind,
@@ -59,23 +61,27 @@ type Handler = (call: Call, n: number) => unknown;
 /**
  * A client that answers each call with the handler for its tier. By default triage marks every
  * item relevant and analyze rates each one Medium, both keyed by the title so tests can pick.
+ * Grouping (on the triage model) is its own: by default it finds no story told twice.
  */
-function fakeLlm(handlers: { triage?: Handler; analyze?: Handler } = {}) {
+function fakeLlm(handlers: { triage?: Handler; analyze?: Handler; group?: Handler } = {}) {
   const calls: Call[] = [];
-  const counts = { triage: 0, analyze: 0 };
+  const counts = { triage: 0, analyze: 0, group: 0 };
   const client: LlmClient = {
     mode: "api",
     async generate<T>(req: GenerateRequest<T>): Promise<T> {
       const call = parseCall(req);
+      const tier = (req.schema as unknown) === GroupingOutputSchema ? "group" : req.tier;
+      call.tier = tier;
       calls.push(call);
-      const tier = req.tier;
       const n = counts[tier]++;
-      const handler = handlers[tier] ?? (tier === "triage" ? relevantAll : insightAll());
+      const handler = handlers[tier] ?? (tier === "group" ? noGroups : tier === "triage" ? relevantAll : insightAll());
       return handler(call, n) as T;
     },
   };
   return { client, calls, of: (tier: string) => calls.filter((c) => c.tier === tier) };
 }
+
+const noGroups: Handler = (): GroupingOutput => ({ groups: [] });
 
 const relevantAll: Handler = (call): TriageOutput => ({
   decisions: call.ids.map((id) => ({ id, relevant: true, reason: "r" })),
@@ -128,7 +134,9 @@ describe("filterAndAnalyze batching", () => {
     const result = await filterAndAnalyze(llm.client, makeContext(), items(95));
     expect(llm.of("triage").map((c) => c.ids.length)).toEqual([40, 40, 15]);
     expect(llm.of("analyze").map((c) => c.ids.length)).toEqual([15, 15]);
-    expect(llm.calls.map((c) => c.tier)).toEqual(["triage", "triage", "triage", "analyze", "analyze"]);
+    // Grouping looks at the relevant ones once, between the stages.
+    expect(llm.calls.map((c) => c.tier)).toEqual(["triage", "triage", "triage", "group", "analyze", "analyze"]);
+    expect(llm.of("group")[0]!.ids).toHaveLength(30);
     expect(result.insights).toHaveLength(30);
     expect(result.irrelevant).toHaveLength(65);
     expect(result.undecided).toHaveLength(0);
@@ -146,8 +154,9 @@ describe("filterAndAnalyze batching", () => {
       },
     };
     await filterAndAnalyze(client, makeContext(), items(2), { today: "2026-10-28" });
-    expect(systems).toHaveLength(2);
-    for (const system of systems) expect(system).toContain("Today is 2026-10-28");
+    // Triage and analyze; grouping (in between) needs no date.
+    expect(systems).toHaveLength(3);
+    for (const system of [systems[0]!, systems[2]!]) expect(system).toContain("Today is 2026-10-28");
   });
 
   it("honors a configured maxItemsPerCall", async () => {
@@ -716,5 +725,57 @@ describe("filterAndAnalyze minImpact and order", () => {
       "Title 2",
       "Title 5",
     ]);
+  });
+});
+
+describe("filterAndAnalyze same story", () => {
+  // Titles 1..5: 2 and 4 report the story of 3 (3 is the primary); 5 names one already grouped.
+  const grouped: Handler = (): GroupingOutput => ({
+    groups: [
+      { ids: ["i2", "i3", "i4", "i9"], primary: "i3" },
+      { ids: ["i4", "i5"], primary: "i5" },
+      { ids: ["i1"], primary: "i1" },
+    ],
+  });
+  const dated = () => [1, 2, 3, 4, 5].map((n) => item(n, { publishedAt: `2026-10-2${n}T00:00:00Z` }));
+
+  it("analyzes one report of each story and shows the others with it, newest first", async () => {
+    const llm = fakeLlm({ group: grouped });
+    const result = await filterAndAnalyze(llm.client, makeContext(), dated());
+    expect(llm.of("analyze").flatMap((c) => c.titles)).toEqual(["Title 1", "Title 3", "Title 5"]);
+    const story = result.insights.find((f) => f.item.title === "Title 3")!;
+    expect(titles(story.related!)).toEqual(["Title 4", "Title 2"]);
+    expect(result.insights.filter((f) => f.related)).toHaveLength(1);
+    expect(logs).toContain("pochi: info: 3 articles report 1 story between them; one of each is analyzed\n");
+  });
+
+  it("takes the first id when the primary is not in its group", async () => {
+    const llm = fakeLlm({ group: () => ({ groups: [{ ids: ["i2", "i1"], primary: "i7" }] }) });
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(2));
+    expect(titles(result.insights.map((f) => f.item))).toEqual(["Title 2"]);
+    expect(titles(result.insights[0]!.related!)).toEqual(["Title 1"]);
+  });
+
+  it("sends the other reports where the one analyzed goes", async () => {
+    // The story is Low, below minImpact: all three are irrelevant.
+    const low = fakeLlm({ group: grouped, analyze: insightAll((t) => (t === "Title 3" ? "Low" : "High")) });
+    const lowResult = await filterAndAnalyze(low.client, makeContext({ minImpact: "Medium" }), dated());
+    expect(titles(lowResult.irrelevant).sort()).toEqual(["Title 2", "Title 3", "Title 4"]);
+
+    // Analyze fails: all three wait for the next run.
+    const failing = fakeLlm({ group: grouped, analyze: () => fail() });
+    const failed = await filterAndAnalyze(failing.client, makeContext(), dated(), { retryDelayMs: 0 });
+    expect(titles(failed.pending).sort()).toEqual(["Title 1", "Title 2", "Title 3", "Title 4", "Title 5"]);
+  });
+
+  it("analyzes every item on its own when grouping fails, and asks nothing for one item", async () => {
+    const llm = fakeLlm({ group: () => fail("invalid_output") });
+    const result = await filterAndAnalyze(llm.client, makeContext(), items(3));
+    expect(result.insights).toHaveLength(3);
+    expect(logs.some((l) => l.startsWith("pochi: warn: grouping articles by story failed"))).toBe(true);
+
+    const one = fakeLlm();
+    await filterAndAnalyze(one.client, makeContext(), items(1));
+    expect(one.of("group")).toEqual([]);
   });
 });

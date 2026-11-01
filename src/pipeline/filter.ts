@@ -1,8 +1,16 @@
 import type { Context, Impact } from "../config/schema.js";
-import { analyzeRequest, shortId, triageRequest } from "../llm/prompts.js";
-import { type GenerateRequest, type LlmClient, LlmError, type LlmErrorKind, type LlmTier } from "../llm/schema.js";
+import { analyzeRequest, groupingRequest, shortId, triageRequest } from "../llm/prompts.js";
+import {
+  type GenerateRequest,
+  type GroupingOutput,
+  type LlmClient,
+  LlmError,
+  type LlmErrorKind,
+  type LlmTier,
+} from "../llm/schema.js";
 import type { Insight, Item } from "../types.js";
 import { log } from "../util/log.js";
+import { plural } from "../util/text.js";
 import { parseDate, sleep } from "../util/time.js";
 
 // Analyze sends whole articles (up to maxContentChars each), so its batches are smaller than triage's.
@@ -64,8 +72,8 @@ export interface FilterResult {
 }
 
 /**
- * Triage in batches of maxItemsPerCall, then Analyze the relevant items, and the pretriaged ones
- * (state r), in batches of ANALYZE_BATCH_SIZE, one batch at a time. A batch that fails transiently
+ * Triage in batches of maxItemsPerCall, group the relevant items, and the pretriaged ones (state
+ * r), by story, then Analyze one of each story in batches of ANALYZE_BATCH_SIZE, one batch at a time. A batch that fails transiently
  * is retried once after retryDelayMs; one that fails because of its content is split to find the
  * item causing it. Throws only errors that are not LlmErrors.
  */
@@ -135,11 +143,13 @@ export async function filterAndAnalyze(
     },
   );
 
+  // Reports of one story are analyzed once; the others go where that one goes.
+  const { primaries, members } = await groupStories(run, context, relevant);
   const threshold = IMPACT_RANK[context.notify.minImpact];
   const analyze = await runStage(
     run,
     "analyze",
-    chunk(relevant, ANALYZE_BATCH_SIZE),
+    chunk(primaries, ANALYZE_BATCH_SIZE),
     result.pending,
     (batch) => analyzeRequest(context, batch, { today }),
     (batch, reply) => {
@@ -163,6 +173,14 @@ export async function filterAndAnalyze(
     },
   );
 
+  for (const insight of result.insights) {
+    const others = members.get(insight.item);
+    if (others) insight.related = [...others].sort(byNewest);
+  }
+  for (const list of [result.irrelevant, result.pending]) {
+    for (const item of [...list]) list.push(...(members.get(item) ?? []));
+  }
+
   result.stats = {
     triageBatches: triage.batches,
     triageFailed: triage.failed,
@@ -181,6 +199,54 @@ export async function filterAndAnalyze(
 
   result.insights.sort((a, b) => IMPACT_RANK[a.impact] - IMPACT_RANK[b.impact] || byNewest(a.item, b.item));
   return result;
+}
+
+/**
+ * Asks once which items report the same story. Only one of each story (the model's primary) is
+ * analyzed; members maps it to the others. A saving, not a step the run needs: when the call
+ * fails or answers nonsense, every item is analyzed on its own.
+ */
+async function groupStories(
+  run: StageRun,
+  context: Context,
+  items: Item[],
+): Promise<{ primaries: Item[]; members: Map<Item, Item[]> }> {
+  const members = new Map<Item, Item[]>();
+  const alone = { primaries: items, members };
+  if (items.length < 2 || run.fatal || run.aborted) return alone;
+  let reply: GroupingOutput;
+  try {
+    reply = await run.llm.generate(groupingRequest(context, items), { signal: run.signal });
+  } catch (err) {
+    if (run.signal?.aborted) {
+      run.aborted = true;
+      return alone;
+    }
+    if (!(err instanceof LlmError)) throw err;
+    log.warn("grouping articles by story failed; each is analyzed on its own", err);
+    return alone;
+  }
+  const positions = new Map(items.map((_, i) => [shortId(i), i]));
+  const grouped = new Set<number>();
+  for (const group of reply.groups) {
+    // Ids the batch never had, or already in a group, are dropped.
+    const ids = [...new Set(group.ids.map((id) => positions.get(id.trim())))].filter(
+      (i): i is number => i !== undefined && !grouped.has(i),
+    );
+    if (ids.length < 2) continue;
+    const named = positions.get(group.primary.trim());
+    const primary = named !== undefined && ids.includes(named) ? named : ids[0]!;
+    for (const i of ids) grouped.add(i);
+    members.set(
+      items[primary]!,
+      ids.filter((i) => i !== primary).map((i) => items[i]!),
+    );
+  }
+  if (members.size === 0) return alone;
+  log.info(
+    `${plural(grouped.size, "article")} report ${plural(members.size, "story", "stories")} between them; one of each is analyzed`,
+  );
+  return { primaries: items.filter((item, i) => !grouped.has(i) || members.has(item)), members };
 }
 
 // The newest `limit` items, and the rest; in their given order when all of them fit.

@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fileNotifier } from "../../src/notifiers/file.js";
-import { toMarkdown } from "../../src/notifiers/text.js";
+import { toMarkdown, toText } from "../../src/notifiers/text.js";
 import type { Briefing } from "../../src/notifiers/types.js";
-import type { Insight } from "../../src/types.js";
+import type { Insight, Item } from "../../src/types.js";
 import { configureLog, resetLog } from "../../src/util/log.js";
 
 const fsMock = vi.hoisted(() => ({ linkError: undefined as string | undefined }));
@@ -89,6 +89,30 @@ describe("toMarkdown", () => {
 
   it("says so when nothing is relevant", () => {
     expect(toMarkdown(briefing([]))).toContain("No relevant updates today.");
+  });
+});
+
+describe("other reports of a story", () => {
+  const report = (n: number): Item => ({
+    ...insight(n).item,
+    id: `r${n}`,
+    title: `Report *${n}*`,
+    url: `https://news.example.com/${n}`,
+  });
+  const story = (count: number) => insight(1, { related: Array.from({ length: count }, (_, i) => report(i + 1)) });
+
+  it("lists up to three in the report and counts the rest", () => {
+    const md = toMarkdown(briefing([story(5)]));
+    expect(md).toContain(
+      "Also: [Report \\*1\\*](<https://news.example.com/1>) · [Report \\*2\\*](<https://news.example.com/2>) · [Report \\*3\\*](<https://news.example.com/3>) · and 2 more",
+    );
+    expect(toMarkdown(briefing([insight(1)]))).not.toContain("Also:");
+  });
+
+  it("lists them in the dry run's text", () => {
+    const text = toText(briefing([story(4)]));
+    expect(text).toContain("  Also: Report *1* https://news.example.com/1\n");
+    expect(text).toContain("  Also: 1 more article\n");
   });
 });
 
