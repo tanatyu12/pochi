@@ -97,7 +97,7 @@ export function createCliLlm(opts: {
       const started = Date.now();
       const exit = await withPrivateDir("pochi-claude-", run.command, signal, async (cwd) => {
         const systemFile = join(cwd, SYSTEM_FILE);
-        await writeFile(systemFile, req.system, { mode: 0o600 });
+        await writeInput(systemFile, req.system, run.command);
         return runIn(cwd, run, buildCliArgs(req, model, systemFile), req.prompt, model, signal);
       });
       const envelope = readEnvelope(exit.stdout);
@@ -151,7 +151,24 @@ export async function withPrivateDir<T>(
   try {
     return await fn(cwd);
   } finally {
-    await rm(cwd, { recursive: true, force: true });
+    // A directory left behind (EBUSY, EACCES) is only litter in the temp directory; failing here
+    // would hide the answer, or the error, of the call itself.
+    await rm(cwd, { recursive: true, force: true }).catch((err: NodeJS.ErrnoException) => {
+      log.debug(`could not remove ${cwd}: ${err.code ?? err.message}`);
+    });
+  }
+}
+
+/**
+ * Writes an input file for the CLI into its private directory. A failure (ENOSPC, say) is the
+ * machine's, and every later call would hit it too, so it is reported as unavailable.
+ */
+export async function writeInput(file: string, data: string, command: string): Promise<void> {
+  try {
+    await writeFile(file, data, { mode: 0o600 });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? (err instanceof Error ? err.name : "error");
+    throw new LlmError("unavailable", `could not write the input for ${command}: ${code}`, { cause: err });
   }
 }
 

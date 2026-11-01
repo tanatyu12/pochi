@@ -1,9 +1,17 @@
 import { spawn as nodeSpawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as z from "zod";
 import { log } from "../util/log.js";
-import { type Exit, findFirstJsonObject, type RunOptions, runIn, type SpawnFn, withPrivateDir } from "./cli.js";
+import {
+  type Exit,
+  findFirstJsonObject,
+  type RunOptions,
+  runIn,
+  type SpawnFn,
+  withPrivateDir,
+  writeInput,
+} from "./cli.js";
 import {
   type GenerateRequest,
   type LlmClient,
@@ -81,8 +89,8 @@ export function createCodexLlm(opts: {
       const label = model ?? "codex default";
       const started = Date.now();
       const { exit, output } = await withPrivateDir("pochi-codex-", run.command, signal, async (cwd) => {
-        await writeFile(join(cwd, SCHEMA_FILE), JSON.stringify(toJsonSchema(req.schema)));
-        await writeFile(join(cwd, SYSTEM_FILE), req.system);
+        await writeInput(join(cwd, SCHEMA_FILE), JSON.stringify(toJsonSchema(req.schema)), run.command);
+        await writeInput(join(cwd, SYSTEM_FILE), req.system, run.command);
         const exit = await runIn(cwd, run, buildCodexArgs(cwd, model), req.prompt, label, signal);
         // Missing when codex failed before answering; the events then say why.
         const output = await readFile(join(cwd, OUTPUT_FILE), "utf8").catch(() => "");
