@@ -54,7 +54,8 @@ export function discoveryPrompt(watch: Watchlist = EMPTY_WATCHLIST): string {
     "",
     "",
   ];
-  return DISCOVERY_PROMPT.replace("## Output\n", `${lines.join("\n")}## Output\n`);
+  // A function, so "$&" or "$'" in a name is not read as a replacement pattern.
+  return DISCOVERY_PROMPT.replace("## Output\n", () => `${lines.join("\n")}## Output\n`);
 }
 
 /**

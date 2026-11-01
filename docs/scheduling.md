@@ -68,3 +68,4 @@ Things to know:
 - **Use an API key.** The runner has no `claude` or `codex` CLI. Their subscriptions are for your own use, not for CI.
 - Scheduled workflows run only on the default branch, and in UTC. Install converts your `time` and `timezone` to UTC; a monthly schedule that would cross midnight cannot be converted, so set `timezone` to UTC instead.
 - GitHub pauses scheduled workflows in a public repository after 60 days without activity. The daily state commit counts as activity.
+- The workflow can push (`contents: write`), but only its last step gets the token to do so. Checkout runs with `persist-credentials: false` and dependencies are installed with `npm ci --ignore-scripts`, so no package install script or build step can find a token in `.git/config`. The `pochi run` step still receives `GITHUB_TOKEN`, for the GitHub API's rate limit.

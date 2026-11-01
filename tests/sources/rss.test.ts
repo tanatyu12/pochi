@@ -306,6 +306,9 @@ describe("toItems", () => {
     expect(html?.title).toBe("Line one two");
     const [literal] = toItems([entry({ title: { value: "a &amp; <b>", format: "text" } })], source, opts);
     expect(literal?.title).toBe("a &amp; <b>");
+    // GitHub release names come in as text titles too.
+    const [escapes] = toItems([entry({ title: { value: "v1\u001b]8;;x\u0007 \u009b2J", format: "text" } })], source, opts);
+    expect(escapes?.title).toBe("v1]8;;x 2J");
   });
 
   it("keeps escaped tag names in titles", () => {

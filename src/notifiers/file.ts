@@ -8,6 +8,8 @@ import type { Briefing, Delivery, Notifier } from "./types.js";
 /** A second run on the same day writes <date>-2.md and so on, up to this suffix. */
 export const MAX_REPORTS_PER_DAY = 99;
 
+const REPORT_MODE = 0o600;
+
 const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
 
 /**
@@ -38,7 +40,8 @@ async function writeNew(dir: string, date: string, content: string): Promise<str
   await mkdir(dir, { recursive: true });
   const tmp = join(dir, `.${date}.${randomBytes(6).toString("hex")}.tmp`);
   try {
-    const fh = await open(tmp, "wx");
+    // Owner-only, like the config files: a report says what a private project is working on.
+    const fh = await open(tmp, "wx", REPORT_MODE);
     try {
       await fh.writeFile(content);
       await fh.sync();
@@ -58,7 +61,7 @@ async function writeNew(dir: string, date: string, content: string): Promise<str
       // Without hard links (exFAT, some network drives), wx still never replaces a report; only
       // a crash mid-write can leave a partial one.
       try {
-        await writeFile(path, content, { flag: "wx" });
+        await writeFile(path, content, { flag: "wx", mode: REPORT_MODE });
         return path;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
