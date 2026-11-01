@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ExitCode } from "../../src/errors.js";
 import { parseCron } from "../../src/schedule/calendar.js";
 import { githubScheduler, WORKFLOW_PATH } from "../../src/schedule/github.js";
 import { buildJob, type Job } from "../../src/schedule/index.js";
@@ -41,5 +42,14 @@ describe("githubScheduler", () => {
     expect(await scheduler.inspect(job)).toEqual({ content: "name: Briefing\n" });
     expect(await scheduler.uninstall(job)).toBe(true);
     expect(await scheduler.uninstall(job)).toBe(false);
+  });
+
+  it("fails with 2, naming the path, when the workflow cannot be written", async () => {
+    await mkdir(join(job.cwd, ".github"));
+    await writeFile(join(job.cwd, ".github", "workflows"), "");
+    await expect(githubScheduler().install(job, "name: Briefing\n")).rejects.toMatchObject({
+      exitCode: ExitCode.CONFIG,
+      message: expect.stringMatching(/^could not create .*\.github\/workflows \(E[A-Z]+\)$/),
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { toCron } from "./calendar.js";
+import { fsStep, unlessMissing } from "./fs.js";
 import type { Job, Scheduler } from "./types.js";
 
 export const WORKFLOW_PATH = ".github/workflows/daily_briefing.yml";
@@ -20,8 +21,8 @@ export function githubScheduler(): Scheduler {
     },
     async install(job, content) {
       const path = workflowPath(job);
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, content);
+      await fsStep("create", dirname(path), () => mkdir(dirname(path), { recursive: true }));
+      await fsStep("write", path, () => writeFile(path, content));
       return [
         `Commit and push ${WORKFLOW_PATH} to the default branch; scheduled workflows run only there.`,
         "Set the repository secrets it reads (gh secret set NAME): POCHI_CONTEXT_YAML and POCHI_SOURCES_YAML (the config files' contents), ANTHROPIC_API_KEY, and SLACK_WEBHOOK_URL or TAVILY_API_KEY when used.",
@@ -29,19 +30,12 @@ export function githubScheduler(): Scheduler {
       ];
     },
     async uninstall(job) {
-      return rm(workflowPath(job)).then(
-        () => true,
-        (err: NodeJS.ErrnoException) => {
-          if (err.code === "ENOENT") return false;
-          throw err;
-        },
-      );
+      const path = workflowPath(job);
+      return (await unlessMissing("remove", path, () => rm(path).then(() => true))) ?? false;
     },
     async inspect(job) {
-      const content = await readFile(workflowPath(job), "utf8").catch((err: NodeJS.ErrnoException) => {
-        if (err.code === "ENOENT") return undefined;
-        throw err;
-      });
+      const path = workflowPath(job);
+      const content = await unlessMissing("read", path, () => readFile(path, "utf8"));
       return { content };
     },
   };
