@@ -41,6 +41,8 @@ const ReleasesSchema = z.array(
     prerelease: z.boolean(),
     published_at: z.string().nullish(),
     body_html: z.string().nullish(),
+    // Only in the markdown fallback.
+    body: z.string().nullish(),
   }),
 );
 
@@ -127,11 +129,24 @@ export async function fetchGithubItems(
       dropPrereleases(feed, entries, (e) => isPrerelease(tagOf(e))),
     );
   }
-  const releases = await fetchReleases(feed.repo, "html", signal, defaults.env);
+  const releases = await fetchReleaseNotes(feed.repo, signal, defaults.env);
   // Before toItems cuts to itemsPerFeed, so a run of canaries cannot push out the stable release.
   const kept = dropPrereleases(feed, releases, (r) => r.prerelease);
   // html_url is absolute, so the base only matters for a malformed one.
   return toItems(kept.map(toEntry), source, { baseUrl: "https://github.com/", ...defaults });
+}
+
+// GitHub renders body_html within a time limit that a hundred long release notes pass (nodejs/node
+// answers 502 every time), so a server error is not retried as HTML: the markdown bodies come back
+// at once and read well enough as text.
+async function fetchReleaseNotes(repo: string, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<Release[]> {
+  try {
+    return await fetchReleases(repo, "html", signal, env, { server: 0 });
+  } catch (err) {
+    if (!(err instanceof HttpError && err.status !== undefined && err.status >= 500)) throw err;
+    log.debug(`${repo}: GitHub could not render the release notes (HTTP ${err.status}), reading them as markdown`);
+    return fetchReleases(repo, "json", signal, env);
+  }
 }
 
 async function fetchReleases(
@@ -139,8 +154,14 @@ async function fetchReleases(
   body: "json" | "html",
   signal?: AbortSignal,
   env?: NodeJS.ProcessEnv,
+  retry?: { server: number },
 ): Promise<Release[]> {
-  const res = await fetchText(releasesUrl(repo), { signal, headers: apiHeaders(body, env), maxBytes: API_MAX_BYTES });
+  const res = await fetchText(releasesUrl(repo), {
+    signal,
+    headers: apiHeaders(body, env),
+    maxBytes: API_MAX_BYTES,
+    ...(retry && { retry }),
+  });
   return parseApi(res.text, ReleasesSchema, res.url, "GitHub API").filter((r) => !r.draft);
 }
 
@@ -182,6 +203,7 @@ function toEntry(release: Release): RawEntry {
     title: { value: release.name?.trim() || release.tag_name, format: "text" },
     published: release.published_at ?? undefined,
     html: release.body_html ?? undefined,
+    text: release.body ?? undefined,
   };
 }
 

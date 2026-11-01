@@ -303,6 +303,25 @@ describe("fetchGithubItems", () => {
     expect(items.map((i) => i.title)).toEqual(["Widget 1.9.1 Beta?"]);
   });
 
+  it("falls back to markdown bodies when GitHub cannot render the release notes in time", async () => {
+    // nodejs/node: a hundred long release notes as HTML answer 502 every time; as markdown, 200.
+    const markdown = releases.map(({ body_html, ...r }) => ({ ...r, body: `## ${r.tag_name}\n\nFixes` }));
+    const fm = mockFetch({ [releasesApi(next.repo)]: [reply.status(502), reply.json(markdown)] });
+    const items = await fetchGithubItems(next, defaults);
+    expect(fm.calls.map((c) => c.headers.get("accept"))).toEqual([
+      "application/vnd.github.html+json",
+      "application/vnd.github+json",
+    ]);
+    expect(items.map((i) => i.title)).toEqual(["Next.js 16.1", "v16.0.0"]);
+    expect(items[0]?.content).toContain("Fixes");
+  });
+
+  it("passes a client error through without falling back", async () => {
+    const fm = mockFetch({ [releasesApi(next.repo)]: reply.status(403) });
+    await expect(fetchGithubItems(next, defaults)).rejects.toBeInstanceOf(HttpError);
+    expect(fm.calls).toHaveLength(1);
+  });
+
   it("passes HTTP errors through", async () => {
     mockFetch({ [releasesApi(next.repo)]: reply.status(404) });
     await expect(fetchGithubItems(next, defaults)).rejects.toBeInstanceOf(HttpError);
