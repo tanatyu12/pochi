@@ -7,7 +7,7 @@ const HEADING = "\u0001";
 const CODE = "\u0002";
 const MARKERS = /([\u0001\u0002])/;
 const MARKER_CHARS = /[\u0001\u0002]/g;
-const CONTROL_CHARS = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
+const CONTROL_CHARS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
 
 // Comments and the start and end tags of dropped elements, found in one left-to-right pass.
 const HIDDEN =

@@ -15,6 +15,9 @@ describe("redact", () => {
     ["Bearer sk-ant-api03-AbC_d-ef", "Bearer sk-ant-***"],
     ["Bearer ghp_AbC123xyz", "Bearer ghp_***"],
     ["token github_pat_11AbC_dEf", "token github_pat_***"],
+    ["key sk-proj-AbC_123-xyz", "key sk-proj-***"],
+    ["key sk-svcacct-AbC123", "key sk-svcacct-***"],
+    ["key sk-AbCdEfGhIjKlMnOpQrStUvWx", "key sk-***"],
   ])("masks %s", (input, expected) => {
     expect(redact(input)).toBe(expected);
   });
@@ -31,6 +34,21 @@ describe("redact", () => {
   it("masks secret env values that appear percent-encoded", () => {
     vi.stubEnv("TAVILY_API_KEY", "abc+def/ghi=");
     expect(redact("GET https://api.test/?key=abc%2Bdef%2Fghi%3D failed")).toBe("GET https://api.test/?key=*** failed");
+  });
+
+  it.each(["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"])(
+    "masks the value of %s, which claude's or codex's stderr may carry",
+    (name) => {
+      vi.stubEnv(name, "opaque-token-98765");
+      expect(redact("401 for opaque-token-98765")).toBe("401 for ***");
+    },
+  );
+
+  it("masks secrets a host passes in, until the log is reset", () => {
+    configureLog({ secrets: ["host-secret-123456"] });
+    expect(redact("x host-secret-123456 y")).toBe("x *** y");
+    resetLog();
+    expect(redact("x host-secret-123456 y")).toBe("x host-secret-123456 y");
   });
 
   it("ignores short env values", () => {
@@ -87,6 +105,12 @@ describe("log", () => {
     restore();
     log.info("shown");
     expect(lines).toEqual(["pochi: info: shown\n"]);
+  });
+
+  it("drops control characters from messages and errors, keeping newlines", () => {
+    const lines = capture("verbose");
+    log.debug("reason: \u001b]0;title\u0007ok\u009b2J\nnext", new Error("bad\u001b[31m"));
+    expect(lines).toEqual(["pochi: debug: reason: ]0;titleok2J\nnext: bad[31m\n"]);
   });
 
   it("writes to stderr, never stdout", () => {

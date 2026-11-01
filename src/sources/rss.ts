@@ -3,7 +3,7 @@ import type { RssFeed } from "../config/schema.js";
 import type { FetchDefaults, Item, SourceKind } from "../types.js";
 import { itemId, normalizeUrl, parseHttpUrl, urlKey } from "../util/hash.js";
 import { fetchText } from "../util/http.js";
-import { collapseWhitespace, truncate } from "../util/text.js";
+import { collapseWhitespace, stripControlChars, truncate } from "../util/text.js";
 import { parseDate } from "../util/time.js";
 import { htmlToLine, htmlToText, inlineHtmlToLine, plainTextToText } from "./html.js";
 
@@ -214,7 +214,7 @@ function toTitle(title: RawEntry["title"]): string {
       ? htmlToLine(title.value)
       : title.format === "inline"
         ? inlineHtmlToLine(title.value)
-        : collapseWhitespace(title.value);
+        : collapseWhitespace(stripControlChars(title.value));
   return truncate(text, TITLE_MAX_CHARS);
 }
 
