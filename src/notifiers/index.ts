@@ -1,7 +1,7 @@
 import { ConfigError } from "../config/load.js";
 import type { Context } from "../config/schema.js";
 import { fileNotifier } from "./file.js";
-import { slackNotifier } from "./slack.js";
+import { slackNotifier, slackWebhookUrl } from "./slack.js";
 import type { Notifier } from "./types.js";
 
 /**
@@ -18,8 +18,7 @@ export function createNotifiers(
   return context.notify.channels.map((channel) => {
     switch (channel.type) {
       case "slack": {
-        // Actions expands an unset secret to "", so blank counts as unset.
-        const webhookUrl = env.SLACK_WEBHOOK_URL?.trim();
+        const webhookUrl = slackWebhookUrl(env);
         if (!webhookUrl) {
           throw new ConfigError(
             "SLACK_WEBHOOK_URL is not set (set notify.channels in context.yml to deliver elsewhere, or use --dry-run)",

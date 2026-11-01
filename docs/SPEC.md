@@ -351,7 +351,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - Config：`loadConfig` の読込元（ファイルパスか環境変数名）、project 名、feeds / queries の件数。失敗なら ConfigError を1件の fail として、その各行を続けて表示し、LLM と `--fetch` は skip。run の手順2と同じく、feeds が空で queries があり TAVILY_API_KEY がなければ fail、feeds があれば warn
   - LLM：`resolveLlm` の結果（モード、モデル名、CLIモードなら `claude --version` の1行目）。APIモードではキーの有効性までは確かめない。状態ファイルはこの確認と並行して読み、表示は区分の順のまま
   - 環境変数：ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、TAVILY_API_KEY、SLACK_WEBHOOK_URL、GITHUB_TOKEN、POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、POCHI_STATE_PATH を set / not set / blank だけで示す
-  - Notify：channels ごとに1行。slack は SLACK_WEBHOOK_URL が未設定か `https://hooks.slack.com/` で始まらなければ warn。file は dir が書けるか（なければ、作れる祖先があるか）を確かめ、書けなければ fail（4）
+  - Notify：channels ごとに1行。slack は SLACK_WEBHOOK_URL が未設定（空白だけも）なら run と同じく fail（2。`--dry-run` なら要らない旨を添える）、`https://hooks.slack.com/` で始まらなければ warn。判定は notifiers と同じ `slackWebhookUrl(env)`。doctor は env を deps で受け取り、loadConfig・resolveLlm・resolveStatePath・tavilyApiKey に渡す（process.env を直接読まない）。file は dir が書けるか（なければ、作れる祖先があるか）を確かめ、書けなければ fail（4）
   - 状態ファイル：パスは run と同じ優先順位（`--state` > `POCHI_STATE_PATH` > 既定）。`inspectState`（state/store）で読むだけで、壊れていても退避しない。エントリ数、n / i / r / u の件数、ttlDays を過ぎた件数を示す。ファイルがなければ ok、壊れていれば fail、不正なエントリがあれば warn
   - `--fetch`：`sourceConfigs`（sources/index）の順に `fetchEach` で同時に4件まで取得し、最新1件のタイトルか「no items」、失敗ならエラーのメッセージを示す。TAVILY_API_KEY がなければ queries は skip
   - 終了コード：全項目を表示してから、最初の fail の区分で終える（設定・取得するソースがない 2、LLM 3、状態ファイル 1、レポートの dir に書けない 4、`--fetch` で全ソースが失敗 5、中断 130）。一部のソースの失敗と warn は 0。最後の行は問題の件数に加え、一部のソースの失敗を「non-fatal failure」、warn を「warning」として別々に数える。中断はどの確認の最中でも 130 とし、最後の行は出さない
