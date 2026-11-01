@@ -6,3 +6,5 @@ state/*.json
 .env
 reports/
 logs/
+CLAUDE.local.md
+.claude/settings.local.json
