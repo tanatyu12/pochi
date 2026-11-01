@@ -1,4 +1,5 @@
 import { ConfigError } from "../config/load.js";
+import { singleQuote } from "../util/shell.js";
 import { toCron } from "./calendar.js";
 import type { ExecFn } from "./exec.js";
 import type { Job, Scheduler } from "./types.js";
@@ -65,5 +66,5 @@ async function writeCrontab(exec: ExecFn, lines: string[]): Promise<void> {
 
 /** Single quotes for the shell; cron turns an unescaped % into a newline, so it is escaped too. */
 function quote(s: string): string {
-  return `'${s.replaceAll("'", "'\\''")}'`.replaceAll("%", "\\%");
+  return singleQuote(s).replaceAll("%", "\\%");
 }

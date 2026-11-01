@@ -40,7 +40,8 @@ const BOUNDS: Record<FieldName, readonly [number, number]> = {
   weekday: [0, 6],
 };
 const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-const DAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+/** Cron's weekday names, 0 (Sunday) first. */
+export const DAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 const FIELD_ORDER: readonly FieldName[] = ["minute", "hour", "dayOfMonth", "month", "weekday"];
 const MINUTES_PER_DAY = 24 * 60;
 
@@ -83,7 +84,7 @@ export function parseCron(expr: string): Calendar {
   if (parts.length !== 5) {
     throw new CalendarError(`"${expr}" must have 5 fields (minute hour day-of-month month day-of-week)`);
   }
-  const parsed = FIELD_ORDER.map((name, i) => parseField(parts[i]!, name));
+  const parsed = FIELD_ORDER.map((name, i) => parseField(parts[i] ?? "", name));
   const [minute, hour, dayOfMonth, month, weekday] = parsed.map((p) => p.field) as [Field, Field, Field, Field, Field];
   const cal: Calendar = { minute, hour, dayOfMonth, month, weekday };
   const stars = Object.fromEntries(
@@ -105,9 +106,10 @@ function parseField(text: string, name: FieldName): { field: Field; star?: numbe
   for (const [i, item] of text.split(",").entries()) {
     const m = /^(\*|[a-z0-9]+)(?:-([a-z0-9]+))?(?:\/(\d+))?$/i.exec(item);
     if (!m) throw new CalendarError(`"${item}" in the ${label(name)} field is not valid cron syntax`);
-    const [, from, to, stepText] = m;
+    // The first group always matches; the default only satisfies the type.
+    const [, from = "", to, stepText] = m;
     if (from === "*" && to !== undefined) throw new CalendarError(`"${item}" in the ${label(name)} field is not valid`);
-    const start = from === "*" ? min : value(from!, name);
+    const start = from === "*" ? min : value(from, name);
     // "5/10" means from 5 to the end, as in most crons.
     const end = from === "*" ? max : to !== undefined ? value(to, name) : stepText !== undefined ? max : start;
     const step = stepText === undefined ? 1 : Number(stepText);
@@ -144,7 +146,7 @@ export function eitherDay(cal: Calendar): boolean {
 }
 
 function value(token: string, name: FieldName): number {
-  const names = name === "month" ? MONTH_NAMES : name === "weekday" ? DAY_NAMES : [];
+  const names: readonly string[] = name === "month" ? MONTH_NAMES : name === "weekday" ? DAY_NAMES : [];
   const named = names.indexOf(token.toLowerCase());
   if (named >= 0) return name === "month" ? named + 1 : named;
   const [min, max] = BOUNDS[name];
@@ -173,14 +175,22 @@ export function toCron(cal: Calendar): string {
     const covered = step === undefined ? [] : starValues(name, step);
     const rest = field.filter((v) => !covered.includes(v));
     const parts: string[] = step === undefined ? [] : [step === 1 ? "*" : `*/${step}`];
-    for (let i = 0; i < rest.length; ) {
-      let j = i;
-      while (j + 1 < rest.length && rest[j + 1] === rest[j]! + 1) j++;
-      parts.push(j - i >= 2 ? `${rest[i]}-${rest[j]}` : rest.slice(i, j + 1).join(","));
-      i = j + 1;
+    for (const run of consecutiveRuns(rest)) {
+      parts.push(run.length >= 3 ? `${run[0]}-${run.at(-1)}` : run.join(","));
     }
     return parts.join(",");
   }).join(" ");
+}
+
+/** Sorted values split where they stop going up by one: [1, 2, 3, 5] is [[1, 2, 3], [5]]. */
+function consecutiveRuns(values: readonly number[]): number[][] {
+  const runs: number[][] = [];
+  for (const v of values) {
+    const last = runs.at(-1);
+    if (last !== undefined && last.at(-1) === v - 1) last.push(v);
+    else runs.push([v]);
+  }
+  return runs;
 }
 
 /** The offset of timeZone from UTC at the given instant, in minutes (Asia/Tokyo is 540). */
@@ -219,10 +229,11 @@ export function convertZone(
   const warnings: string[] = [];
   const deltaAt = (at: Date) => offsetMinutes(to, at) - offsetMinutes(from, at);
   const year = now.getUTCFullYear();
-  const [winter, summer] = [0, 6].map((month) => deltaAt(new Date(Date.UTC(year, month, 15))));
+  const winter = deltaAt(new Date(Date.UTC(year, 0, 15)));
+  const summer = deltaAt(new Date(Date.UTC(year, 6, 15)));
   if (winter !== summer) {
     warnings.push(
-      `the offset between ${from} and ${to} changes with daylight saving time, so runs move by ${hours(Math.abs(winter! - summer!))} for part of the year; install again after the change, or set schedule.timezone to ${to}`,
+      `the offset between ${from} and ${to} changes with daylight saving time, so runs move by ${hours(Math.abs(winter - summer))} for part of the year; install again after the change, or set schedule.timezone to ${to}`,
     );
   }
   const delta = deltaAt(now);
@@ -246,7 +257,7 @@ export function convertZone(
   const days = sorted(shifted.map((s) => s.day));
   const restricted = cal.dayOfMonth !== "*" || cal.month !== "*" || cal.weekday !== "*";
   if (restricted && days.length > 1) throw cannot("some runs would move to another day and some would not");
-  const dayShift = restricted ? days[0]! : 0;
+  const dayShift = restricted ? (days[0] ?? 0) : 0;
   if (dayShift !== 0 && (cal.dayOfMonth !== "*" || cal.month !== "*")) {
     throw cannot("the runs would move to another day of the month");
   }
@@ -277,7 +288,10 @@ export function longestGapDays(cal: Calendar, timeZone: string, from: Date): num
   const runs = nextRuns(cal, timeZone, from, 60);
   if (runs.length < 2) return undefined;
   let gap = 0;
-  for (let i = 1; i < runs.length; i++) gap = Math.max(gap, runs[i]!.getTime() - runs[i - 1]!.getTime());
+  for (const [i, run] of runs.entries()) {
+    const previous = runs[i - 1];
+    if (previous) gap = Math.max(gap, run.getTime() - previous.getTime());
+  }
   return Math.max(1, Math.round(gap / DAY_MS));
 }
 
@@ -307,9 +321,24 @@ function dayMatches(cal: Calendar, month: number, date: number, weekday: number)
   return has(cal.dayOfMonth, date) && has(cal.weekday, weekday);
 }
 
+/** The instant moved so its UTC fields read as timeZone's clock. */
+function onClock(timeZone: string, at: Date): Date {
+  return new Date(at.getTime() + offsetMinutes(timeZone, at) * 60_000);
+}
+
 function wallDate(timeZone: string, at: Date): { year: number; month: number; day: number } {
-  const local = new Date(at.getTime() + offsetMinutes(timeZone, at) * 60_000);
+  const local = onClock(timeZone, at);
   return { year: local.getUTCFullYear(), month: local.getUTCMonth() + 1, day: local.getUTCDate() };
+}
+
+/** "Mon 2026-11-02 06:17", on timeZone's clock. */
+export function wallTime(at: Date, timeZone: string): string {
+  const local = onClock(timeZone, at);
+  return `${capitalize(DAY_NAMES[local.getUTCDay()] ?? "")} ${local.toISOString().slice(0, 16).replace("T", " ")}`;
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function zonedInstant(timeZone: string, year: number, month: number, day: number, h: number, m: number): Date {
@@ -327,9 +356,7 @@ export function describeSchedule(schedule: Schedule, timeZone: string): string {
       case "daily":
         return `daily ${at}`;
       case "weekly": {
-        const days = (schedule.day === undefined ? ["monday"] : [schedule.day].flat()).map(
-          (d) => d[0]!.toUpperCase() + d.slice(1),
-        );
+        const days = (schedule.day === undefined ? ["monday"] : [schedule.day].flat()).map(capitalize);
         const list = days.length > 1 ? `${days.slice(0, -1).join(", ")} and ${days.at(-1)}` : days[0];
         return `weekly on ${list} ${at}`;
       }

@@ -323,11 +323,13 @@ async function groupStories(
     );
     if (ids.length < 2) continue;
     const named = positions.get(group.primary.trim());
-    const primary = named !== undefined && ids.includes(named) ? named : ids[0]!;
+    const primary = named !== undefined && ids.includes(named) ? named : ids[0];
+    const head = primary === undefined ? undefined : items[primary];
+    if (head === undefined) continue;
     for (const i of ids) grouped.add(i);
     members.set(
-      items[primary]!,
-      ids.filter((i) => i !== primary).map((i) => items[i]!),
+      head,
+      ids.filter((i) => i !== primary).flatMap((i) => items[i] ?? []),
     );
   }
   if (members.size === 0) return alone;
@@ -486,7 +488,8 @@ async function runStage<T>(
     }
     for (const half of failing) {
       const part = `${label} (part ${halves.indexOf(half) + 1})`;
-      const done = half.length > 1 ? await bisect(half, part, budget) : await single(half[0]!, part, budget);
+      const [only, ...more] = half;
+      const done = only === undefined || more.length > 0 ? await bisect(half, part, budget) : await single(only, part, budget);
       settled ||= done;
     }
     return settled;
@@ -499,7 +502,8 @@ async function runStage<T>(
     let settled = first === undefined;
     if (onContent(first)) {
       const budget = { calls: splitBudget(batch.length) };
-      settled = batch.length > 1 ? await bisect(batch, label, budget) : await single(batch[0]!, label, budget);
+      const [only, ...more] = batch;
+      settled = only === undefined || more.length > 0 ? await bisect(batch, label, budget) : await single(only, label, budget);
     }
     if (settled) {
       run.failedInARow = 0;

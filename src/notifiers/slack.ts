@@ -81,7 +81,7 @@ export function slackNotifier(
 
 /** Slack's control characters, in one pass so an escaped &lt; is not escaped again. */
 export function escapeMrkdwn(s: string): string {
-  return s.replace(/[&<>]/g, (ch) => ENTITIES[ch]!);
+  return s.replace(/[&<>]/g, (ch) => ENTITIES[ch] ?? ch);
 }
 
 /**
@@ -203,7 +203,8 @@ function insightsMessage(frame: Frame, insights: Insight[], texts: string[]): Sl
           insightsMessage(frame, insights.slice(mid), texts.slice(mid)),
         ];
       }
-      const f = insights[0]!;
+      const [f] = insights;
+      if (f === undefined) return [];
       const bare = `${impactLabel(f)} *${fitEscaped(collapseWhitespace(f.title), MAX_TITLE_CHARS)}*\n${sourceText(f)}`;
       return [{ payload: { text: frame.text, blocks: [frame.header, mrkdwnSection(bare), frame.context] }, itemIds: [f.item.id] }];
     },
@@ -224,7 +225,7 @@ function contextBlock(b: Briefing): unknown {
   let text = fetchedText(b);
   if (b.failedSources.length > 0) {
     const label = failedLabel(b);
-    const prefix = ` · ${label[0]!.toUpperCase()}${label.slice(1)}: `;
+    const prefix = ` · ${label.charAt(0).toUpperCase()}${label.slice(1)}: `;
     text += prefix + fitEscaped(b.failedSources.join(", "), MAX_CONTEXT_CHARS - text.length - prefix.length);
   }
   return { type: "context", elements: [{ type: "mrkdwn", text }] };

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RssFeed, Sources } from "../../src/config/schema.js";
-import { collectAll, fetchSource, stateKeys } from "../../src/sources/index.js";
+import { collectAll, fetchEach, fetchSource, sourceConfigs, sourceInfo, stateKeys } from "../../src/sources/index.js";
 import { urlKey } from "../../src/util/hash.js";
 import { HttpError } from "../../src/util/http.js";
 import { configureLog, resetLog } from "../../src/util/log.js";
@@ -271,6 +271,28 @@ describe("collectAll", () => {
     await expect(collectAll(config(["a", "b"]), { signal: controller.signal })).rejects.toThrow("interrupted");
     expect(logged.filter((l) => l.includes("warn: source b failed"))).toHaveLength(1);
     expect(logged.filter((l) => l.includes("warn: source a"))).toEqual([]);
+  });
+});
+
+describe("fetchEach", () => {
+  it("does tag each outcome with its kind, in input order", async () => {
+    const controller = new AbortController();
+    mockFetch({
+      [feedUrl("a")]: rss("https://a.example.com/1"),
+      [feedUrl("b")]: reply.status(404),
+      [feedUrl("c")]: (req, signal) => {
+        const hang = reply.hang()(req, signal);
+        controller.abort(new Error("interrupted"));
+        return hang;
+      },
+    });
+    const configs = sourceConfigs(config(["a", "b", "c"]), false);
+    const outcomes = await fetchEach(configs, defaults, { signal: controller.signal, concurrency: 1 });
+    expect(outcomes.map((o) => [sourceInfo(o.source).id, o.kind])).toEqual([
+      ["a", "items"],
+      ["b", "error"],
+      ["c", "aborted"],
+    ]);
   });
 });
 

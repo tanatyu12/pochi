@@ -214,7 +214,7 @@ export function briefingError({ filtered, sent }: BriefingResult): PochiError | 
     return `${name} (${missed} updates not delivered)`;
   });
   return new PochiError(`delivery failed: ${parts.join(", ")}`, ExitCode.DELIVERY, {
-    cause: failed[0]!.result.failures[0]!.error,
+    cause: failed[0]?.result.failures[0]?.error,
   });
 }
 
@@ -287,7 +287,9 @@ function sortKnown(
   for (const item of items) {
     const keys = stateKeys(item);
     const status = statusOf(state, keys);
-    if ((status === "r" || status === "u") && daysBetween(firstSeen(state, keys)!, today) > retryDays) {
+    // A status means an entry, so firstSeen has a date; today only satisfies the type.
+    const since = firstSeen(state, keys) ?? today;
+    if ((status === "r" || status === "u") && daysBetween(since, today) > retryDays) {
       record(state, keys, "i", today);
       givenUp++;
     } else if (status !== undefined) {

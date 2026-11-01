@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { parseDocument } from "yaml";
 import type { z } from "zod";
 import { ExitCode, PochiError } from "../errors.js";
+import { isEnoent } from "../util/fs.js";
 import { type Context, ContextSchema, type Sources, SourcesSchema, formatIssues } from "./schema.js";
 
 export const DEFAULT_CONFIG_DIR = "config";
@@ -30,6 +31,7 @@ const FILES = {
 
 /** The env vars that, when set and not blank, replace the config files. */
 export const CONFIG_ENV_NAMES = [FILES.context.env, FILES.sources.env] as const;
+export type ConfigEnvName = (typeof CONFIG_ENV_NAMES)[number];
 
 /** Which of CONFIG_ENV_NAMES loadConfig would read instead of the files. */
 export function configEnvOverrides(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -87,7 +89,7 @@ async function load<T>(
   try {
     text = await readFile(path, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+    if (isEnoent(err)) {
       return { ok: false, message: `${path} not found (run "pochi init" or set ${name})`, origin };
     }
     throw new ConfigError(`cannot read ${path}`, { cause: err });

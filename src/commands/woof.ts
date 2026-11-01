@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { inspectState, resolveStatePath } from "../state/store.js";
-import { greeting, isFancy, SITTING, WAGGING } from "../util/pochi-art.js";
+import { greeting, isFancy, SITTING, WAGGING } from "../util/pochiArt.js";
 import { plural } from "../util/text.js";
 import { sleep } from "../util/time.js";
 
@@ -12,6 +12,8 @@ export interface WoofDeps {
   write?: (s: string) => void;
   /** Whether to draw; defaults to whether stdout is a terminal that shows color. */
   fancy?: boolean;
+  /** Where POCHI_STATE_PATH, NO_COLOR and POCHI_PLAIN come from; process.env when left out. */
+  env?: NodeJS.ProcessEnv;
   statePath?: string;
   wagMs?: number;
 }
@@ -19,8 +21,9 @@ export interface WoofDeps {
 /** Pochi wags its tail and says how many briefings it has fetched. Not in --help. */
 export async function woof(deps: WoofDeps = {}): Promise<void> {
   const write = deps.write ?? ((s: string) => void process.stdout.write(s));
-  const subtitle = await countText(deps.statePath ?? resolveStatePath());
-  if (!(deps.fancy ?? isFancy())) {
+  const env = deps.env ?? process.env;
+  const subtitle = await countText(deps.statePath ?? resolveStatePath({ env }));
+  if (!(deps.fancy ?? isFancy(process.stdout, env))) {
     write(`Woof. ${subtitle}\n`);
     return;
   }

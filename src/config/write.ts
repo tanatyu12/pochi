@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stringify } from "yaml";
+import { isEnoent } from "../util/fs.js";
 import { ConfigError } from "./load.js";
 import { ContextSchema, type ContextInput, SourcesSchema, type SourcesInput, formatIssues } from "./schema.js";
 
@@ -43,7 +44,7 @@ export async function writeConfig(
   // Stage both files before replacing either, so the slow, failure-prone part (writing content)
   // cannot leave a new context.yml next to an old sources.yml. The renames that follow are
   // same-directory metadata operations, so the window between them is not worth a rollback.
-  let current = files[0]!.path;
+  let current = contextPath;
   try {
     for (const f of files) {
       current = f.path;
@@ -76,7 +77,7 @@ async function exists(path: string): Promise<boolean> {
     await stat(path);
     return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (isEnoent(err)) return false;
     throw err;
   }
 }
