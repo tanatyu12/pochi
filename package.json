@@ -15,7 +15,8 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "demo": "sh scripts/demo.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",
