@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ExitCode } from "../../src/errors.js";
 import { parseCron } from "../../src/schedule/calendar.js";
 import { buildJob } from "../../src/schedule/index.js";
 import { launchdScheduler, startCalendarInterval } from "../../src/schedule/launchd.js";
@@ -37,8 +38,16 @@ describe("startCalendarInterval", () => {
     expect(startCalendarInterval(parseCron("* * * * *"))).toEqual([[]]);
   });
 
+  it("does require both days when one field starts with *, as cron then does", () => {
+    const dicts = startCalendarInterval(parseCron("0 9 */2 * 1"));
+    expect(dicts).toHaveLength(16);
+    expect(dicts[0]).toEqual([["Day", 1], ["Weekday", 1], ["Hour", 9], ["Minute", 0]]);
+    expect(dicts.at(-1)).toEqual([["Day", 31], ["Weekday", 1], ["Hour", 9], ["Minute", 0]]);
+  });
+
   it("refuses day of month with weekday, and too many combinations", () => {
     expect(() => startCalendarInterval(parseCron("0 6 1 * 1"))).toThrow("day of the month or a weekday");
+    expect(() => startCalendarInterval(parseCron("0 9 1,15 * 1"))).toThrow("day of the month or a weekday");
     expect(() => startCalendarInterval(parseCron("*/5 9-17 * * *"))).toThrow("more than 100 launchd intervals");
   });
 });
@@ -85,6 +94,22 @@ describe("launchdScheduler", () => {
     await expect(
       launchdScheduler({ exec: broken.exec, home, uid: 501, retryDelayMs: 0 }).install(job, "<plist/>"),
     ).rejects.toThrow("launchctl bootstrap failed (5): Bootstrap failed: 5: Input/output error");
+  });
+
+  it("fails with 2, naming the path, when the plist cannot be written or read", async () => {
+    // LaunchAgents is a file, so neither the directory nor the plist in it can be made.
+    await mkdir(join(home, "Library"));
+    await writeFile(join(home, "Library", "LaunchAgents"), "");
+    const scheduler = launchdScheduler({ exec: fakeExec().exec, home, uid: 501 });
+    await expect(scheduler.install(job, "<plist/>")).rejects.toMatchObject({
+      exitCode: ExitCode.CONFIG,
+      message: expect.stringMatching(/^could not create .*LaunchAgents \(E[A-Z]+\)$/),
+    });
+
+    await rm(join(home, "Library"), { recursive: true });
+    await mkdir(plistPath(), { recursive: true });
+    await expect(scheduler.inspect(job)).rejects.toMatchObject({ exitCode: ExitCode.CONFIG, message: expect.stringContaining("could not read") });
+    await expect(scheduler.uninstall(job)).rejects.toMatchObject({ exitCode: ExitCode.CONFIG, message: expect.stringContaining("could not remove") });
   });
 
   it("uninstalls and inspects", async () => {

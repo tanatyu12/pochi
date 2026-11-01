@@ -6,8 +6,9 @@ export type Field = "*" | readonly number[];
 
 /**
  * When a job runs, in one time zone, with cron's meaning: a run happens at every minute that
- * matches all fields, except that when both dayOfMonth and weekday are restricted a day matches
- * either of them. Every backend is rendered from this.
+ * matches all fields, except that when both dayOfMonth and weekday are restricted, and neither
+ * was written starting with "*", a day matches either of them. Every backend is rendered from
+ * this.
  */
 export interface Calendar {
   minute: Field;
@@ -16,9 +17,16 @@ export interface Calendar {
   month: Field;
   /** 0 is Sunday. */
   weekday: Field;
+  /**
+   * The step n of fields written starting with "*" ("*\/n"; 1 for "*,..."). Vixie cron treats a
+   * day-of-month or weekday field that starts with "*" as unrestricted for the either-day rule
+   * (DOM_STAR / DOW_STAR), so "0 9 *\/2 * 1" runs on odd-dated Mondays, and toCron writes the
+   * step back so the installed line keeps that meaning.
+   */
+  stars?: Partial<Record<FieldName, number>>;
 }
 
-type FieldName = keyof Calendar;
+type FieldName = Exclude<keyof Calendar, "stars">;
 
 export const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 export type Weekday = (typeof WEEKDAYS)[number];
@@ -75,20 +83,26 @@ export function parseCron(expr: string): Calendar {
   if (parts.length !== 5) {
     throw new CalendarError(`"${expr}" must have 5 fields (minute hour day-of-month month day-of-week)`);
   }
-  const fields = FIELD_ORDER.map((name, i) => parseField(parts[i]!, name));
-  const [minute, hour, dayOfMonth, month, weekday] = fields as [Field, Field, Field, Field, Field];
-  return { minute, hour, dayOfMonth, month, weekday };
+  const parsed = FIELD_ORDER.map((name, i) => parseField(parts[i]!, name));
+  const [minute, hour, dayOfMonth, month, weekday] = parsed.map((p) => p.field) as [Field, Field, Field, Field, Field];
+  const cal: Calendar = { minute, hour, dayOfMonth, month, weekday };
+  const stars = Object.fromEntries(
+    FIELD_ORDER.flatMap((name, i) => (parsed[i]?.star === undefined ? [] : [[name, parsed[i].star]])),
+  );
+  return Object.keys(stars).length > 0 ? { ...cal, stars } : cal;
 }
 
 function cronFields(expr: string): string[] {
   return expr.trim().split(/[ \t]+/);
 }
 
-function parseField(text: string, name: FieldName): Field {
-  if (text === "*") return "*";
+/** star: the step of the first item, when the field starts with "*" (as Vixie cron checks it). */
+function parseField(text: string, name: FieldName): { field: Field; star?: number } {
+  if (text === "*") return { field: "*" };
   const [min, max] = BOUNDS[name];
   const values = new Set<number>();
-  for (const item of text.split(",")) {
+  let star: number | undefined;
+  for (const [i, item] of text.split(",").entries()) {
     const m = /^(\*|[a-z0-9]+)(?:-([a-z0-9]+))?(?:\/(\d+))?$/i.exec(item);
     if (!m) throw new CalendarError(`"${item}" in the ${label(name)} field is not valid cron syntax`);
     const [, from, to, stepText] = m;
@@ -99,10 +113,34 @@ function parseField(text: string, name: FieldName): Field {
     const step = stepText === undefined ? 1 : Number(stepText);
     if (step < 1) throw new CalendarError(`"${item}" in the ${label(name)} field has a zero step`);
     if (start > end) throw new CalendarError(`"${item}" in the ${label(name)} field is a backwards range`);
+    if (i === 0 && from === "*") star = step;
     // 7 is Sunday as well as 0.
     for (let v = start; v <= end; v += step) values.add(name === "weekday" && v === 7 ? 0 : v);
   }
-  return sorted([...values]);
+  return { field: sorted([...values]), star };
+}
+
+/** What "*\/step" matches in the field. */
+function starValues(name: FieldName, step: number): number[] {
+  const [min, max] = BOUNDS[name];
+  const values: number[] = [];
+  for (let v = min; v <= max; v += step) values.push(v);
+  return values;
+}
+
+/** The star step still describes values when they hold all it matches, so it can be written back. */
+function keepStar(name: FieldName, step: number | undefined, values: Field): number | undefined {
+  if (step === undefined || values === "*") return undefined;
+  return starValues(name, step).every((v) => values.includes(v)) ? step : undefined;
+}
+
+/**
+ * Whether a day matches when either dayOfMonth or weekday does, rather than both: cron's rule
+ * when both are restricted and neither starts with "*".
+ */
+export function eitherDay(cal: Calendar): boolean {
+  const starred = (name: "dayOfMonth" | "weekday") => cal[name] === "*" || cal.stars?.[name] !== undefined;
+  return !starred("dayOfMonth") && !starred("weekday");
 }
 
 function value(token: string, name: FieldName): number {
@@ -123,16 +161,22 @@ function label(name: FieldName): string {
   return { minute: "minute", hour: "hour", dayOfMonth: "day-of-month", month: "month", weekday: "day-of-week" }[name];
 }
 
-/** Back to five cron fields, writing runs of consecutive values as ranges. */
+/**
+ * Back to five cron fields, writing runs of consecutive values as ranges, and a field written
+ * starting with "*" as "*\/n" again (then any other values), so cron reads the same day rule.
+ */
 export function toCron(cal: Calendar): string {
   return FIELD_ORDER.map((name) => {
     const field = cal[name];
     if (field === "*") return "*";
-    const parts: string[] = [];
-    for (let i = 0; i < field.length; ) {
+    const step = keepStar(name, cal.stars?.[name], field);
+    const covered = step === undefined ? [] : starValues(name, step);
+    const rest = field.filter((v) => !covered.includes(v));
+    const parts: string[] = step === undefined ? [] : [step === 1 ? "*" : `*/${step}`];
+    for (let i = 0; i < rest.length; ) {
       let j = i;
-      while (j + 1 < field.length && field[j + 1] === field[j]! + 1) j++;
-      parts.push(j - i >= 2 ? `${field[i]}-${field[j]}` : field.slice(i, j + 1).join(","));
+      while (j + 1 < rest.length && rest[j + 1] === rest[j]! + 1) j++;
+      parts.push(j - i >= 2 ? `${rest[i]}-${rest[j]}` : rest.slice(i, j + 1).join(","));
       i = j + 1;
     }
     return parts.join(",");
@@ -206,15 +250,22 @@ export function convertZone(
   if (dayShift !== 0 && (cal.dayOfMonth !== "*" || cal.month !== "*")) {
     throw cannot("the runs would move to another day of the month");
   }
-  return {
-    calendar: {
-      ...cal,
-      minute: collapse(newMinutes, "minute"),
-      hour: collapse(newHours, "hour"),
-      weekday: cal.weekday === "*" ? "*" : sorted(cal.weekday.map((w) => mod(w + dayShift, 7))),
-    },
-    warnings,
+  const moved: Calendar = {
+    ...cal,
+    minute: collapse(newMinutes, "minute"),
+    hour: collapse(newHours, "hour"),
+    weekday: cal.weekday === "*" ? "*" : sorted(cal.weekday.map((w) => mod(w + dayShift, 7))),
   };
+  // A moved field keeps its "*/n" only if it still matches all of it. A weekday that loses it
+  // only moves when dayOfMonth is "*", where the either-day rule does not apply anyway.
+  const stars = Object.fromEntries(
+    FIELD_ORDER.flatMap((name) => {
+      const step = keepStar(name, cal.stars?.[name], moved[name]);
+      return step === undefined ? [] : [[name, step]];
+    }),
+  );
+  const { stars: _, ...rest } = moved;
+  return { calendar: Object.keys(stars).length > 0 ? { ...rest, stars } : rest, warnings };
 }
 
 /**
@@ -252,8 +303,7 @@ export function nextRuns(cal: Calendar, timeZone: string, from: Date, n: number)
 function dayMatches(cal: Calendar, month: number, date: number, weekday: number): boolean {
   const has = (field: Field, v: number) => field === "*" || field.includes(v);
   if (!has(cal.month, month)) return false;
-  // cron's rule: with both restricted, either one is enough.
-  if (cal.dayOfMonth !== "*" && cal.weekday !== "*") return has(cal.dayOfMonth, date) || has(cal.weekday, weekday);
+  if (eitherDay(cal)) return has(cal.dayOfMonth, date) || has(cal.weekday, weekday);
   return has(cal.dayOfMonth, date) && has(cal.weekday, weekday);
 }
 

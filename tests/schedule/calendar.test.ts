@@ -46,9 +46,19 @@ describe("parseCron", () => {
       dayOfMonth: [1, 15],
       month: [1, 7],
       weekday: [0],
+      stars: { minute: 15 },
     });
     expect(parseCron("5/20 * * * *").minute).toEqual([5, 25, 45]);
     expect(parseCron("0 0 * * */2").weekday).toEqual([0, 2, 4, 6]);
+  });
+
+  it("does note a field that starts with *, as Vixie cron does, and only then", () => {
+    expect(parseCron("0 9 */2 * 1").stars).toEqual({ dayOfMonth: 2 });
+    expect(parseCron("0 9 *,5 * */3").stars).toEqual({ dayOfMonth: 1, weekday: 3 });
+    // The same days, but not starting with *: restricted for the either-day rule.
+    expect(parseCron("0 9 1-31/2 * 1").stars).toBeUndefined();
+    expect(parseCron("0 9 1,*/2 * 1").stars).toBeUndefined();
+    expect(parseCron("0 9 * * 1")).not.toHaveProperty("stars");
   });
 
   it.each([
@@ -75,6 +85,14 @@ describe("toCron", () => {
     const cal: Calendar = { minute: [0, 1, 5, 6, 7], hour: "*", dayOfMonth: "*", month: [3], weekday: "*" };
     expect(toCron(cal)).toBe("0,1,5-7 * * 3 *");
   });
+
+  it("does write a field that started with * back as */n, so cron keeps its day rule", () => {
+    expect(toCron(parseCron("*/15 9 */2 * 1"))).toBe("*/15 9 */2 * 1");
+    expect(toCron(parseCron("0 9 */3,2 * 1"))).toBe("0 9 */3,2 * 1");
+    expect(toCron(parseCron("0 9 *,5 * 1"))).toBe("0 9 * * 1");
+    expect(toCron(parseCron("0 9 * * */2"))).toBe("0 9 * * */2");
+    expect(toCron(parseCron("0 9 1-31/10 * 1"))).toBe("0 9 1,11,21,31 * 1");
+  });
 });
 
 describe("convertZone", () => {
@@ -98,7 +116,15 @@ describe("convertZone", () => {
 
   it("keeps every day as every day, and shifts each hour of a list", () => {
     expect(toCron(convertZone(parseCron("0 8,20 * * *"), "Asia/Tokyo", "UTC", NOW).calendar)).toBe("0 11,23 * * *");
-    expect(toCron(convertZone(parseCron("*/30 * * * *"), "Asia/Kolkata", "UTC", NOW).calendar)).toBe("0,30 * * * *");
+    expect(toCron(convertZone(parseCron("*/30 * * * *"), "Asia/Kolkata", "UTC", NOW).calendar)).toBe("*/30 * * * *");
+  });
+
+  it("does keep */n only while the moved field still holds all of it", () => {
+    expect(toCron(convertZone(parseCron("*/20 9 * * *"), "Asia/Kathmandu", "UTC", NOW).calendar)).toBe("15,35,55 3 * * *");
+    const weekdays = convertZone(parseCron("0 6 * * */2"), "Asia/Tokyo", "UTC", NOW).calendar;
+    expect(toCron(weekdays)).toBe("0 21 * * 1,3,5,6");
+    expect(weekdays.stars).toBeUndefined();
+    expect(() => convertZone(parseCron("0 6 */2 * 1"), "Asia/Tokyo", "UTC", NOW)).toThrow("another day of the month");
   });
 
   it("refuses moves that do not stay one calendar", () => {
@@ -140,6 +166,18 @@ describe("nextRuns", () => {
     // The 1st, or any Friday.
     const either = nextRuns(parseCron("0 0 1 * 5"), "UTC", NOW, 3).map((d) => d.toISOString().slice(0, 10));
     expect(either).toEqual(["2026-10-30", "2026-11-01", "2026-11-06"]);
+  });
+
+  it("does require both days when either field starts with *, as Vixie cron does", () => {
+    const days = (expr: string, n: number) => nextRuns(parseCron(expr), "UTC", NOW, n).map((d) => d.toISOString().slice(0, 10));
+    // Odd-dated Mondays.
+    expect(days("0 9 */2 * 1", 3)).toEqual(["2026-11-09", "2026-11-23", "2026-12-07"]);
+    // The 1st or the 15th, or any Monday.
+    expect(days("0 9 1,15 * 1", 4)).toEqual(["2026-11-01", "2026-11-02", "2026-11-09", "2026-11-15"]);
+    // The same odd days not written with *: any odd day, or any Monday.
+    expect(days("0 9 1-31/2 * 1", 4)).toEqual(["2026-10-29", "2026-10-31", "2026-11-01", "2026-11-02"]);
+    // The 1st, when it is a Sunday, Tuesday, Thursday or Saturday.
+    expect(days("0 9 1 * */2", 2)).toEqual(["2026-11-01", "2026-12-01"]);
   });
 
   it("finds rare days and returns none for impossible ones", () => {

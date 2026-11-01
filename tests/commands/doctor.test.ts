@@ -18,18 +18,6 @@ const CLAUDE_VERSION = "2.1.310 (Claude Code)";
 const RELEASES = "https://api.github.com/repos/vercel/next.js/releases?per_page=100";
 const FEED = "https://blog.example.com/feed.xml";
 const SEARCH = "https://api.tavily.com/search";
-const ENV_NAMES = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "TAVILY_API_KEY",
-  "SLACK_WEBHOOK_URL",
-  "GITHUB_TOKEN",
-  "POCHI_CONTEXT_YAML",
-  "POCHI_SOURCES_YAML",
-  "POCHI_STATE_PATH",
-];
-
 const CONTEXT = `version: 1
 project: { name: my-app, description: "A SaaS app" }
 problems: ["Breaking changes in Next.js"]
@@ -61,7 +49,10 @@ const rss = (...titles: string[]) =>
       .join("")}</channel></rss>`,
   );
 
+const WEBHOOK = "https://hooks.slack.com/services/T0001/B0001/x";
+
 let dir: string;
+let env: NodeJS.ProcessEnv;
 let out: string[];
 let logs: string[];
 
@@ -69,23 +60,28 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pochi-doctor-"));
   await writeFile(join(dir, "context.yml"), CONTEXT);
   await writeFile(join(dir, "sources.yml"), SOURCES);
-  for (const name of ENV_NAMES) vi.stubEnv(name, undefined);
+  // Injected, so nothing from the real environment leaks in. The default channel is Slack.
+  env = { SLACK_WEBHOOK_URL: WEBHOOK };
   out = [];
   logs = [];
   configureLog({ write: (s) => logs.push(s) });
 });
 
 afterEach(async () => {
-  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   resetLog();
   await rm(dir, { recursive: true, force: true });
 });
 
+function setEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete env[name];
+  else env[name] = value;
+}
+
 function check(opts: DoctorOptions = {}, deps: DoctorDeps = {}) {
   return doctor(
     { configDir: dir, state: join(dir, "notified.json"), ...opts },
-    { platform: "darwin", spawn: fakeSpawn(run.exit(`${CLAUDE_VERSION}\n`)).spawn, write: (l) => out.push(l), ...deps },
+    { env, platform: "darwin", spawn: fakeSpawn(run.exit(`${CLAUDE_VERSION}\n`)).spawn, write: (l) => out.push(l), ...deps },
   );
 }
 
@@ -93,7 +89,6 @@ const line = (label: string) => out.find((l) => l.trimStart().split(/\s+/)[1] ==
 
 describe("doctor: on a color terminal", () => {
   it("colors the report and says Pochi is ready when nothing failed", async () => {
-    vi.stubEnv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T0001/B0001/x");
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const wasTTY = process.stdout.isTTY;
     process.stdout.isTTY = true;
@@ -133,9 +128,9 @@ describe("doctor: secrets", () => {
   }
 
   beforeEach(() => {
-    for (const [name, value] of Object.entries(SECRETS)) vi.stubEnv(name, value);
-    vi.stubEnv("POCHI_CONTEXT_YAML", CONTEXT.replace("A SaaS app", CONFIG_MARKER));
-    vi.stubEnv("POCHI_SOURCES_YAML", SOURCES);
+    for (const [name, value] of Object.entries(SECRETS)) setEnv(name, value);
+    setEnv("POCHI_CONTEXT_YAML", CONTEXT.replace("A SaaS app", CONFIG_MARKER));
+    setEnv("POCHI_SOURCES_YAML", SOURCES);
   });
 
   it("prints none in a healthy run with --fetch", async () => {
@@ -165,8 +160,8 @@ describe("doctor: secrets", () => {
   });
 
   it("prints none when the config is invalid, even a secret placed in a field", async () => {
-    vi.stubEnv("POCHI_CONTEXT_YAML", CONTEXT.replace("my-app", `[${SECRETS.TAVILY_API_KEY}]`));
-    vi.stubEnv("POCHI_SOURCES_YAML", `${SOURCES}  - { id: x, query: "${SECRETS.GITHUB_TOKEN}", bad: ${CONFIG_MARKER} }\n`);
+    setEnv("POCHI_CONTEXT_YAML", CONTEXT.replace("my-app", `[${SECRETS.TAVILY_API_KEY}]`));
+    setEnv("POCHI_SOURCES_YAML", `${SOURCES}  - { id: x, query: "${SECRETS.GITHUB_TOKEN}", bad: ${CONFIG_MARKER} }\n`);
     const result = await check();
     expect(result.exitCode).toBe(ExitCode.CONFIG);
     expect(out.filter((l) => /fail\s+config/.test(l))).toHaveLength(1);
@@ -174,7 +169,7 @@ describe("doctor: secrets", () => {
   });
 
   it("prints none when the LLM cannot be used or the state file is broken", async () => {
-    vi.stubEnv("ANTHROPIC_API_KEY", undefined);
+    setEnv("ANTHROPIC_API_KEY", undefined);
     await writeFile(join(dir, "notified.json"), JSON.stringify({ version: 1, entries: SECRETS }));
     const result = await check({}, { spawn: fakeSpawn(run.spawnError("ENOENT")).spawn });
     expect(result.exitCode).toBe(ExitCode.LLM);
@@ -184,8 +179,8 @@ describe("doctor: secrets", () => {
 
 describe("doctor: config", () => {
   it("shows where each file came from and what it holds", async () => {
-    vi.stubEnv("POCHI_SOURCES_YAML", SOURCES);
-    vi.stubEnv("TAVILY_API_KEY", "tvly-0123456789");
+    setEnv("POCHI_SOURCES_YAML", SOURCES);
+    setEnv("TAVILY_API_KEY", "tvly-0123456789");
     const result = await check();
     expect(result.exitCode).toBe(ExitCode.OK);
     expect(line("context")).toContain(`${join(dir, "context.yml")} (project my-app)`);
@@ -229,7 +224,7 @@ describe("doctor: config", () => {
 
 describe("doctor: LLM", () => {
   it("reports the API mode without starting claude or calling the API", async () => {
-    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-0123456789");
+    setEnv("ANTHROPIC_API_KEY", "sk-ant-0123456789");
     const fm = mockFetch({});
     const spawn = fakeSpawn([]);
     await check({}, { spawn: spawn.spawn });
@@ -271,8 +266,9 @@ describe("doctor: LLM", () => {
 
 describe("doctor: environment", () => {
   it("shows set, not set and blank", async () => {
-    vi.stubEnv("GITHUB_TOKEN", "ghp_0123456789");
-    vi.stubEnv("TAVILY_API_KEY", "  ");
+    setEnv("SLACK_WEBHOOK_URL", undefined);
+    setEnv("GITHUB_TOKEN", "ghp_0123456789");
+    setEnv("TAVILY_API_KEY", "  ");
     await check();
     expect(line("GITHUB_TOKEN")).toMatch(/ok\s+GITHUB_TOKEN\s+set$/);
     expect(line("TAVILY_API_KEY")).toMatch(/warn\s+TAVILY_API_KEY\s+blank \(treated as unset\)/);
@@ -284,21 +280,22 @@ describe("doctor: environment", () => {
 describe("doctor: notify", () => {
   const withChannels = (channels: string) => writeFile(join(dir, "context.yml"), `${CONTEXT}notify: { channels: ${channels} }\n`);
 
-  it("warns about the webhook only when Slack is a channel", async () => {
-    await check();
-    expect(line("slack")).toMatch(/warn\s+slack\s+SLACK_WEBHOOK_URL is not set/);
+  it("fails with 2 without the webhook, as run would, only when Slack is a channel", async () => {
+    setEnv("SLACK_WEBHOOK_URL", "  ");
+    expect((await check()).exitCode).toBe(ExitCode.CONFIG);
+    expect(line("slack")).toMatch(/fail\s+slack\s+SLACK_WEBHOOK_URL is not set \(run --dry-run does not need it\)/);
 
     out = [];
-    vi.stubEnv("SLACK_WEBHOOK_URL", "https://example.com/hook");
+    setEnv("SLACK_WEBHOOK_URL", "https://example.com/hook");
     expect((await check()).exitCode).toBe(ExitCode.OK);
     expect(line("slack")).toMatch(/warn\s+slack\s+SLACK_WEBHOOK_URL is not a https:\/\/hooks\.slack\.com\/ URL/);
 
     out = [];
-    vi.stubEnv("SLACK_WEBHOOK_URL", undefined);
+    setEnv("SLACK_WEBHOOK_URL", undefined);
     await withChannels(`[{ type: file, dir: "${join(dir, "reports")}" }]`);
-    await check();
+    expect((await check()).exitCode).toBe(ExitCode.OK);
     expect(line("slack")).toBeUndefined();
-    expect(out.filter((l) => l.includes("warn") && l.includes("SLACK"))).toEqual([]);
+    expect(out.filter((l) => /warn|fail/.test(l) && l.includes("SLACK"))).toEqual([]);
   });
 
   it("accepts a report directory that exists or can be created", async () => {
@@ -355,7 +352,7 @@ describe("doctor: state", () => {
   });
 
   it("takes --state over POCHI_STATE_PATH", async () => {
-    vi.stubEnv("POCHI_STATE_PATH", join(dir, "from-env.json"));
+    setEnv("POCHI_STATE_PATH", join(dir, "from-env.json"));
     await check({ state: join(dir, "from-flag.json") });
     expect(line(join(dir, "from-flag.json"))).toBeDefined();
     await check({ state: undefined });
@@ -364,7 +361,7 @@ describe("doctor: state", () => {
 });
 
 describe("doctor: --fetch", () => {
-  beforeEach(() => vi.stubEnv("TAVILY_API_KEY", "tvly-0123456789"));
+  beforeEach(() => setEnv("TAVILY_API_KEY", "tvly-0123456789"));
 
   it("shows each source's latest title in config order", async () => {
     mockFetch({
@@ -394,8 +391,8 @@ describe("doctor: --fetch", () => {
     const result = await check({ fetch: true });
     expect(result.exitCode).toBe(ExitCode.OK);
     expect(line("nextjs")).toMatch(/fail\s+nextjs \(github\)\s+.*404/);
-    // Counted as what it is, not as a warning; the warnings are SLACK_WEBHOOK_URL and the empty query.
-    expect(out.at(-1)).toBe("No problems found, 1 non-fatal failure, 2 warnings");
+    // Counted as what it is, not as a warning; the warning is the empty query.
+    expect(out.at(-1)).toBe("No problems found, 1 non-fatal failure, 1 warning");
   });
 
   it("strips terminal escape sequences from titles and caps their length", async () => {
@@ -414,7 +411,7 @@ describe("doctor: --fetch", () => {
   });
 
   it("skips queries without a Tavily key", async () => {
-    vi.stubEnv("TAVILY_API_KEY", undefined);
+    setEnv("TAVILY_API_KEY", undefined);
     const fm = mockFetch({ [RELEASES]: reply.json([]), [FEED]: rss("Hello") });
     await check({ fetch: true });
     expect(line("qwen")).toMatch(/skip\s+qwen \(tavily\)\s+TAVILY_API_KEY is not set/);
@@ -460,7 +457,7 @@ describe("doctor: --fetch", () => {
 describe("doctorCommand", () => {
   it("throws the exit code of the first problem", async () => {
     await rm(join(dir, "context.yml"));
-    const command = doctorCommand({ write: (l) => out.push(l), spawn: fakeSpawn([]).spawn }).exitOverride();
+    const command = doctorCommand({ env, write: (l) => out.push(l), spawn: fakeSpawn([]).spawn }).exitOverride();
     await expect(command.parseAsync(["--config-dir", dir], { from: "user" })).rejects.toMatchObject({
       exitCode: ExitCode.CONFIG,
       message: "doctor: 1 problem found",
@@ -474,13 +471,14 @@ describe("doctorCommand", () => {
       during = process.listenerCount("SIGINT");
       run.exit(`${CLAUDE_VERSION}\n`)(child);
     });
-    const command = doctorCommand({ write: (l) => out.push(l), spawn: spawn.spawn, signal: new AbortController().signal });
+    const command = doctorCommand({ env, write: (l) => out.push(l), spawn: spawn.spawn, signal: new AbortController().signal });
     await command.exitOverride().parseAsync(["--config-dir", dir, "--state", join(dir, "notified.json")], { from: "user" });
     expect(during).toBe(before);
   });
 
   it("puts the log level back afterwards", async () => {
-    const command = doctorCommand({ write: (l) => out.push(l) }).exitOverride();
+    const spawn = fakeSpawn(run.exit(`${CLAUDE_VERSION}\n`)).spawn;
+    const command = doctorCommand({ env, platform: "darwin", spawn, write: (l) => out.push(l) }).exitOverride();
     await command.parseAsync(["--config-dir", dir, "--state", join(dir, "notified.json")], { from: "user" });
     logs.length = 0;
     const { log } = await import("../../src/util/log.js");
