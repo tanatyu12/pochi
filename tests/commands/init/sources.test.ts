@@ -357,6 +357,14 @@ describe("askSources: searches", () => {
     expect(prompter.asked).not.toContain(WEB);
   });
 
+  it("searches the edition of the summary language", async () => {
+    const feed = news("Lanzamiento de Qwen", { locale: "es-ES" });
+    mockFetch(route(feed));
+    const prompter = scriptedPrompter(["news", "Lanzamiento de Qwen", "", "done"]);
+    const result = await askSources(newSession(prompter, { ...CONTEXT, language: "Spanish" }));
+    expect(result.feeds).toEqual([feed]);
+  });
+
   it("takes a news search typed from the menu, kept to the sites given", async () => {
     const feed = news("Qwen release", { sites: ["prtimes.jp", "news.example.com"] });
     mockFetch(route(feed));

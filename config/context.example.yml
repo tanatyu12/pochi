@@ -15,7 +15,8 @@ problems:
 exclude:
   - Funding news and company acquisitions
 
-# Language for the summaries the LLM writes. Labels stay in English.
+# Language for the summaries the LLM writes, such as English, Japanese, Chinese (Simplified),
+# Spanish or French; any language works. Labels stay in English.
 language: English
 
 llm:
