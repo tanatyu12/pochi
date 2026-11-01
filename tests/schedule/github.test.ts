@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { ExitCode } from "../../src/errors.js";
 import { parseCron } from "../../src/schedule/calendar.js";
 import { ACTIONS, githubScheduler, WORKFLOW_PATH } from "../../src/schedule/github.js";
@@ -31,6 +32,23 @@ describe("githubScheduler", () => {
     expect(commitStep).toContain("GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}");
     expect(commitStep).toContain("GIT_CONFIG_VALUE_0=");
     expect(commitStep).not.toContain("git remote");
+  });
+
+  it("does put no expression, echo or trace in a script, so neither inputs nor secrets reach the log", () => {
+    const yml = githubScheduler().render(job, parseCron("17 21 * * *"), "daily");
+    const steps = (parse(yml) as { jobs: { briefing: { steps: { run?: string }[] } } }).jobs.briefing.steps;
+    const scripts = steps.flatMap((s) => (s.run === undefined ? [] : [s.run]));
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const script of scripts) {
+      expect(script).not.toContain("${{");
+      expect(script).not.toMatch(/\becho\b|\bset -x\b/);
+    }
+  });
+
+  it("does skip the state commit on a dry run and when cancelled, but not after a failed run", () => {
+    const yml = githubScheduler().render(job, parseCron("17 21 * * *"), "daily");
+    const steps = (parse(yml) as { jobs: { briefing: { steps: { name?: string; if?: string }[] } } }).jobs.briefing.steps;
+    expect(steps.find((s) => s.name === "Commit the state file")?.if).toBe("${{ !cancelled() && inputs.dry_run != true }}");
   });
 
   it("does use the action versions CI uses, which Dependabot keeps current", async () => {
