@@ -154,6 +154,20 @@ describe("runBriefing", () => {
     expect(result.delivered.size).toBe(1);
   });
 
+  it("keeps no analysis text in the state with storeAnalyses off, and analyzes the insight again", async () => {
+    const store = memoryStateStore();
+    const failing = fakeNotifier({ failing: true }).notifier;
+    await runBriefing(input(store, [failing], { storeAnalyses: false }), deps);
+    const saved = await store.load({ now: NOW });
+    expect(JSON.stringify([...saved.entries.values()])).not.toContain("Read it");
+
+    const again = counting();
+    const { notifier, received } = fakeNotifier();
+    await runBriefing(input(store, [notifier], { llm: again.llm, storeAnalyses: false }), deps);
+    expect(again.tiers()).toEqual(["analyze"]);
+    expect(received[0]?.insights.map((f) => f.item.title)).toEqual(["Breaking change in lib"]);
+  });
+
   it("sends a channel only what it does not have yet", async () => {
     const store = memoryStateStore();
     const good = fakeNotifier();

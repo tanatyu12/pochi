@@ -36,6 +36,12 @@ export interface BriefingInput {
   store: StateStore;
   /** Collects and filters but neither delivers nor saves the state. */
   dryRun: boolean;
+  /**
+   * Keeps the analysis of an insight not yet delivered everywhere in the state, so the next run
+   * reuses it instead of paying for it again. Off where the state file is committed to a
+   * repository (GitHub Actions), which would otherwise publish briefing text. On when left out.
+   */
+  storeAnalyses?: boolean;
 }
 
 export interface BriefingDeps {
@@ -125,7 +131,7 @@ export async function runBriefing(input: BriefingInput, deps: BriefingDeps = {})
   // is in the state, and holds back only the since of its own source.
   const saveFor = async (f: FilterResult, reached: ReadonlyMap<string, readonly string[]>) => {
     if (dryRun) return;
-    const waiting = recordFiltered(state, f, reached, channels, today);
+    const waiting = recordFiltered(state, f, reached, channels, today, input.storeAnalyses ?? true);
     state.sources = sourceTimes(state, sources, collected, waiting, window, now);
     await store.save(state, { now });
   };
@@ -406,7 +412,8 @@ function isStale(item: Item, maxAgeDays: number, today: string): boolean {
 /**
  * Records what the run decided, and returns the items left waiting in the state for a later run
  * (untriaged, unanalyzed, or not yet delivered everywhere). reached holds the channels that have
- * each insight; one that every channel has is notified, the others keep their analysis.
+ * each insight; one that every channel has is notified, the others keep their analysis when
+ * storeAnalyses is on, and are analyzed again otherwise.
  */
 function recordFiltered(
   state: State,
@@ -414,6 +421,7 @@ function recordFiltered(
   reached: ReadonlyMap<string, readonly string[]>,
   channels: readonly string[],
   today: string,
+  storeAnalyses: boolean,
 ): Item[] {
   const waiting: Item[] = [...filtered.undecided, ...filtered.pending];
   for (const item of filtered.irrelevant) record(state, stateKeys(item), "i", today);
@@ -426,7 +434,8 @@ function recordFiltered(
       for (const one of [item, ...related]) record(state, stateKeys(one), "n", today);
       continue;
     }
-    record(state, stateKeys(item), "r", today, { c: has, a: { title, summary, impact, action } });
+    const a = storeAnalyses ? { title, summary, impact, action } : undefined;
+    record(state, stateKeys(item), "r", today, { c: has, ...(a && { a }) });
     for (const one of related) record(state, stateKeys(one), "r", today, { c: has, p: item.id });
     waiting.push(item, ...related);
   }
