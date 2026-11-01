@@ -143,19 +143,25 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 
 ```json
 { "version": 1, "updatedAt": "2026-10-25T22:17:03Z", "briefings": 42,
-  "entries": { "<id>": { "s": "n", "f": "2026-10-20", "l": "2026-10-25" } } }
+  "sources": { "<source id>": "2026-10-25T22:17:03Z" },
+  "entries": { "<id1>": { "s": "n", "f": "2026-10-20", "l": "2026-10-25" },
+               "<id2>": { "s": "r", "f": "2026-10-24", "l": "2026-10-25", "c": ["file"],
+                         "a": { "title": "…", "summary": "…", "impact": "High", "action": "…" } },
+               "<id3>": { "s": "r", "f": "2026-10-24", "l": "2026-10-25", "c": ["file"], "p": "<id2>" } } }
 ```
 
 - キーは記事の `stateKeys(item)`（id と urlKey）。どれか1つでも entries にあれば既知とみなし、l の更新や状態の記録は全キーに対して行う。id だけで引くと、収集時に URL の重複として落とした側や、別の日に別のソースから来た同じページが再通知される
-- s（状態）：n は通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みで未分析（翌日は Triage を飛ばして Analyze だけ行う。初めて見てから maxItemAgeDays（最低14日）を過ぎても r のままなら i にして打ち切る。touch で l が更新され続けて期限切れにならず、通知先に拒否され続ける記事を毎日解析し直してしまうため）。r は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r で、記録や touch で弱い状態に戻すことはない（touch は最も弱い r を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
+- s（状態）：n は全通知先に通知済み、i は無関係と判定済み（翌日以降は再判定しない）、r は関連ありと判定済みでまだどこかの通知先に届いていない（翌日は Triage を飛ばす。a があれば Analyze も飛ばしてそのまま届け、なければ Analyze だけ行う）、u は収集したが Triage が済んでいない（バッチの失敗、回答なし、maxItemsPerRun のあふれ。翌日は新しい記事と同じく Triage に回す。maxItemAgeDays より古くても i にしない）。初めて見てから maxItemAgeDays（最低14日）を過ぎても r か u のままなら i にして打ち切る（touch で l が更新され続けて期限切れにならず、通知先に拒否され続ける記事を毎日送り直し、あふれ続ける記事を毎日回し続けてしまうため）。r・u と下記の c / a / p は最初のリリースより前に足したので、状態ファイルの version は 1 のまま（リリース後に状態を足すときは version を上げ、古い版が新しい状態を読み捨てないようにする）。強さは n > i > r > u で、記録や touch で弱い状態に戻すことはない（touch は最も弱い u を `record` するので、既存の状態がそのまま残る。`statusOf` は全キーのうち最も強い状態を返す）
+- r のエントリだけが持つ欄（n や i になったら捨てる）：c はその記事を既に受け取った通知先（`Notifier.name`、つまりチャンネルの種類。同じ種類は1つしか設定できないので、実行をまたいで安定したキーになる）。翌日はそれ以外の通知先にだけ届ける（届いた通知先に重複して届かず、ファイルなら `<date>-2.md` を作らない）。a は Analyze の結果（title・summary・impact・action。title は300字、summary と action は2900字（Slack のセクションの上限）で切って保存し、状態ファイルが膨らみすぎないようにする）で、翌日は Analyze を払い直さずに `Insight` を組み立てて届ける（minImpact が上がっていれば i にする）。p は同じ話題の代表として一緒に届けた記事の Item.id で、翌日その代表が a から組み立てられれば、その `related` に戻す（代表が収集されなければ単独で Analyze する）。不正な c / a / p はその欄だけを捨てる
 - f は初めて見た日、l は最後にフィード上で見た日
-- updatedAt は保存した時刻で、次の実行はここから収集の起点 since を決める（run の手順5）。そのため、未決の記事（Triage の失敗や maxItemsPerRun のあふれ。状態に記録されない）を残した実行では、前回の updatedAt（なければ maxItemAgeDays 前）を書き直して起点を進めない。進めると、それらの記事が次の実行の取得範囲から外れてしまう。読めない値は無視する（since なしで動く）
+- updatedAt は保存した時刻で、実行のたびに必ず進める。未決の記事は u として状態に残るので、起点を止める必要はない（以前は未決が残ると updatedAt を止めていたが、あふれが1件でも残ると since が固定され、maxItemAgeDays が ttlDays 近くまで伸び、窓が広がってさらにあふれる、という悪循環になった）。読めない値は無視する（since なしで動く）
+- sources はソースの id ごとの「次の取得の起点」で、次の実行はその1日前をそのソースの since にする（run の手順5）。取得に成功したソースは保存時刻、ただしそのソースの記事で状態に残って待っているもの（u、r、届いていない insight と related）に日付があれば、その最も古い公開日まで戻す（Google ニュースの after: や Tavily の start_date で、待っている記事が返らなくなるのを防ぐ）。失敗したソースは今回の since の1日後（つまり次も同じ since から取る。止まっていた間の記事を失わないため）。Tavily のキーがなくて飛ばしたクエリは前の値のまま。設定にないソースの id は捨てる。sources にないソース（新しいソースや、sources がない古いファイル）は updatedAt から決める。読めない値はそのソースだけ無視する
 - 古いエントリは l を基準に ttlDays で削除する。更新の止まったブログの記事はフィードに残り続けるため、通知日を基準にすると期限後に再通知されてしまう
 - キーはソートし、1エントリ1行で書く（毎日のコミットの差分を変わったエントリだけにするため）。一時ファイルに書いてから rename する
-- 壊れていた場合（JSON でない、version が 1 でない、entries が object でない）は `notified.json.corrupt-<YYYYMMDDTHHmmssZ>-<6桁の16進>` に退避して warn を出し、空の状態から始める（同じ秒に2回壊れても前の退避を上書きしないよう、末尾に乱数を付ける）。dry-run では退避せず、ファイルをそのまま残して空の状態から始める。個々のエントリだけが不正（キーが32桁の16進でない、s が n / i / r 以外、日付が実在する YYYY-MM-DD でない）なら、そのエントリだけを捨てる。ファイルがなければ空の状態とし、それ以外の読み込みエラーや退避の失敗は終了コード1にする（空で始めると全記事が再通知されるため）
+- 壊れていた場合（JSON でない、version が 1 でない、entries が object でない）は `notified.json.corrupt-<YYYYMMDDTHHmmssZ>-<6桁の16進>` に退避して warn を出し、空の状態から始める（同じ秒に2回壊れても前の退避を上書きしないよう、末尾に乱数を付ける）。dry-run では退避せず、ファイルをそのまま残して空の状態から始める。個々のエントリだけが不正（キーが32桁の16進でない、s が n / i / r / u 以外、日付が実在する YYYY-MM-DD でない）なら、そのエントリだけを捨てる。ファイルがなければ空の状態とし、それ以外の読み込みエラーや退避の失敗は終了コード1にする（空で始めると全記事が再通知されるため）
 - 既知の記事は欠けているキーにも、既存のエントリの状態と最も古い f を引き継いで記録する。通知済み（n）を無関係（i）に、n や i を未分析（r）に戻すことはない
 - パスの優先順位は `--state` > `POCHI_STATE_PATH` > 既定パス。空白だけの値は未指定として扱う
-- 書き込みは一時ファイルに書いて fsync してから rename する
+- 書き込みは一時ファイルに書いて fsync してから rename する。一時ファイルはモード 0o600 で作る（プロジェクトの関心事が分かるため、init の設定ファイルと同じく所有者だけが読めるようにする）
 - upstream リポジトリでは `state/*.json` を gitignore し、各自のコピーでは Actions が `git add -f` でコミットする
 
 ### LLM出力スキーマ
@@ -171,7 +177,7 @@ URL の正規化では、ホストを小文字化し、#以降、utm_\*、fbclid
 
 `llm/schema.ts` は `toJsonSchema` で JSON Schema（output 側。全 object が `additionalProperties: false`、`$schema` なし）を作り、CLI の `--json-schema` と API の代替経路で使う。同じファイルに共通の契約 `LlmTier`（triage / analyze）、`GenerateRequest<T>`、`LlmClient`、`LlmError` を置く。`LlmError` は終了コード3で、kind は unavailable / auth / rate_limit / transport / timeout / refusal / max_tokens / invalid_output。メッセージにはプロンプトや LLM の出力を含めない。
 
-記事は短縮 ID（i1〜iN）で LLM に渡す。LLM が返した未知の ID は破棄する。Triage で回答に含まれなかった記事は「未決」として状態に記録せず、翌日に再判定する。Analyze で回答のなかった記事は状態 r にし、翌日は Analyze だけ行う。
+記事は短縮 ID（i1〜iN）で LLM に渡す。LLM が返した未知の ID は破棄する。Triage で回答に含まれなかった記事は「未決」として状態 u に記録し、翌日に再判定する。Analyze で回答のなかった記事は状態 r にし、翌日は Analyze だけ行う。
 
 ## モジュール仕様
 
@@ -184,7 +190,7 @@ flowchart LR
   dedupe --> triage["Triage<br/>Haiku で全件を判定"]
   triage -- 関連あり --> analyze["Analyze<br/>Sonnet で関連分のみ"]
   analyze --> notify["通知<br/>Slack・Markdown ファイル"]
-  notify --> save["状態を保存<br/>全通知先に届いた分だけ通知済みに"]
+  notify --> save["状態を保存<br/>全通知先に届いた分だけ通知済みに<br/>届いた通知先と分析結果も記録"]
   save -. 翌日の実行で参照 .-> dedupe
 ```
 
@@ -239,7 +245,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 - **googlenews.ts**
   - `googleNewsUrl(feed, since?)` で Google ニュースの検索 RSS（`https://news.google.com/rss/search?q=…&hl=ja&gl=JP&ceid=JP:ja`）を組み立てる。q は query に、sites があれば ` site:a`（複数なら ` (site:a OR site:b)`）、since があれば ` after:YYYY-MM-DD`、なければ ` when:7d` を足す。locale（`ja-JP` の形、既定 `en-US`）から hl / gl / ceid を作る
   - 取得と変換は rss.ts の `fetchFeedItems`（kind は googlenews）。無料でキーが要らず、日付も付くので、ニュースで拾える検索は Tavily のクエリより先にこちらを使う。本文はタイトルだけで、結果は関連度順ではなく新しい順（検索語と関係の薄い記事は Triage で落とす）。`after:` / `when:` を付けても古い記事がわずかに混ざるが、maxItemAgeDays の判定で落ちる
-- **index.ts** `collectAll(sources, { signal?, concurrency?, since? })`（since は各ソースに `FetchDefaults`（types.ts。defaults に since を足したもの）として渡す） は `{ items, attempted, failures, skipped }` を返す
+- **index.ts** `collectAll(sources, { signal?, concurrency?, since?, sinceOf? })`（since は各ソースに `FetchDefaults`（types.ts。defaults に since を足したもの）として渡す。sinceOf(id) が値を返すソースにはそれを、返さないソースには since を渡す） は `{ items, attempted, failures, fetched, skipped }` を返す（fetched は取得に成功したソースの id）
   - 同時実行は4件まで（concurrency が正の整数でなければ warn を出して4にする）。ソースごとに try/catch し、失敗（sourceId・sourceName・kind・error）を記録して warn を出し、次に進む。中断以外で例外は投げない
   - TAVILY_API_KEY がなければ queries を取得せず、`skipped` に id を入れて info を1回出す（ほかに取得するソースがなければ warn）。スキップした分は `attempted` に数えない
   - 結果は完了順ではなく設定の順（feeds → queries）に並べ、id と urlKey で重複を除く。先に出た記事（フィードの記事と Tavily の同じ URL ならフィード側）を残す
@@ -286,8 +292,9 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - リポジトリ候補は最大3件（`MAX_REPO_CANDIDATES`）、検索クエリの提案は最大5件（`MAX_QUERY_SUGGESTIONS`）とする。スキーマでは件数を制限しないので、呼び出し側（T19）がこの定数で切り詰める
   - `triageRequest` / `analyzeRequest` は第3引数 `{ today? }` を取る。today があれば、Triage には「今日は YYYY-MM-DD。直近 maxItemAgeDays 日のニュースだけが欲しい。本文から明らかに古い話題（数か月前の発表や日付のない常設ページ）と分かる記事は無関係」、Analyze には「今日は YYYY-MM-DD」を伝える。日付のない記事はコードの古さ判定を通るので、その判断を LLM に任せるため
   - Analyze の影響度の基準：High は今週対応が必要（破壊的変更、セキュリティ、非推奨化）、Medium は計画に入れる、Low は参考情報
-- **filter.ts** `filterAndAnalyze(llm, context, items, { signal?, retryDelayMs?, pretriaged?, today? })` は `{ insights, irrelevant, undecided, pending, stats, error?, aborted }` を返す。insights（`Insight`、types.ts）は通知する分、irrelevant は状態 i にする分、undecided は状態に記録せず翌日に Triage からやり直す分、pending は状態 r にする分（関連ありで Analyze が済んでいない）
+- **filter.ts** `filterAndAnalyze(llm, context, items, { signal?, retryDelayMs?, pretriaged?, analyzed?, today? })` は `{ insights, irrelevant, undecided, pending, stats, error?, aborted }` を返す。insights（`Insight`、types.ts）は通知する分、irrelevant は状態 i にする分、undecided は状態 u にして翌日に Triage からやり直す分、pending は状態 r にする分（関連ありで Analyze が済んでいない）
   - pretriaged には状態 r の既知の記事を渡す。Triage を飛ばして Analyze に回す
+  - analyzed には状態 r で分析結果（a）を保存してある記事から組み立てた `Insight` を渡す。LLM を呼ばずに insights に加え（maxItemsPerRun にも数えない）、minImpact に届かなければ related ごと irrelevant にする
   - maxItemsPerRun は pretriaged と新しい記事を合わせた上限。先に pretriaged を、残りの枠に新しい記事を、それぞれ日付の新しい順（日付なしは後ろ）に採る。ただし新しい記事のために枠の半分（切り捨て。新しい記事がそれより少なければその件数）を残し、溜まった r が新しい記事を締め出さないようにする。あふれた pretriaged は pending（r のまま）、あふれた新しい記事は未決とする
   - Triage は maxItemsPerCall（既定40）件ずつ、関連する記事と pretriaged を Analyze に15件ずつ渡す。どちらも0件なら LLM を呼ばない。バッチは1つずつ順に送る（同時に送ると、止める判定や連続失敗の数え方が実行順に左右されるため）。止まった後や中断の後は、残りのバッチを送らない
   - 回答の ID はバッチ内の短縮 ID で記事に戻す。未知の ID は破棄し、同じ ID は最初の回答だけを使う。回答のない記事は、Triage なら未決、Analyze なら pending。バッチの記事のどれにも合う ID がない回答は invalid_output として扱う。Analyze の title が空なら記事のタイトルで補う
@@ -322,11 +329,11 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   2. dry-run でなければ `createNotifiers` で通知先を作る（slack で SLACK_WEBHOOK_URL がなければ2。空白だけは未設定扱い）。feeds が空で queries があり、TAVILY_API_KEY がなければ2（取得するソースがない）
   3. LLM を解決する（失敗すれば3）。手順2と3は記事の取得や LLM の課金より前に済ませる
   4. 状態ファイルを読み、期限切れのエントリを削除する。dry-run では `readOnly` で読む（壊れたファイルを退避しない）。`--no-state` なら読まずに空の状態から始め、保存もしない
-  5. 記事を収集する（全ソースが失敗すれば5）。まず遡る日数（以下 maxItemAgeDays。`itemAgeDays`）を決める：context.yml に maxItemAgeDays があればそれ。なければスケジュールの実行間隔の最長（`longestGapDays`。日単位で四捨五入、最小1日。毎日なら1、金・土なら6、週1なら7、月1なら31）に1日足した日数で、前回の実行（updatedAt）からそれ以上空いていれば、その日数（切り上げ）に1日足した日数。5年以内に2回の実行がなければ14日。いずれも ttlDays - 1 を超えない（期限切れの状態の記事が新規に戻らないように）。状態ファイルに updatedAt があれば、その1日前（未来の時刻なら今から1日前。時差と公開日のずれの分の重なりで、重複は状態で除く）を since とし、ただし maxItemAgeDays より前には遡らない。updatedAt がなければ（初回）maxItemAgeDays 前を since とする（各フィードは itemsPerFeed 件に加え、その間の記事を maxItemsPerFeed 件まで取る。Tavily は start_date）
-  6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が r の記事は除外せず、`pretriaged` として手順7に渡す。ただし r のうち初めて見た日（全キーの f の最小値、`firstSeen`）から maxItemAgeDays（ただし最低14日。毎日の実行で通知先が週末止まっても失わないように）を超えたものは渡さず、状態 i にして打ち切る。新規で maxItemAgeDays より古い記事は状態 i にする（日付のない記事は新しいものとして扱う）
-  7. Triage と Analyze を実行する（状態 r の記事は `pretriaged` として渡す）。その間に、関連ありの記事（pretriaged を含む）が2件以上あれば、同じ話題（同じ事件・発表・リリース・判決など1つの出来事を、別の媒体が報じたものや転載。話題が近いだけの別の出来事は含めない）を報じた記事のまとまりを Triage のモデルに1回だけ聞く（`groupingRequest`。各記事はタイトル・ソース・URL・公開日と本文の先頭200字）。まとまりごとに代表（公式発表 > 報道 > 転載の順で一次情報に近く、本文の多いもの。モデルが選び、まとまりにない id なら先頭）だけを Analyze に送り、ほかの記事は代表と同じ扱いにする（insight の `related` に新しい順で付け、代表が無関係・保留なら同じく irrelevant・pending に入れる）。まとめる呼び出しが失敗したら warn を出し、まとめずに続ける。結果が `aborted` なら通知せず、irrelevant を i、pending と insights を r として記録して保存し、130 で終える
-  8. channels の順に各通知先へ届ける（filter の結果に error があっても届ける）。中断されたら残りの通知先には届けない（各通知先の前に signal を確かめる。ファイルの書き込みは中断できないため）。dry-run のときは stdout に出し、状態は書かない（filter の error があれば出力後に3）
-  9. 状態を保存する。irrelevant は i、pending は r、全通知先に届いた insights は n、どれかに届かなかった insights は r（どちらも `related` の記事を代表と同じ状態で記録する）（翌日は Triage を払い直さずに Analyze から送り直す。届いた側には重複して届く）として記録する。保存に失敗すれば1（送信済みの記事が翌日また届くため、ほかの失敗より優先する）。保存の後、通知が中断されていれば130、filter の結果に error があれば3、どれかの通知先で失敗していれば4（`delivery failed: slack (2 updates not delivered)`）。3 を 4 より優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
+  5. 記事を収集する（全ソースが失敗すれば5）。まず遡る日数（以下 maxItemAgeDays。`itemAgeDays`）を決める：context.yml に maxItemAgeDays があればそれ。なければスケジュールの実行間隔の最長（`longestGapDays`。日単位で四捨五入、最小1日。毎日なら1、金・土なら6、週1なら7、月1なら31）に1日足した日数で、前回の実行（updatedAt）からそれ以上空いていれば、その日数（切り上げ）に1日足した日数。5年以内に2回の実行がなければ14日。いずれも ttlDays - 1 を超えない（期限切れの状態の記事が新規に戻らないように）。状態ファイルに updatedAt があれば、その1日前（未来の時刻なら今から1日前。時差と公開日のずれの分の重なりで、重複は状態で除く）を since とし、ただし maxItemAgeDays より前には遡らない。updatedAt がなければ（初回）maxItemAgeDays 前を since とする（各フィードは itemsPerFeed 件に加え、その間の記事を maxItemsPerFeed 件まで取る。Tavily は start_date）。状態の sources にそのソースの起点があれば、updatedAt の代わりにそれを使う（`sourceWindow`）。そのソースの遡る日数は、maxItemAgeDays を設定していなければ、起点からの日数（切り上げ）に1日足した日数まで広げる（ttlDays - 1 まで。前回失敗したソースが、止まっていた間の記事を古すぎるとして捨てないように。updatedAt から実行の遡る日数を決めるのと同じ考え方）。収集が中断されたら（collectAll は signal の reason をそのまま投げる）PochiError の interrupted（130）に変えて投げる
+  6. 既知の記事（`stateKeys` のどれかが状態にある）は最終観測日 l だけ更新する。そのうち `statusOf` が u の記事は新しい記事と同じく Triage に回す（古さでは i にしない）。r の記事は除外せず、分析結果（a）があればそこから `Insight` を組み立てて `analyzed` として、代表（p）がその中にあればその `related` に加え、どちらでもなければ `pretriaged` として手順7に渡す。ただし r と u のうち初めて見た日（全キーの f の最小値、`firstSeen`）から maxItemAgeDays（ただし最低14日。毎日の実行で通知先が週末止まっても失わないように）を超えたものは渡さず、状態 i にして打ち切る。新規でそのソースの遡る日数より古い記事は状態 i にする（日付のない記事は新しいものとして扱う）
+  7. Triage と Analyze を実行する（状態 r の記事は `pretriaged` として渡す）。その間に、関連ありの記事（pretriaged を含む）が2件以上あれば、同じ話題（同じ事件・発表・リリース・判決など1つの出来事を、別の媒体が報じたものや転載。話題が近いだけの別の出来事は含めない）を報じた記事のまとまりを Triage のモデルに1回だけ聞く（`groupingRequest`。各記事はタイトル・ソース・URL・公開日と本文の先頭200字）。まとまりごとに代表（公式発表 > 報道 > 転載の順で一次情報に近く、本文の多いもの。モデルが選び、まとまりにない id なら先頭）だけを Analyze に送り、ほかの記事は代表と同じ扱いにする（insight の `related` に新しい順で付け、代表が無関係・保留なら同じく irrelevant・pending に入れる）。まとめる呼び出しが失敗したら warn を出し、まとめずに続ける。結果が `aborted` なら通知せず、irrelevant を i、undecided を u、pending と insights を r（insights は分析結果と、それまでに届いていた通知先を付けて）として記録して保存し、130 で終える。Analyze と Triage に伝える「今日」と、briefing の日付（ヘッダー、レポートのファイル名）は `briefingDate`：context.schedule.timezone（なければ実行環境のタイムゾーン。`BriefingDeps.timeZone` で渡せる）での日付。日本時間 8:30 の実行が UTC の前日の日付にならないように。状態ファイルの f / l と古さの判定は UTC の日付のまま
+  8. channels の順に各通知先へ届ける（filter の結果に error があっても届ける）。各通知先には、その通知先が既に受け取った insight（状態の c）を除いた briefing を渡す（除いた結果が空なら milestone も付けない）。中断されたら残りの通知先には届けない（各通知先の前に signal を確かめる。ファイルの書き込みは中断できないため）。dry-run のときは stdout に出し、状態は書かない（filter の error があれば出力後に3）
+  9. 状態を保存する。irrelevant は i、undecided は u、pending は r、それまでと今回とを合わせて全通知先に届いた insights は n、どれかに届いていない insights は r として、届いた通知先（c）と分析結果（a）を付けて記録する（どちらも `related` の記事を代表と同じ状態で、r なら c と代表の id（p）を付けて記録する）。翌日は Triage も Analyze も払い直さず、届いていない通知先にだけ送る。中断で途中までしか届けられなかったときも、届いた通知先の分は記録する。updatedAt は必ず今回の時刻にし、sources を更新する（状態ファイルの節）。1件以上どこかに新しく届いたら briefings を1つ増やす。保存に失敗すれば1（送信済みの記事が翌日また届くため、ほかの失敗より優先する）。保存の後、通知が中断されていれば130、filter の結果に error があれば3、どれかの通知先で失敗していれば4（`delivery failed: slack (2 updates not delivered)`）。3 を 4 より優先する（LLM の失敗のほうが先に起きていて、翌日も続きうるため）
   - 収集中や LLM の解決中に中断されたら（signal の reason が投げられる）130 にする
   - フラグ：`--dry-run`、`--state <path>`、`--no-state`、`--json`、`--config-dir <dir>`（既定 config）、`--verbose`、`--quiet`
   - stdout：dry-run では人が読むテキスト（見出し、insight ごとに `[影響度] title`・URL・要約・Action・ソース名・同じ話題の別記事（`Also:` で3件まで、残りは件数）、最後に収集件数と失敗したソース）。`--json` では1つの JSON（date、dryRun、collected、attempted、failedSources、stats、insights（同じ話題の別記事は `related` に id・title・url・source）、dry-run で slack が通知先にあれば Slack に送るはずだった `messages`、届けたなら通知先ごとの `delivered`（`{ slack: [...], file: [...] }`）、filter の error があれば kind と message）。ログは常に stderr
@@ -338,7 +345,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
   - LLM：`resolveLlm` の結果（モード、モデル名、CLIモードなら `claude --version` の1行目）。APIモードではキーの有効性までは確かめない。状態ファイルはこの確認と並行して読み、表示は区分の順のまま
   - 環境変数：ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL、TAVILY_API_KEY、SLACK_WEBHOOK_URL、GITHUB_TOKEN、POCHI_CONTEXT_YAML、POCHI_SOURCES_YAML、POCHI_STATE_PATH を set / not set / blank だけで示す
   - Notify：channels ごとに1行。slack は SLACK_WEBHOOK_URL が未設定か `https://hooks.slack.com/` で始まらなければ warn。file は dir が書けるか（なければ、作れる祖先があるか）を確かめ、書けなければ fail（4）
-  - 状態ファイル：パスは run と同じ優先順位（`--state` > `POCHI_STATE_PATH` > 既定）。`inspectState`（state/store）で読むだけで、壊れていても退避しない。エントリ数、n / i / r の件数、ttlDays を過ぎた件数を示す。ファイルがなければ ok、壊れていれば fail、不正なエントリがあれば warn
+  - 状態ファイル：パスは run と同じ優先順位（`--state` > `POCHI_STATE_PATH` > 既定）。`inspectState`（state/store）で読むだけで、壊れていても退避しない。エントリ数、n / i / r / u の件数、ttlDays を過ぎた件数を示す。ファイルがなければ ok、壊れていれば fail、不正なエントリがあれば warn
   - `--fetch`：`sourceConfigs`（sources/index）の順に `fetchEach` で同時に4件まで取得し、最新1件のタイトルか「no items」、失敗ならエラーのメッセージを示す。TAVILY_API_KEY がなければ queries は skip
   - 終了コード：全項目を表示してから、最初の fail の区分で終える（設定・取得するソースがない 2、LLM 3、状態ファイル 1、レポートの dir に書けない 4、`--fetch` で全ソースが失敗 5、中断 130）。一部のソースの失敗と warn は 0。最後の行は問題の件数に加え、一部のソースの失敗を「non-fatal failure」、warn を「warning」として別々に数える。中断はどの確認の最中でも 130 とし、最後の行は出さない
 - **commands/init.ts**（端末での対話が必要。Ctrl-C で終了コード130とし、何も書かない）

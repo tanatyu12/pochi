@@ -42,7 +42,7 @@ export interface FilterResult {
    * failing on (refused, say), found by splitting the batch and confirmed by sending it again.
    */
   irrelevant: Item[];
-  /** Not recorded, so the next run triages them again: failed batches, unanswered items, over maxItemsPerRun. */
+  /** Recorded as state u, so the next run triages them again: failed batches, unanswered items, over maxItemsPerRun. */
   undecided: Item[];
   /**
    * Recorded as state r: relevant, but Analyze failed, did not answer or was not reached (stopped,
@@ -73,7 +73,8 @@ export interface FilterResult {
 
 /**
  * Triage in batches of maxItemsPerCall, group the relevant items, and the pretriaged ones (state
- * r), by story, then Analyze one of each story in batches of ANALYZE_BATCH_SIZE, one batch at a time. A batch that fails transiently
+ * r), by story, then Analyze one of each story in batches of ANALYZE_BATCH_SIZE, one batch at a time;
+ * the analyzed ones (state r with a stored analysis) join the insights as they are. A batch that fails transiently
  * is retried once after retryDelayMs; one that fails because of its content is split to find the
  * item causing it. Throws only errors that are not LlmErrors.
  */
@@ -85,8 +86,16 @@ export async function filterAndAnalyze(
     signal,
     retryDelayMs = RETRY_DELAY_MS,
     pretriaged = [],
+    analyzed = [],
     today,
-  }: { signal?: AbortSignal; retryDelayMs?: number; pretriaged?: readonly Item[]; today?: string } = {},
+  }: {
+    signal?: AbortSignal;
+    retryDelayMs?: number;
+    pretriaged?: readonly Item[];
+    /** Insights analyzed by an earlier run and not yet delivered everywhere; no LLM call is made for them. */
+    analyzed?: readonly Insight[];
+    today?: string;
+  } = {},
 ): Promise<FilterResult> {
   const result: FilterResult = {
     insights: [],
@@ -96,8 +105,18 @@ export async function filterAndAnalyze(
     stats: { triageBatches: 0, triageFailed: 0, analyzeBatches: 0, analyzeFailed: 0, dropped: 0 },
     aborted: false,
   };
-  if (items.length === 0 && pretriaged.length === 0) return result;
-  const byNewest = newestFirst([...items, ...pretriaged]);
+  const byNewest = newestFirst([...items, ...pretriaged, ...analyzed.flatMap((f) => [f.item, ...(f.related ?? [])])]);
+  const threshold = IMPACT_RANK[context.notify.minImpact];
+  // minImpact may have been raised since they were analyzed.
+  for (const insight of analyzed) {
+    if (IMPACT_RANK[insight.impact] > threshold) result.irrelevant.push(insight.item, ...(insight.related ?? []));
+    else result.insights.push({ ...insight, ...(insight.related && { related: [...insight.related].sort(byNewest) }) });
+  }
+  const byImpact = (a: Insight, b: Insight) => IMPACT_RANK[a.impact] - IMPACT_RANK[b.impact] || byNewest(a.item, b.item);
+  if (items.length === 0 && pretriaged.length === 0) {
+    result.insights.sort(byImpact);
+    return result;
+  }
 
   // maxItemsPerRun covers both: pretriaged items first (their triage is paid for), then new ones.
   // Up to half is kept for new items, so a backlog of pretriaged ones cannot starve them.
@@ -145,7 +164,6 @@ export async function filterAndAnalyze(
 
   // Reports of one story are analyzed once; the others go where that one goes.
   const { primaries, members } = await groupStories(run, context, relevant);
-  const threshold = IMPACT_RANK[context.notify.minImpact];
   const analyze = await runStage(
     run,
     "analyze",
@@ -197,7 +215,7 @@ export async function filterAndAnalyze(
     }
   }
 
-  result.insights.sort((a, b) => IMPACT_RANK[a.impact] - IMPACT_RANK[b.impact] || byNewest(a.item, b.item));
+  result.insights.sort(byImpact);
   return result;
 }
 
