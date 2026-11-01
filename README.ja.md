@@ -26,8 +26,21 @@
   <a href="#はじめかた">はじめかた</a> ·
   <a href="#しくみ">しくみ</a> ·
   <a href="docs/configuration.md">設定</a> ·
-  <a href="docs/scheduling.md">定期実行</a> ·
-  <a href="README.md">English</a>
+  <a href="docs/scheduling.md">定期実行</a>
+</p>
+
+<p align="center">
+  <sub>
+    <a href="README.md">English</a> ·
+    <a href="README.ja.md">日本語</a> ·
+    <a href="README.zh-CN.md">简体中文</a> ·
+    <a href="README.zh-TW.md">繁體中文</a> ·
+    <a href="README.es.md">Español</a> ·
+    <a href="README.fr.md">Français</a> ·
+    <a href="README.de.md">Deutsch</a> ·
+    <a href="README.pt-BR.md">Português</a> ·
+    <a href="README.ko.md">한국어</a>
+  </sub>
 </p>
 
 <p align="center">
