@@ -1,6 +1,15 @@
-import type { Insight } from "../types.js";
+import type { Insight, Item } from "../types.js";
 import { collapseWhitespace, plural } from "../util/text.js";
 import type { Briefing } from "./types.js";
+
+/** Other reports of a story shown with it; the rest are only counted. */
+export const MAX_RELATED_SHOWN = 3;
+
+/** The other reports of a story to list, and how many more there are. */
+export function relatedShown(f: Insight): { shown: Item[]; more: number } {
+  const related = f.related ?? [];
+  return { shown: related.slice(0, MAX_RELATED_SHOWN), more: Math.max(0, related.length - MAX_RELATED_SHOWN) };
+}
 
 /** What a dry run prints: plain text for a terminal. */
 export function toText(b: Briefing): string {
@@ -14,6 +23,7 @@ export function toText(b: Briefing): string {
       ...(f.summary ? [`  ${f.summary}`] : []),
       ...(f.action ? [`  Action: ${f.action}`] : []),
       `  Source: ${f.item.sourceName}`,
+      ...relatedText(f),
     ].join("\n"),
   );
   return `${head}\n${body.join("\n\n")}\n${foot}`;
@@ -33,6 +43,21 @@ export function toMarkdown(b: Briefing): string {
   return `${head}\n${b.insights.map(insightMarkdown).join("\n\n")}\n${foot}`;
 }
 
+function relatedText(f: Insight): string[] {
+  const { shown, more } = relatedShown(f);
+  return [
+    ...shown.map((r) => `  Also: ${collapseWhitespace(r.title)} ${r.url}`),
+    ...(more > 0 ? [`  Also: ${plural(more, "more article")}`] : []),
+  ];
+}
+
+function relatedMarkdown(f: Insight): string[] {
+  const { shown, more } = relatedShown(f);
+  if (shown.length === 0) return [];
+  const links = shown.map((r) => `[${escapeMarkdown(collapseWhitespace(r.title))}](<${r.url.replaceAll(">", "%3E")}>)`);
+  return ["", `Also: ${[...links, ...(more > 0 ? [`and ${more} more`] : [])].join(" · ")}`];
+}
+
 function insightMarkdown(f: Insight): string {
   // One line each: a line of its own such as "---" or "- x" would become a rule or a list.
   const [title, summary, action] = [f.title, f.summary, f.action].map((s) => escapeMarkdown(collapseWhitespace(s)));
@@ -43,6 +68,7 @@ function insightMarkdown(f: Insight): string {
     ...(action ? ["", `**Action:** ${action}`] : []),
     "",
     `Source: ${escapeMarkdown(collapseWhitespace(f.item.sourceName))}`,
+    ...relatedMarkdown(f),
   ].join("\n");
 }
 

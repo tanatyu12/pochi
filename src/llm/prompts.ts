@@ -7,6 +7,8 @@ import {
   AnalysisOutputSchema,
   type AnalysisOutput,
   type GenerateRequest,
+  GroupingOutputSchema,
+  type GroupingOutput,
   IdeaSuggestionOutputSchema,
   type IdeaSuggestionOutput,
   QuerySuggestionOutputSchema,
@@ -18,6 +20,8 @@ import {
 } from "./schema.js";
 
 const TRIAGE_CONTENT_CHARS = 300;
+// Enough to tell two reports of one story from two stories that share words.
+const GROUPING_CONTENT_CHARS = 200;
 
 // The schemas carry no count limits, so callers enforce these on the parsed output.
 export const MAX_REPO_CANDIDATES = 3;
@@ -164,6 +168,24 @@ export function analyzeRequest(
     prompt: `Analyze each of these ${items.length} items.\n\n${renderItems(items)}`,
     schema: AnalysisOutputSchema,
     tier: "analyze",
+  };
+}
+
+/** Asks which items report the same story, so only one of each is analyzed and shown. */
+export function groupingRequest(context: Context, items: readonly Item[]): GenerateRequest<GroupingOutput> {
+  requireSome(items, "item");
+  const task = [
+    "Task: find articles that report the same story, so the team reads it once.",
+    "- The same story is one specific event: the same incident, announcement, release, ruling or launch, reported by different outlets or reposted. Articles that only share a topic (two different security incidents, two releases of one library) are different stories.",
+    "- Return one group for every story reported by two or more of these items, listing their ids. Leave out items that report a story no other item does.",
+    "- primary: the id in the group to show: the original or most authoritative source (the official announcement over news coverage, news coverage over reposts), with the fullest content.",
+    "- An id belongs to at most one group.",
+  ].join("\n");
+  return {
+    system: buildSystem(context, task, []),
+    prompt: `Group these ${items.length} items by story.\n\n${renderItems(items, GROUPING_CONTENT_CHARS)}`,
+    schema: GroupingOutputSchema,
+    tier: "triage",
   };
 }
 

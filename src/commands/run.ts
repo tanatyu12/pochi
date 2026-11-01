@@ -265,8 +265,10 @@ function isStale(item: Item, maxAgeDays: number, today: string): boolean {
 function recordFiltered(state: State, filtered: FilterResult, delivered: ReadonlySet<string>, today: string): void {
   for (const item of filtered.irrelevant) record(state, stateKeys(item), "i", today);
   for (const item of filtered.pending) record(state, stateKeys(item), "r", today);
-  for (const { item } of filtered.insights) {
-    record(state, stateKeys(item), delivered.has(item.id) ? "n" : "r", today);
+  for (const { item, related = [] } of filtered.insights) {
+    // The other reports of a story were shown with it, so they share its fate.
+    const status = delivered.has(item.id) ? "n" : "r";
+    for (const one of [item, ...related]) record(state, stateKeys(one), status, today);
   }
 }
 
@@ -307,5 +309,6 @@ function insightJson(f: Insight) {
     action: f.action,
     source: f.item.sourceName,
     publishedAt: f.item.publishedAt,
+    related: (f.related ?? []).map((r) => ({ id: r.id, title: r.title, url: r.url, source: r.sourceName })),
   };
 }

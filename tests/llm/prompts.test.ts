@@ -3,6 +3,7 @@ import { ContextSchema } from "../../src/config/schema.js";
 import {
   analyzeRequest,
   escapeUntrusted,
+  groupingRequest,
   MAX_QUERY_SUGGESTIONS,
   MAX_REPO_CANDIDATES,
   ideaSuggestionRequest,
@@ -14,6 +15,7 @@ import {
 } from "../../src/llm/prompts.js";
 import {
   AnalysisOutputSchema,
+  GroupingOutputSchema,
   IdeaSuggestionOutputSchema,
   QuerySuggestionOutputSchema,
   RepoInferenceOutputSchema,
@@ -249,5 +251,17 @@ describe("request builders", () => {
     expect(() => triageRequest(context, [])).toThrow(RangeError);
     expect(() => analyzeRequest(context, [])).toThrow(RangeError);
     expect(() => repoInferenceRequest(context, [])).toThrow(RangeError);
+  });
+});
+
+describe("groupingRequest", () => {
+  it("asks on the triage model which items report the same story, with a little of each", () => {
+    const req = groupingRequest(context, [item(1, { content: "x".repeat(500) }), item(2)]);
+    expect(req.tier).toBe("triage");
+    expect(req.schema).toBe(GroupingOutputSchema);
+    expect(req.system).toContain("only share a topic");
+    expect(req.prompt).toContain('<item id="i2">');
+    expect(req.prompt).not.toContain("x".repeat(201));
+    expect(() => groupingRequest(context, [])).toThrow(RangeError);
   });
 });
