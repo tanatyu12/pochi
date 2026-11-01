@@ -211,6 +211,20 @@ describe("runInit", () => {
     expect((await loadConfig({ configDir: dir, env: {} })).context.project.name).toBe("my-app");
   });
 
+  it("refuses to overwrite a file that appeared during the interview, which nobody agreed to", async () => {
+    const { prompter, deps: d } = deps([...CONTEXT_ANSWERS, ...SOURCE_ANSWERS, ON_ACTIONS]);
+    const text: typeof prompter.text = async (opts) => {
+      // Another editor or init run writes it while this one is asking.
+      if (opts.message === "Project name") await writeFile(join(dir, "sources.yml"), "# meanwhile\n");
+      return prompter.text(opts);
+    };
+    const err = await rejection(runInit({ configDir: dir }, { ...d, prompter: { ...prompter, text } }));
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).message).toContain("refusing to overwrite");
+    expect(await readFile(join(dir, "sources.yml"), "utf8")).toBe("# meanwhile\n");
+    expect(await readdir(dir)).toEqual(["sources.yml"]);
+  });
+
   it("asks for another language when Other is chosen and leaves exclude out when empty", async () => {
     const { deps: d } = deps(["app", "", "Problem", "", "", "other", "German", ["slack"], ...SCHEDULE_ANSWERS, false, ...SOURCE_ANSWERS, ON_ACTIONS]);
     await runInit({ configDir: dir }, d);
