@@ -28,12 +28,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # The token stays out of .git/config, where install scripts and the build could read it.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      # No dependency lifecycle scripts; esbuild works without its postinstall.
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Run pochi
         env:
@@ -53,6 +57,10 @@ jobs:
       # Also after a failed run: what it delivered before failing is recorded and must not repeat.
       - name: Commit the state file
         if: \${{ !cancelled() && inputs.dry_run != true }}
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          SERVER_URL: \${{ github.server_url }}
+        # The token reaches git through env for this step only: not on disk, not in argv.
         run: |
           [ -f state/notified.json ] || exit 0
           git add -f state/notified.json
@@ -60,6 +68,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore(state): record notified items [skip ci]"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.$SERVER_URL/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
           git pull --rebase
           git push
 "
