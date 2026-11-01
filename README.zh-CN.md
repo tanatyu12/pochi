@@ -207,6 +207,7 @@ feeds:
 
 - [配置](docs/configuration.md)：所有配置项、环境变量、状态文件
 - [定时运行](docs/scheduling.md)：launchd、cron 和 GitHub Actions
+- [更新](docs/updating.md)：把新版本合并到你的副本
 - [故障排查](docs/troubleshooting.md)：`pochi doctor` 与退出码
 - [安全](SECURITY.md)：密钥和不可信文本的处理方式，以及如何报告漏洞
 

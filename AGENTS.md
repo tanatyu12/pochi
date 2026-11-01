@@ -73,16 +73,19 @@ Each list is the minimum set of places to touch; the exhaustive switches will po
 
 ## Git
 
-- Branches: `feat/<topic>`, `fix/<topic>`, `docs/<topic>`, `chore/<topic>`, off `main`. Branches are merged with `--no-ff`.
-- Commits follow Conventional Commits, because release-please builds versions and the changelog from them: `type(scope): summary` with a lowercase, plain-English summary and the reason in the body. Example: `fix(init): ask about a source only when its trial fetch fails or finds nothing`.
+- Branches: `feat/<topic>`, `fix/<topic>`, `docs/<topic>`, `chore/<topic>`, off `main`. `main` is protected: every change lands through a pull request that passes CI, and PRs are squash merged.
+- The squashed commit takes the PR's title, and release-please builds versions and the changelog from those commits, so the PR title must be a Conventional Commit (`.github/workflows/pr-title.yml` checks it): `type(scope): summary` with a lowercase, plain-English summary and no final period, and the reason in the PR body. Example: `fix(init): ask about a source only when its trial fetch fails or finds nothing`. Write commits inside a branch the same way.
 - Types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `ci`, `chore`, `revert`. Common scopes: `sources`, `llm`, `pipeline`, `run`, `init`, `commands`, `schedule`, `notify`, `slack`, `config`, `state`, `cli`, `util`.
 - Don't edit versions, `CHANGELOG.md` or `.release-please-manifest.json` by hand.
+- Releases: release-please keeps a `chore(main): release X.Y.Z` PR open and up to date; merging it tags `vX.Y.Z` and publishes the GitHub Release. Before 1.0, `fix` bumps the patch, and `feat` or a breaking change (`!`) bumps the minor. There are no release branches; an urgent fix is a `fix` PR followed by merging the release PR.
+- Workflows ship to every template copy, so a job that only makes sense in this repository (release-please, the PR title check) is guarded with `if: github.repository == 'tanatyu12/pochi'`.
 
 ## Docs
 
 - `docs/configuration.md`: every `context.yml`/`sources.yml` field, env vars, state file
 - `docs/scheduling.md`: `pochi schedule`, launchd, cron, GitHub Actions
 - `docs/troubleshooting.md`: exit codes and common problems
+- `docs/updating.md`: bringing a new release into a user's copy (clone or template)
 - `docs/SPEC.md`: implementation spec snapshot (Japanese); explains why things are the way they are
 
 When a change is visible to users (commands, flags, config fields, output), update `README.md` and `README.ja.md` together, plus the matching page in `docs/` and the example YAML in `config/`.
