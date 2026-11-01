@@ -378,7 +378,7 @@ LLM に渡るのは状態ファイルにない新しい記事だけで、Sonnet 
 - レポート（`notify.personality`、既定 true。false なら従来の文面）：タイトルは変えない。フッターを `Fetched by Pochi · <n> items from <m> sources`（失敗は `; couldn't fetch: ...`、Slack は ` · Couldn't fetch: ...`）にし、0件の日は3つの文から日付の SHA-256 で1つ選ぶ（同じ日の通知先はすべて同じ文になる）
 - 通算回数：1件以上届けた実行の数を状態ファイルの `briefings` に数える（届けられなかった実行は数えない。読めない値は無視する）。今回が 10・50・100・200・300・365・500・1000 回目で、届ける記事があれば、フッターに ` · <n>th briefing` を足す
 - `pochi woof`（--help に出さない）：TTY では絵の尻尾を6回振り（`SITTING` と `WAGGING` を 160ms ごとに描き直す）、`<n> briefings fetched so far` を添える。TTY でなければ `Woof. ...` を1行出す。状態ファイルは読むだけ
-- README 用の素材：`node scripts/logo.mjs` が `SITTING` から `docs/pochi.svg` を作る（ライトテーマでは濃い紫）。`docs/demo.tape` は vhs で `docs/demo.gif` を録る
+- README 用の素材：`node scripts/logo.mjs` が `SITTING` から `docs/pochi.svg` を作る（ライトテーマでは濃い紫）。`npm run demo`（`scripts/demo.sh`）が `docs/demo.tape` を Docker の vhs（`docs/demo/Dockerfile`。公式イメージに Node を足しただけ）で録り、`docs/demo.gif` を作る。手元に vhs・ttyd・ffmpeg を入れない。デモは Pochi 自身が使う技術を追う設定（`docs/demo/*.yml`）で woof、doctor、run --dry-run を見せる。コンテナからは手元の claude / codex のログインを使えないので、ANTHROPIC_API_KEY がなければ録らずに終了コード2で止める
 
 ### 定期実行（schedule/、commands/schedule.ts）
 
