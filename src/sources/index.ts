@@ -30,6 +30,8 @@ export interface CollectResult {
   attempted: number;
   /** In config order. */
   failures: SourceFailure[];
+  /** Ids of the sources fetched without an error, in config order. */
+  fetched: string[];
   /** Query ids skipped because TAVILY_API_KEY is not set. */
   skipped: string[];
 }
@@ -38,6 +40,8 @@ export interface CollectOptions {
   signal?: AbortSignal;
   /** Take what each source published since then, not only its newest few. */
   since?: Date;
+  /** A source's own since, when it has one (its last fetch); since for the others. */
+  sinceOf?: (sourceId: string) => Date | undefined;
   concurrency?: number;
   /** Where source secrets come from; process.env when left out. */
   env?: NodeJS.ProcessEnv;
@@ -95,18 +99,19 @@ export type SourceOutcome =
  */
 export async function fetchEach(
   configs: SourceConfig[],
-  defaults: FetchDefaults,
+  defaults: FetchDefaults | ((source: SourceConfig) => FetchDefaults),
   opts: { signal?: AbortSignal; concurrency?: number } = {},
 ): Promise<SourceOutcome[]> {
   const { signal } = opts;
   const limit = pLimit(opts.concurrency ?? DEFAULT_CONCURRENCY);
+  const defaultsOf = typeof defaults === "function" ? defaults : () => defaults;
   // Indexed by source, so the result does not depend on which fetch finishes first.
   return Promise.all(
     configs.map((source) =>
       limit(async (): Promise<SourceOutcome> => {
         if (signal?.aborted) return { source, aborted: true };
         try {
-          return { source, items: await fetchSource(source, defaults, signal) };
+          return { source, items: await fetchSource(source, defaultsOf(source), signal) };
         } catch (error) {
           // An abort is not the source's fault.
           if (isAbort(error, signal)) return { source, aborted: true };
@@ -135,15 +140,19 @@ export async function collectAll(sources: Sources, opts: CollectOptions = {}): P
     else log.info(message);
   }
 
-  const outcomes = await fetchEach(configs, { ...sources.defaults, since: opts.since, env: opts.env }, {
-    signal,
-    concurrency: concurrencyOf(opts.concurrency),
+  const defaultsOf = (source: SourceConfig): FetchDefaults => ({
+    ...sources.defaults,
+    since: opts.sinceOf?.(sourceInfo(source).id) ?? opts.since,
+    env: opts.env,
   });
+  const outcomes = await fetchEach(configs, defaultsOf, { signal, concurrency: concurrencyOf(opts.concurrency) });
   const failures: SourceFailure[] = [];
+  const fetched: string[] = [];
   for (const outcome of outcomes) {
     const info = sourceInfo(outcome.source);
     if ("items" in outcome) {
       log.debug(`source ${info.id}: ${plural(outcome.items.length, "item")}`);
+      fetched.push(info.id);
     } else if ("error" in outcome) {
       log.warn(`source ${info.id} failed`, outcome.error);
       failures.push({ sourceId: info.id, sourceName: info.name, kind: info.kind, error: outcome.error });
@@ -157,6 +166,7 @@ export async function collectAll(sources: Sources, opts: CollectOptions = {}): P
     items: dedupe(outcomes.flatMap((o) => ("items" in o ? o.items : []))),
     attempted: configs.length,
     failures,
+    fetched,
     skipped,
   };
 }

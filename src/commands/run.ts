@@ -6,7 +6,7 @@ import { createNotifiers } from "../notifiers/index.js";
 import { buildSlackMessages, type SlackMessage } from "../notifiers/slack.js";
 import { toText } from "../notifiers/text.js";
 import type { Briefing } from "../notifiers/types.js";
-import { briefingError, interrupted, runBriefing, type Sent } from "../pipeline/briefing.js";
+import { briefingDate, briefingError, interrupted, runBriefing, type Sent } from "../pipeline/briefing.js";
 import type { FilterResult } from "../pipeline/filter.js";
 import { tavilyApiKey } from "../sources/tavily.js";
 import { fileStateStore, memoryStateStore, resolveStatePath } from "../state/store.js";
@@ -14,7 +14,6 @@ import type { Insight } from "../types.js";
 import { configureLog, log } from "../util/log.js";
 import { isFancy, purple } from "../util/pochi-art.js";
 import { displayLine } from "../util/text.js";
-import { toIsoDate } from "../util/time.js";
 
 export interface RunOptions {
   dryRun?: boolean;
@@ -29,6 +28,8 @@ export interface RunOptions {
 /** Replaced in tests; the defaults are the real ones. */
 export interface RunDeps {
   now?: () => Date;
+  /** The zone dates are shown in when context.schedule.timezone is unset; the system's when left out. */
+  timeZone?: string;
   signal?: AbortSignal;
   stdout?: (s: string) => void;
   resolveLlm?: typeof defaultResolveLlm;
@@ -61,7 +62,7 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
 
   const { context, sources } = await loadConfig({ configDir: opts.configDir });
   if (!opts.quiet && isFancy(process.stderr)) {
-    const about = `· ${displayLine(context.project.name, 80)} · ${toIsoDate(now)}${dryRun ? " · dry run" : ""}`;
+    const about = `· ${displayLine(context.project.name, 80)} · ${briefingDate(context, now, deps.timeZone)}${dryRun ? " · dry run" : ""}`;
     process.stderr.write(`\n  ${purple("pochi")} ${styleText("dim", about)}\n\n`);
   }
   // A dry run delivers nothing, so it needs no webhook.
@@ -76,7 +77,7 @@ async function run(opts: RunOptions, deps: RunDeps): Promise<void> {
 
   const result = await runBriefing(
     { context, sources, llm: client, notifiers, store, dryRun },
-    { now: () => now, signal, retryDelayMs: deps.retryDelayMs },
+    { now: () => now, timeZone: deps.timeZone, signal, retryDelayMs: deps.retryDelayMs },
   );
   const { briefing, filtered, sent, delivered } = result;
   if (dryRun) {

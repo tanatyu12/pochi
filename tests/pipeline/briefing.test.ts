@@ -71,6 +71,19 @@ function fakeNotifier(opts: { failing?: boolean } = {}) {
   return { notifier, received };
 }
 
+/** llm, recording the tier and system prompt of every call. */
+function counting() {
+  const calls: { tier: string; system: string }[] = [];
+  const counted: LlmClient = {
+    mode: "api",
+    generate: (req, opts) => {
+      calls.push({ tier: (req.schema as unknown) === GroupingOutputSchema ? "group" : req.tier, system: req.system });
+      return llm.generate(req, opts);
+    },
+  };
+  return { llm: counted, tiers: () => calls.map((c) => c.tier), systems: () => calls.map((c) => c.system) };
+}
+
 function input(store: StateStore, notifiers: Notifier[], extra: Partial<BriefingInput> = {}): BriefingInput {
   return { context, sources, llm, notifiers, store, dryRun: false, ...extra };
 }
@@ -122,6 +135,96 @@ describe("runBriefing", () => {
     const { notifier, received } = fakeNotifier();
     await runBriefing(input(store, [notifier]), deps);
     expect(received[0]?.insights.map((f) => f.item.title)).toEqual(["Breaking change in lib"]);
+  });
+
+  it("does not analyze an insight again while its delivery keeps failing", async () => {
+    const store = memoryStateStore();
+    const counted = counting();
+    await runBriefing(input(store, [fakeNotifier({ failing: true }).notifier], { llm: counted.llm }), deps);
+    expect(counted.tiers()).toEqual(["triage", "analyze"]);
+
+    const again = counting();
+    const { notifier, received } = fakeNotifier();
+    const result = await runBriefing(input(store, [notifier], { llm: again.llm }), deps);
+    expect(again.tiers()).toEqual([]);
+    expect(received[0]?.insights.map((f) => [f.title, f.summary, f.impact, f.action])).toEqual([
+      ["Breaking change in lib", "Read it", "High", "Upgrade"],
+    ]);
+    expect(result.delivered.size).toBe(1);
+  });
+
+  it("sends a channel only what it does not have yet", async () => {
+    const store = memoryStateStore();
+    const good = fakeNotifier();
+    const bad = { ...fakeNotifier({ failing: true }).notifier, name: "other" };
+    const first = await runBriefing(input(store, [good.notifier, bad]), deps);
+    expect(first.delivered.size).toBe(0);
+
+    const fixed = fakeNotifier();
+    const second = await runBriefing(input(store, [good.notifier, { ...fixed.notifier, name: "other" }]), deps);
+    expect(good.received.map((b) => b.insights.length)).toEqual([1, 0]);
+    expect(fixed.received.map((b) => b.insights.length)).toEqual([1]);
+    expect(second.delivered.size).toBe(1);
+  });
+
+  it("dates the briefing and tells the model the day on the schedule's clock", async () => {
+    const counted = counting();
+    const tokyo = { ...context, schedule: { ...context.schedule, timezone: "Asia/Tokyo" } };
+    // 08:30 on the 26th in Tokyo is still the 25th in UTC.
+    const at = { ...deps, now: () => new Date("2026-10-25T23:30:00Z") };
+    const result = await runBriefing(input(memoryStateStore(), [], { context: tokyo, llm: counted.llm, dryRun: true }), at);
+    expect(result.briefing.date).toBe("2026-10-26");
+    expect(counted.systems()[0]).toContain("Today is 2026-10-26");
+
+    const local = await runBriefing(input(memoryStateStore(), [], { dryRun: true }), { ...at, timeZone: "America/New_York" });
+    expect(local.briefing.date).toBe("2026-10-25");
+  });
+
+  it("starts a source that failed where it started the last time", async () => {
+    const SEARCH = "https://api.tavily.com/search";
+    const withQuery = SourcesSchema.parse({
+      version: 1,
+      feeds: [{ id: "a", type: "rss", name: "Blog A", url: FEED }],
+      queries: [{ id: "q", query: "lib news" }],
+    });
+    const store = memoryStateStore();
+    await store.save(emptyState(), { now: new Date("2026-10-25T00:00:00Z") });
+    const run = (now: Date) =>
+      runBriefing(input(store, [fakeNotifier().notifier], { sources: withQuery }), {
+        ...deps,
+        now: () => now,
+        timeZone: "UTC",
+        env: { TAVILY_API_KEY: "tvly-test" },
+      });
+
+    mockFetch({ [FEED]: feed(["Breaking change in lib"]), [SEARCH]: reply.status(400) });
+    const first = await run(NOW);
+    expect(first.briefing.failedSources).toEqual(["lib news"]);
+    expect([...((await store.load({ now: NOW })).sources ?? [])].map(([id, t]) => [id, t.toISOString()])).toEqual([
+      ["a", "2026-10-26T00:00:00.000Z"],
+      ["q", "2026-10-25T00:00:00.000Z"],
+    ]);
+
+    vi.unstubAllGlobals();
+    const mock = mockFetch({ [FEED]: feed([]), [SEARCH]: reply.json({ results: [] }) });
+    await run(new Date("2026-10-27T00:00:00Z"));
+    // Its last since (a day before the run before), not a day before the run that it failed in.
+    expect(mock.callsTo(SEARCH).map((c) => JSON.parse(c.body!).start_date)).toEqual(["2026-10-24"]);
+  });
+
+  it("forgets the time of a source no longer configured", async () => {
+    const store = memoryStateStore();
+    await store.save({ ...emptyState(), sources: new Map([["gone", NOW]]) }, { now: NOW });
+    await runBriefing(input(store, [fakeNotifier().notifier]), deps);
+    expect([...((await store.load({ now: NOW })).sources?.keys() ?? [])]).toEqual(["a"]);
+  });
+
+  it("throws an interrupt as a PochiError when aborted while collecting", async () => {
+    mockFetch({ [FEED]: reply.hang() });
+    const controller = new AbortController();
+    const p = runBriefing(input(memoryStateStore(), []), { ...deps, signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+    await expect(p).rejects.toMatchObject({ exitCode: ExitCode.INTERRUPTED, message: "interrupted" });
   });
 
   it("throws when every source fails", async () => {

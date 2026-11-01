@@ -335,7 +335,7 @@ describe("doctor: state", () => {
     };
     await writeFile(statePath(), JSON.stringify({ version: 1, entries }));
     await check({}, { now: new Date("2026-10-26T00:00:00Z") });
-    expect(line(statePath())).toContain("4 entries (n 1 · i 2 · r 1), 1 past ttlDays (45)");
+    expect(line(statePath())).toContain("4 entries (n 1 · i 2 · r 1 · u 0), 1 past ttlDays (45)");
   });
 
   it("fails with 1 on a corrupt file and leaves it in place", async () => {

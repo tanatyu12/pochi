@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import {
   type StateEntry,
   StateError,
   emptyState,
+  extrasOf,
   fileStateStore,
   inspectState,
   isKnown,
@@ -238,6 +239,15 @@ describe("statusOf", () => {
     expect(statusOf(state, [A, B, C])).toBe("n");
     expect(statusOf(state, ["d".repeat(32)])).toBeUndefined();
   });
+
+  it("ranks untriaged below pending", () => {
+    const state = stateOf({
+      [A]: { s: "u", f: "2026-10-20", l: "2026-10-20" },
+      [B]: { s: "r", f: "2026-10-20", l: "2026-10-20" },
+    });
+    expect(statusOf(state, [A])).toBe("u");
+    expect(statusOf(state, [A, B])).toBe("r");
+  });
 });
 
 describe("touch", () => {
@@ -265,6 +275,18 @@ describe("touch", () => {
     touch(state, [A, B], "2026-10-25");
     expect(state.entries.get(A)).toEqual({ s: "n", f: "2026-10-05", l: "2026-10-25" });
     expect(state.entries.get(B)).toEqual({ s: "n", f: "2026-10-05", l: "2026-10-25" });
+  });
+
+  it("keeps an untriaged item untriaged, and a pending one's channels and analysis", () => {
+    const analysis = { title: "T", summary: "S", impact: "High" as const, action: "A" };
+    const state = stateOf({
+      [A]: { s: "u", f: "2026-10-24", l: "2026-10-24" },
+      [B]: { s: "r", f: "2026-10-24", l: "2026-10-24", c: ["file"], a: analysis },
+    });
+    touch(state, [A], "2026-10-25");
+    touch(state, [B], "2026-10-25");
+    expect(state.entries.get(A)).toEqual({ s: "u", f: "2026-10-24", l: "2026-10-25" });
+    expect(state.entries.get(B)).toEqual({ s: "r", f: "2026-10-24", l: "2026-10-25", c: ["file"], a: analysis });
   });
 
   it("does nothing for an unknown item", () => {
@@ -312,6 +334,44 @@ describe("record", () => {
     expect(state.entries.get(B)?.s).toBe("n");
   });
 
+  it("moves untriaged on to any decision", () => {
+    const state = stateOf({ [A]: { s: "u", f: "2026-10-01", l: "2026-10-20" } });
+    record(state, [A], "r", "2026-10-25");
+    expect(state.entries.get(A)?.s).toBe("r");
+    record(state, [A], "u", "2026-10-25");
+    expect(state.entries.get(A)?.s).toBe("r");
+  });
+
+  it("adds channels to those a pending item had, and replaces its analysis", () => {
+    const old = { title: "Old", summary: "", impact: "Low" as const, action: "" };
+    const analysis = { title: "New", summary: "S", impact: "High" as const, action: "A" };
+    const state = stateOf({ [A]: { s: "r", f: "2026-10-01", l: "2026-10-20", c: ["slack"], a: old } });
+    record(state, [A, B], "r", "2026-10-25", { c: ["file"], a: analysis });
+    expect(state.entries.get(B)).toEqual({ s: "r", f: "2026-10-01", l: "2026-10-25", c: ["file", "slack"], a: analysis });
+    expect(extrasOf(state, [B])).toEqual({ c: ["file", "slack"], a: analysis });
+
+    // A related report points at its story instead.
+    record(state, [C], "r", "2026-10-25", { c: [], p: A });
+    expect(state.entries.get(C)).toEqual({ s: "r", f: "2026-10-25", l: "2026-10-25", p: A });
+  });
+
+  it("drops the channels and analysis once the item is notified or irrelevant", () => {
+    const analysis = { title: "T", summary: "S", impact: "High" as const, action: "A" };
+    const state = stateOf({ [A]: { s: "r", f: "2026-10-01", l: "2026-10-20", c: ["slack"], a: analysis } });
+    record(state, [A], "n", "2026-10-25");
+    expect(state.entries.get(A)).toEqual({ s: "n", f: "2026-10-01", l: "2026-10-25" });
+    expect(extrasOf(state, [A])).toEqual({});
+  });
+
+  it("cuts a stored analysis to the channels' limits", () => {
+    const state = emptyState();
+    record(state, [A], "r", "2026-10-25", {
+      a: { title: "t".repeat(400), summary: "s".repeat(5000), impact: "High", action: "a".repeat(5000) },
+    });
+    const a = state.entries.get(A)?.a;
+    expect([a?.title.length, a?.summary.length, a?.action.length]).toEqual([300, 2900, 2900]);
+  });
+
   it("never downgrades notified to irrelevant", () => {
     const state = stateOf({ [A]: { s: "n", f: "2026-10-01", l: "2026-10-20" } });
     record(state, [A, B], "i", "2026-10-25");
@@ -342,6 +402,11 @@ describe("saveState", () => {
     );
     const loaded = await loadState(path);
     expect([...loaded.entries]).toEqual([...state.entries].sort(([a], [b]) => a.localeCompare(b)));
+  });
+
+  it("writes the file for its owner only", async () => {
+    await saveState(emptyState(), path, { now: NOW });
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 
   it("keeps the count of briefings, ignoring a value that is not one", async () => {
@@ -390,6 +455,47 @@ describe("parseState and serializeState", () => {
     const state = { ...stateOf({ [A]: { s: "r", f: "2026-10-20", l: "2026-10-25" } }), briefings: 3 };
     const parsed = parseState(serializeState(state, NOW));
     expect(parsed).toEqual({ kind: "ok", dropped: 0, state: { ...state, updatedAt: new Date("2026-10-25T22:17:03Z") } });
+  });
+
+  it("read back the sources' times and the extras of pending entries", () => {
+    const analysis = { title: "T", summary: "S", impact: "Medium" as const, action: "A" };
+    const state: State = {
+      ...stateOf({
+        [A]: { s: "r", f: "2026-10-20", l: "2026-10-25", c: ["file"], a: analysis },
+        [B]: { s: "r", f: "2026-10-20", l: "2026-10-25", p: A },
+        [C]: { s: "u", f: "2026-10-25", l: "2026-10-25" },
+      }),
+      sources: new Map([
+        ["z", new Date("2026-10-24T06:00:00Z")],
+        ["a", new Date("2026-10-25T06:00:00Z")],
+      ]),
+    };
+    const text = serializeState(state, NOW);
+    expect(text).toContain('  "sources": {\n    "a": "2026-10-25T06:00:00Z",\n    "z": "2026-10-24T06:00:00Z"\n  },\n');
+    expect(parseState(text)).toEqual({ kind: "ok", dropped: 0, state: { ...state, updatedAt: new Date("2026-10-25T22:17:03Z") } });
+  });
+
+  it("read a file written before sources and extras, and drop only a bad extra or source time", () => {
+    const text = JSON.stringify({
+      version: 1,
+      sources: { a: "yesterday", b: "2026-10-24T00:00:00Z" },
+      entries: {
+        [A]: { s: "r", f: "2026-10-20", l: "2026-10-25" },
+        [B]: { s: "r", f: "2026-10-20", l: "2026-10-25", a: { title: 1 }, c: ["slack"] },
+      },
+    });
+    const parsed = parseState(text);
+    expect(parsed).toEqual({
+      kind: "ok",
+      dropped: 0,
+      state: {
+        entries: new Map([
+          [A, { s: "r", f: "2026-10-20", l: "2026-10-25" }],
+          [B, { s: "r", f: "2026-10-20", l: "2026-10-25", c: ["slack"] }],
+        ]),
+        sources: new Map([["b", new Date("2026-10-24T00:00:00Z")]]),
+      },
+    });
   });
 
   it("tell a document that is not a state file", () => {
