@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { ConfigError, DEFAULT_CONFIG_DIR, parseContext } from "../config/load.js";
 import {
   type Context,
+  type ChannelConfig,
   type ContextInput,
   ContextSchema,
   DomainSchema,
@@ -188,14 +189,14 @@ async function init(
     const overwrite = await p.confirm({ message: `Overwrite ${existing.join(" and ")}?`, initialValue: false });
     if (!overwrite) throw new PromptCancelled();
   }
-  // init asks for the schedule again, so an overwrite would otherwise drop the one set before.
-  const previousSchedule = await readSchedule(dir);
+  // init asks for the channels and schedule again, so an overwrite would otherwise drop the ones set before.
+  const previous = await readPrevious(dir);
   if (proposal) noteProposal(p, proposal);
 
-  let contextInput = await askContext(p, proposal);
+  let contextInput = await askContext(p, proposal, previous?.notify.channels);
   // Before the sources, so the Tavily step can say what web searches cost at this schedule.
   const timeZone = deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-  contextInput = { ...contextInput, schedule: await askSchedule(p, previousSchedule, timeZone) };
+  contextInput = { ...contextInput, schedule: await askSchedule(p, previous?.schedule, timeZone) };
   // The prompts read the defaults (language, llm) the parsed context fills in.
   let context = ContextSchema.parse(contextInput);
   const runs = runsPerMonth(context.schedule, timeZone, deps.now?.() ?? new Date());
@@ -301,11 +302,11 @@ async function init(
 
 const WEEK: readonly Weekday[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
-/** The schedule in the context.yml about to be overwritten, if it can be read. */
-async function readSchedule(dir: string): Promise<Schedule | undefined> {
+/** The context.yml about to be overwritten, if it can be read. */
+async function readPrevious(dir: string): Promise<Context | undefined> {
   const path = join(dir, "context.yml");
   try {
-    return parseContext(await readFile(path, "utf8"), path).schedule;
+    return parseContext(await readFile(path, "utf8"), path);
   } catch {
     return undefined;
   }
@@ -444,7 +445,11 @@ function noteProposal(p: Prompter, proposal: Proposal): void {
   }
 }
 
-async function askContext(p: Prompter, proposal?: Proposal): Promise<ContextInput> {
+async function askContext(
+  p: Prompter,
+  proposal?: Proposal,
+  previousChannels?: readonly ChannelConfig[],
+): Promise<ContextInput> {
   const name = await p.text({
     message: "Project name",
     placeholder: "my-app",
@@ -487,7 +492,7 @@ async function askContext(p: Prompter, proposal?: Proposal): Promise<ContextInpu
         ).trim()
       : choice;
 
-  const channels = await askChannels(p);
+  const channels = await askChannels(p, previousChannels);
 
   return {
     version: 1,
@@ -508,15 +513,20 @@ const CHANNELS = [
   { value: "file", label: "Markdown files", hint: "reports/<date>.md" },
 ] as const;
 
-// Asked again until one is picked: a run has to deliver somewhere.
-async function askChannels(p: Prompter): Promise<ChannelInput[]> {
+/**
+ * Asked again until one is picked: a run has to deliver somewhere. Starts from the channels set
+ * before, or from files, which need no secret: Enter on another row keeps what is checked, so
+ * a default that needs setting up would be picked by mistake.
+ */
+async function askChannels(p: Prompter, previous: readonly ChannelConfig[] = []): Promise<ChannelInput[]> {
   for (;;) {
     const picked = await p.multiselect({
       message: "Where should the briefing go? (space to toggle)",
       options: CHANNELS.map((c) => ({ ...c })),
-      initialValues: ["slack"],
+      initialValues: previous.length > 0 ? previous.map((c) => c.type) : ["file"],
     });
-    if (picked.length > 0) return picked.map((type) => ({ type }));
+    // A channel picked again keeps its settings, such as the reports dir.
+    if (picked.length > 0) return picked.map((type) => previous.find((c) => c.type === type) ?? { type });
     p.warn("Pick at least one.");
   }
 }
