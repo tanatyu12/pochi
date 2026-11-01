@@ -25,7 +25,7 @@ git fetch upstream --tags
 git merge v0.2.0 --allow-unrelated-histories -X theirs
 ```
 
-From then on, `git fetch upstream --tags && git merge v0.3.0` is enough.
+Files Pochi deleted after your copy was made are not deleted by this first merge; `git diff --stat v0.2.0` lists everything that differs from the release, which should be only your own files. From then on, `git fetch upstream --tags && git merge v0.3.0` is enough.
 
 ## After merging
 
