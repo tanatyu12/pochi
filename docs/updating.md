@@ -33,7 +33,8 @@ Files Pochi deleted after your copy was made are not deleted by this first merge
 npm ci && npm run build
 pochi doctor                 # checks the config against the new version
 pochi schedule status        # warns when the installed job no longer matches
-pochi schedule install       # again, with the same --backend, if the job or workflow changed
+pochi schedule install       # again, with the same --backend, if the job or workflow changed,
+                             # or if you upgraded Node (the job calls node by its full path)
 ```
 
 On GitHub Actions the workflow builds Pochi on every run, so only `pochi schedule install --backend github` (when the release notes mention the workflow), a commit and a push are needed.

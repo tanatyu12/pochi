@@ -50,7 +50,7 @@ EOF
 chmod 600 .env
 ```
 
-The job runs `pochi run` in this checkout with the `PATH` you had at install time, so it finds the `claude` or `codex` CLI. Its output is appended to `logs/pochi.log`. Install warns if `.env` is missing, readable by others, or lacks a key your config needs. With `cron`, only the line Pochi added is ever touched.
+The job runs `pochi run` in this checkout with the `PATH` you had at install time, so it finds the `claude` or `codex` CLI. It also runs the `node` that ran install, by its full path. With a version manager (nvm, nodebrew, fnm) that path names one Node version, so after upgrading or removing that version, run `pochi schedule install` again. Run with the new Node, `pochi schedule status` warns that the installed job differs. Its output is appended to `logs/pochi.log`. Install warns if `.env` is missing, readable by others, or lacks a key your config needs. With `cron`, only the line Pochi added is ever touched.
 
 ## On GitHub Actions
 
