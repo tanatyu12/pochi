@@ -6,7 +6,8 @@ This file is the single source of instructions for coding agents. `CLAUDE.md` on
 
 ## Commands
 
-- Install: `npm ci` (Node 24 per `.nvmrc`; CI also runs Node 22, so don't use APIs newer than `engines` allows)
+- Install: `npm ci` (Node 24 per `.nvmrc`)
+- Supported Node: 22.18 and later (`engines`), until Node 22 reaches end-of-life on 2027-04-30; it is then dropped in a minor release. Until then CI runs Node 22 and 24, and `@types/node` stays on 22 so typecheck rejects APIs Node 22 lacks (esbuild's `node22` target only rewrites syntax; it adds no missing APIs). Don't bump `@types/node` past the oldest supported major.
 - Typecheck: `npm run typecheck`
 - All tests: `npm test`
 - One file / one test: `npx vitest run tests/sources/rss.test.ts -t "name"`
