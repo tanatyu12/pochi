@@ -1,6 +1,6 @@
 {
   "name": "pochi",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Daily briefing for your project, delivered to Slack or Markdown files",
   "private": true,
   "type": "module",
