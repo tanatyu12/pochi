@@ -1,6 +1,6 @@
 # Pochi
 
-A CLI that sends a daily, per-project briefing: it collects items from feeds, GitHub, Google News and Tavily, filters them with an LLM in two stages (cheap triage, then analysis of the relevant ones), and delivers to Slack or Markdown files. Distributed as a repo template, not on npm. User docs: `README.md`. Design snapshot (Japanese): `docs/SPEC.md`.
+A CLI that sends a daily, per-project briefing: it collects items from feeds, GitHub, Google News and Tavily, filters them with an LLM in two stages (cheap triage, then analysis of the relevant ones), and delivers to Slack or Markdown files. Distributed as a repo template, not on npm. User docs: `README.md`. How it behaves and why, module by module: `docs/SPEC.md`.
 
 This file is the single source of instructions for coding agents. `CLAUDE.md` only imports it; put new guidance here, not there.
 
@@ -87,6 +87,6 @@ Each list is the minimum set of places to touch; the exhaustive switches will po
 - `docs/scheduling.md`: `pochi schedule`, launchd, cron, GitHub Actions
 - `docs/troubleshooting.md`: exit codes and common problems
 - `docs/updating.md`: bringing a new release into a user's copy (clone or template)
-- `docs/SPEC.md`: implementation spec snapshot (Japanese); explains why things are the way they are
+- `docs/SPEC.md`: the specification: behavior, invariants and the reasons behind them, module by module. Update it in the same change when behavior changes
 
 When a change is visible to users (commands, flags, config fields, output), update `README.md` and `README.ja.md` together, plus the matching page in `docs/` and the example YAML in `config/`.
