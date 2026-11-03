@@ -334,6 +334,8 @@ const STATUS_STYLE: Record<CheckStatus, "green" | "yellow" | "red" | "dim"> = {
   "-": "dim",
 };
 
+const LABEL_WIDTH = 20;
+
 class Report {
   readonly checks: Check[] = [];
   private section: Section | undefined;
@@ -390,11 +392,15 @@ class Report {
       this.out(this.fancy ? styleText("bold", heading) : heading);
     }
     this.checks.push(check);
-    // A multi-line detail (a ConfigError's issues) continues under the detail column.
-    const [first = "", ...rest] = check.detail.split("\n").map(oneLine);
+    // A multi-line detail (a ConfigError's issues) continues under the detail column, and so does
+    // the detail of a label too long for its column (a long source id with its kind).
+    const label = oneLine(check.label);
+    const details = check.detail.split("\n").map(oneLine);
+    if (label.length > LABEL_WIDTH) details.unshift("");
+    const [first = "", ...rest] = details;
     const status = check.status.padEnd(5);
-    this.out(`  ${this.fancy ? styleText(STATUS_STYLE[check.status], status) : status} ${oneLine(check.label).padEnd(20)} ${first}`);
-    for (const line of rest) this.out(`  ${"".padEnd(5)} ${"".padEnd(20)} ${line}`);
+    this.out(`  ${this.fancy ? styleText(STATUS_STYLE[check.status], status) : status} ${label.padEnd(LABEL_WIDTH)} ${first}`.trimEnd());
+    for (const line of rest) this.out(`  ${"".padEnd(5)} ${"".padEnd(LABEL_WIDTH)} ${line}`);
   }
 }
 
