@@ -85,7 +85,12 @@ function check(opts: DoctorOptions = {}, deps: DoctorDeps = {}) {
   );
 }
 
-const line = (label: string) => out.find((l) => l.trimStart().split(/\s+/)[1] === label);
+// A label longer than its column has its detail on the next line; read the two as one.
+const line = (label: string) => {
+  const at = out.findIndex((l) => l.trimStart().split(/\s+/)[1] === label);
+  if (at < 0) return undefined;
+  return label.length > 20 ? `${out[at]} ${out[at + 1]?.trim() ?? ""}` : out[at];
+};
 
 describe("doctor: on a color terminal", () => {
   it("colors the report and says Pochi is ready when nothing failed", async () => {
@@ -381,7 +386,9 @@ describe("doctor: state", () => {
     await writeFile(statePath(), JSON.stringify({ version: 1, entries: { bad: { s: "n" }, [key(1)]: { s: "n", f: "2026-10-01", l: "2026-10-01" } } }));
     const result = await check();
     expect(result.exitCode).toBe(ExitCode.OK);
-    expect(out.find((l) => l.includes("1 invalid entry"))).toMatch(/^\s+warn/);
+    const at = out.findIndex((l) => l.includes("1 invalid entry"));
+    // The path is longer than the label column, so the status is on the line above.
+    expect(out[at - 1]).toMatch(/^\s+warn\s/);
   });
 
   it("takes --state over POCHI_STATE_PATH", async () => {
@@ -410,6 +417,15 @@ describe("doctor: --fetch", () => {
       expect.stringMatching(/ok\s+blog \(rss\)\s+Newest$/),
       expect.stringMatching(/warn\s+qwen \(tavily\)\s+no items$/),
     ]);
+  });
+
+  it("puts the detail of a label longer than its column on the next line, in the detail column", async () => {
+    await writeFile(join(dir, "sources.yml"), `version: 1\nfeeds:\n  - { id: a-blog-with-a-long-id, type: rss, name: "A blog", url: "${FEED}" }\n`);
+    mockFetch({ [FEED]: rss("Newest") });
+    expect((await check({ fetch: true })).exitCode).toBe(ExitCode.OK);
+    const at = out.findIndex((l) => l.includes("a-blog-with-a-long-id (rss)"));
+    expect(out[at]).toMatch(/^  ok {4}a-blog-with-a-long-id \(rss\)$/);
+    expect(out[at + 1]).toBe(`  ${" ".repeat(5)} ${" ".repeat(20)} Newest`);
   });
 
   it("does not fetch without --fetch", async () => {
