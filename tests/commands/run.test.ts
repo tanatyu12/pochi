@@ -102,7 +102,7 @@ beforeEach(async () => {
   logs = "";
   stdout = "";
   configureLog({ write: (s) => (logs += s) });
-  for (const name of ["POCHI_CONTEXT_YAML", "POCHI_SOURCES_YAML", "POCHI_STATE_PATH", "TAVILY_API_KEY", "GITHUB_TOKEN"]) {
+  for (const name of ["POCHI_CONTEXT_YAML", "POCHI_SOURCES_YAML", "POCHI_STATE_PATH", "TAVILY_API_KEY", "GITHUB_TOKEN", "GITHUB_ACTIONS"]) {
     vi.stubEnv(name, "");
   }
   vi.stubEnv("SLACK_WEBHOOK_URL", WEBHOOK);
