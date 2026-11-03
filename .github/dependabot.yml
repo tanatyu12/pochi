@@ -17,6 +17,10 @@ updates:
       # Move it when feedsmith does.
       - dependency-name: entities
         update-types: ["version-update:semver-major"]
+      # Kept on the lowest Node major in engines, so typecheck rejects APIs that Node lacks.
+      # Move it when that major is dropped.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
