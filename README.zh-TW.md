@@ -8,12 +8,12 @@
 <h1 align="center">Pochi</h1>
 
 <p align="center">
-  <strong>不追資訊洪流，<br>只拿專案需要的。</strong>
+  <strong>每天一份摘要，告訴你專案周遭有什麼變化：<br>只講重要的，以及該怎麼做。</strong>
 </p>
 
 <p align="center">
-  讀取你的儲存庫、決定該關注哪些來源，<br>
-  每天把精簡的重點摘要送到 Slack 或 Markdown 的 CLI。
+  Pochi 會讀取你的儲存庫、決定該關注什麼，<br>
+  每天早上把精簡的摘要送到 Slack 或 Markdown。
 </p>
 
 <p align="center">
@@ -25,8 +25,7 @@
 <p align="center">
   <a href="#快速開始">快速開始</a> ·
   <a href="#運作方式">運作方式</a> ·
-  <a href="docs/configuration.md">設定</a> ·
-  <a href="docs/scheduling.md">排程執行</a>
+  <a href="#文件英文">文件</a>
 </p>
 
 <p align="center">
@@ -51,19 +50,9 @@
   <sub>先檢查設定，再針對範例客服 SaaS 試跑一次。</sub>
 </p>
 
-## 為什麼選 Pochi
+## 摘要長什麼樣子
 
-關於你的技術、市場和競爭對手的新聞，多到沒有人追得完。Pochi 不是先把所有資訊收進來再過濾的工具，而是從你的專案出發，只去抓跟它有關的資訊。
-
-**只關注專案實際依賴的東西。** 由程式開發代理（coding agent）閱讀你的儲存庫，提出值得留意的課題和該追蹤的來源：你用的函式庫、呼叫的服務、競爭對手、所在的市場。每個建議都會附上依據的檔案。跟專案無關的資訊，從一開始就不會去抓。
-
-**只送出重要的內容，並說明原因。** 抓回來的內容還會逐筆對照你的課題做確認。通過的項目會附上為什麼重要、影響程度（High、Medium、Low），以及該怎麼做。看過的不會再出現，同一件事的多篇報導會合併成一則，沒什麼事的日子，Pochi 就安安靜靜。
-
-<sub>來源：GitHub releases、RSS 與 Atom 訂閱、Google 新聞（免費）、Tavily 網路搜尋 · LLM：你的 Claude 或 Codex 訂閱，或 Anthropic API 金鑰 · 執行環境：launchd、cron 或 GitHub Actions</sub>
-
-## 你會收到什麼
-
-以下是撰寫這份 README 當天，為一個範例專案產生的摘要：一個用 Next.js 打造、以 AI 草擬回覆的客服 SaaS（[它的設定](docs/demo/)）。當天 12 個來源帶來 11 則值得一讀的內容，涵蓋資安、市場、競爭對手和法規。以下節錄其中 3 則。這份範例是以 `language: English` 產生的；若設定 `language: Chinese (Traditional)`，摘要和建議行動會以中文輸出，High、Action 等標籤則維持英文。
+某一天，Pochi 為一個用 Next.js 打造的範例客服 SaaS（[它的設定](docs/demo/)）找到 11 則內容，以下是其中 3 則。這份範例是以 `language: English` 產生的。
 
 > ### [High] [HTTP2Shell Brotli vulnerability reaches beyond Node.js](https://news.google.com/rss/articles/CBMiowFBVV95cUxNaktOLUVHRnNGOUVQSHZFU2R5SDNxTWJjYlBaLVZfQXpZMFN5Ukl1T2JzNGtCaWp6bS1VTXlfTzRmbHVxanJMRS1nMHRydjRmaUVyeHRNV1VIakhHdE9qZjJKa0xNeWdINWtvWkFzU1ZKYjM5aEo1dkczNFR2ak1kWElKR1pmdEI5M3dfSTdpR2RXaTJ4YlRVSHQ3MUJXeVpSRk44?oc=5)
 >
@@ -83,21 +72,33 @@
 >
 > **Action:** Compare Zendesk's action flows with Helpdesk's roadmap and decide whether action-taking automation should be prioritized.
 
-摘要可以存成 `reports/` 裡的 Markdown 檔、發到 Slack，或兩者都要。
+## 特色
+
+- **只關注專案實際依賴的東西。** 由程式開發代理（coding agent）閱讀你的儲存庫，提出值得留意的課題和該追蹤的來源，每個建議都附上依據的檔案。跟專案無關的資訊不會去抓。
+- **說明為什麼重要、該怎麼做。** 每個項目都會附上與專案的關聯、High、Medium 或 Low 的影響程度，以及建議行動。
+- **絕不重複。** 看過的不會再出現，同一件事的多篇報導會合併成一則，沒什麼事的日子，Pochi 就安安靜靜。
+- **用你現有的訂閱執行。** 使用已登入的 `claude` 或 `codex` CLI，或 Anthropic API 金鑰。
+- **免費的來源。** GitHub releases、RSS 與 Atom 訂閱和 Google 新聞都不用錢；Tavily 網路搜尋可有可無。
+- **每天早上自動執行。** `pochi schedule install` 會設定好 launchd、cron 或 GitHub Actions。
 
 ## 快速開始
 
-你需要 Node.js 22.18 以上，以及 [`claude`](https://docs.claude.com/en/docs/claude-code) CLI、[`codex`](https://github.com/openai/codex) CLI 或 `ANTHROPIC_API_KEY` 三者之一。Slack 和 Tavily 可有可無。
-
-Pochi 沒有發布到 npm，而是從你自己複製的這個儲存庫執行。建議按 **Use this template** 建立（這樣排程執行才能正常運作），或直接 clone：
+你需要 Node.js 22.18 以上，以及 [`claude`](https://docs.claude.com/en/docs/claude-code) CLI、[`codex`](https://github.com/openai/codex) CLI 或 `ANTHROPIC_API_KEY` 三者之一。Pochi 沒有發布到 npm：建議按 **Use this template** 建立（這樣排程執行才能正常運作），或 clone 這個儲存庫。
 
 ```sh
 git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
+
+pochi init              # answer a few questions to write config/
+pochi doctor            # check the setup; sends no prompt, costs nothing
+pochi run --dry-run     # print today's briefing without posting it
+pochi schedule install  # run it every morning
 ```
 
-**1. 從你的儲存庫開始**（建議）。請程式開發代理以唯讀方式提出建議，再據此建立設定：
+### 讓代理閱讀你的儲存庫（建議）
+
+不必回答問題，改請程式開發代理以唯讀方式閱讀你的專案，提出該追蹤的內容：
 
 ```sh
 pochi init --print-prompt > /tmp/pochi-prompt.md
@@ -105,20 +106,10 @@ pochi init --print-prompt > /tmp/pochi-prompt.md
 pochi init --from /tmp/proposal.md
 ```
 
-也可以改成回答幾個問題來建立：`pochi init`。
+代理會從技術堆疊、設計、商業模式、市場和營運等面向檢視你的專案，並為每個建議附上依據。`pochi init --from` 讓你從建議中挑選要用的項目，確認每個儲存庫確實存在，並把每個來源各抓一次讓你看看內容，最後寫出 `config/context.yml` 和 `config/sources.yml`。想追蹤特定對象時，可以加上 `--competitor`、`--adopter` 或 `--news-site`（皆可重複指定）。
 
-**2. 先檢查，再試跑一次**（不會送出任何東西）：
-
-```sh
-pochi doctor          # 檢查設定、LLM、金鑰和狀態檔；不呼叫模型，不花錢
-pochi run --dry-run   # 印出今天的摘要
-```
-
-**3. 設定每天早上自動執行：** `pochi schedule install`。要用 GitHub Actions 執行，請參閱[排程執行](docs/scheduling.md)。
-
-## 從儲存庫到追蹤清單
-
-這段提示詞會請代理閱讀你的程式碼、文件和設定（但不碰任何機密），並從五個面向著手：技術堆疊、設計、商業模式、市場與行銷、營運方式。每個建議都附上依據。以下是它為 Pochi 本身提出的部分建議（節錄）：
+<details>
+<summary>它為 Pochi 本身提出的部分建議</summary>
 
 ```json
 "problems": [
@@ -131,7 +122,7 @@ pochi run --dry-run   # 印出今天的摘要
 "queries": [{ "query": "AI changelog monitoring tool launch", "intent": "competitor", "topic": "news" }]
 ```
 
-`pochi init --from` 讓你從中挑選要用的項目，確認每個儲存庫確實存在，並把每個來源各抓一次讓你看看內容，最後寫出 `config/context.yml` 和 `config/sources.yml`。想追蹤特定對象時，可以用 `--competitor`、`--adopter` 和 `--news-site` 指名（皆可重複指定）。
+</details>
 
 ## 運作方式
 
@@ -146,25 +137,18 @@ flowchart LR
 
 只有你沒看過的項目會交給 LLM，也只有相關的項目會交給較強的模型。某個來源或某批處理失敗，也不會中斷整次執行。
 
-## 指令
+## 深入了解
 
 | 指令 | 說明 |
 | --- | --- |
 | `pochi init` | 以互動方式建立設定，或用 `--from` 從代理的建議建立 |
-| `pochi doctor` | 檢查設定、LLM、金鑰和狀態檔，不呼叫模型也不送出任何東西 |
+| `pochi doctor` | 檢查設定、LLM 金鑰或登入是否可用、金鑰和狀態檔，不呼叫模型 |
 | `pochi run` | 收集、篩選並送出今天的摘要（加上 `--dry-run` 則只印出來） |
 | `pochi schedule install` | 依 `context.yml` 裡的排程，透過 launchd、cron 或 GitHub Actions 定期執行 |
 
 每個指令都有 `--help`。
 
-## 設定
-
-設定是 `config/` 裡的兩個檔案，都由 `pochi init` 產生：
-
-- **`context.yml`**：專案的說明、你在意的課題、要排除的內容、摘要的語言，以及送達的地方。
-- **`sources.yml`**：要追蹤的 GitHub 儲存庫、訂閱來源、Google 新聞搜尋和 Tavily 查詢。
-
-摘要可以用任何語言撰寫。`pochi init` 提供英文、日文、中文、西班牙文、法文、德文、葡萄牙文和韓文可選，新聞搜尋也會使用該語言的 Google 新聞版本。High、Action 等標籤維持英文（[docs/configuration.md](docs/configuration.md)）。
+**設定。** `config/context.yml` 說明專案是什麼、你在意的課題、要排除的內容、摘要的語言，以及送達的地方；`config/sources.yml` 列出要追蹤的儲存庫、訂閱來源和搜尋。摘要可以用任何語言撰寫；`pochi init` 提供八種語言可選。
 
 <details>
 <summary>最精簡的設定範例</summary>
@@ -196,14 +180,9 @@ feeds:
 
 </details>
 
-所有設定項目都寫在 [docs/configuration.md](docs/configuration.md)（英文），以及附有註解的 [`config/context.example.yml`](config/context.example.yml) 和 [`config/sources.example.yml`](config/sources.example.yml) 裡。
+**費用。** 每個新項目由小模型（Claude Haiku）初篩，只有少數相關的項目才交給較強的模型（Claude Sonnet）撰寫摘要。`claude` 和 `codex` 的訂閱方案僅限個人使用，CI 或任何共用環境請改用 API 金鑰。Tavily 的免費額度為每月 1,000 點，每次執行每個查詢用掉 1 點。
 
-## 費用
-
-- **LLM。** 每個新項目由小模型（Claude Haiku）初篩，只有少數相關的項目才交給較強的模型（Claude Sonnet）撰寫摘要。使用 `claude` 或 `codex` CLI 時，會在你的訂閱額度內執行。訂閱方案僅限個人使用，CI 或任何共用環境請改用 API 金鑰。
-- **來源。** GitHub、訂閱來源和 Google 新聞都是免費的。Tavily 每月有 1,000 點的免費額度，每次執行每個查詢用掉 1 點。
-
-## 文件（英文）
+### 文件（英文）
 
 - [設定](docs/configuration.md)：所有設定項目、環境變數、狀態檔
 - [排程執行](docs/scheduling.md)：launchd、cron 和 GitHub Actions
@@ -218,7 +197,7 @@ feeds:
 ```sh
 npm ci
 npm run typecheck && npm test
-npm run dev -- run --dry-run   # 直接從原始碼執行
+npm run dev -- run --dry-run   # run from source
 ```
 
 Commit 訊息請遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hant/) 格式；版本由 release-please 發布。

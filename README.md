@@ -8,12 +8,12 @@
 <h1 align="center">Pochi</h1>
 
 <p align="center">
-  <strong>Don't chase the flood.<br>Fetch only what your project needs.</strong>
+  <strong>A daily briefing on what changed around your project:<br>only what matters, and what to do about it.</strong>
 </p>
 
 <p align="center">
-  A CLI that picks what to watch from your repository,<br>
-  and sends a short daily briefing to Slack or Markdown.
+  Pochi reads your repository, decides what to watch,<br>
+  and sends a short briefing to Slack or Markdown every morning.
 </p>
 
 <p align="center">
@@ -25,8 +25,7 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
-  <a href="docs/configuration.md">Configuration</a> ·
-  <a href="docs/scheduling.md">Scheduling</a>
+  <a href="#documentation">Docs</a>
 </p>
 
 <p align="center">
@@ -49,19 +48,9 @@
   <sub>Checking the setup, then a dry run for a sample help desk SaaS.</sub>
 </p>
 
-## Why Pochi
+## What a briefing looks like
 
-There is more news about your stack, your market and your competitors than anyone can follow. Pochi is not a tool that collects everything and filters it. It starts from your project, and fetches only what bears on it.
-
-**It watches only what your project depends on.** A coding agent reads your repository and proposes the problems to care about and the sources to watch: the libraries you use, the services you call, your competitors, your market. Every idea cites the files behind it. What is unrelated to your project is never fetched.
-
-**It passes on only what matters, and says why.** What it fetches is still checked against your problems, one item at a time. What gets through comes with why it matters, how much (High, Medium, Low), and what to do. Nothing you have seen comes back, several reports of one story arrive as one, and on a quiet day Pochi stays quiet.
-
-<sub>Sources: GitHub releases, RSS and Atom feeds, Google News (free), Tavily web search · LLM: your Claude or Codex subscription, or an Anthropic API key · Runs on: launchd, cron or GitHub Actions</sub>
-
-## What you get
-
-The briefing for a sample project on the day this README was written: a help desk SaaS on Next.js that drafts replies with AI ([its config](docs/demo/)). Its 12 sources brought 11 items worth reading that day, on security, the market, competitors and regulation. Three of them, shortened:
+Three of the 11 items Pochi found one day for a sample help desk SaaS built on Next.js ([its config](docs/demo/)):
 
 > ### [High] [HTTP2Shell Brotli vulnerability reaches beyond Node.js](https://news.google.com/rss/articles/CBMiowFBVV95cUxNaktOLUVHRnNGOUVQSHZFU2R5SDNxTWJjYlBaLVZfQXpZMFN5Ukl1T2JzNGtCaWp6bS1VTXlfTzRmbHVxanJMRS1nMHRydjRmaUVyeHRNV1VIakhHdE9qZjJKa0xNeWdINWtvWkFzU1ZKYjM5aEo1dkczNFR2ak1kWElKR1pmdEI5M3dfSTdpR2RXaTJ4YlRVSHQ3MUJXeVpSRk44?oc=5)
 >
@@ -81,21 +70,33 @@ The briefing for a sample project on the day this README was written: a help des
 >
 > **Action:** Compare Zendesk's action flows with Helpdesk's roadmap and decide whether action-taking automation should be prioritized.
 
-It arrives as a Markdown file in `reports/`, a Slack message, or both.
+## Highlights
+
+- **Watches only what your project depends on.** A coding agent reads your repository and proposes the problems and sources to watch, each citing the files behind it. Nothing unrelated is fetched.
+- **Says why it matters and what to do.** Every item comes with its relevance, a High, Medium or Low rating, and a suggested action.
+- **Never repeats itself.** What you have seen does not come back, several reports of one story arrive as one, and on a quiet day Pochi stays quiet.
+- **Runs on the subscription you have.** Use your `claude` or `codex` CLI login, or an Anthropic API key.
+- **Free sources.** GitHub releases, RSS and Atom feeds and Google News cost nothing; Tavily web search is optional.
+- **Runs every morning on its own.** `pochi schedule install` sets up launchd, cron or GitHub Actions.
 
 ## Quick start
 
-You need Node.js 22.18 or later, and one of the [`claude`](https://docs.claude.com/en/docs/claude-code) CLI, the [`codex`](https://github.com/openai/codex) CLI, or an `ANTHROPIC_API_KEY`. Slack and Tavily are optional.
-
-Pochi is not on npm: you run it from your own copy of this repository. Click **Use this template** (recommended, so scheduled runs work) or clone it:
+You need Node.js 22.18 or later and one of the [`claude`](https://docs.claude.com/en/docs/claude-code) CLI, the [`codex`](https://github.com/openai/codex) CLI, or an `ANTHROPIC_API_KEY`. Pochi is not on npm: click **Use this template** (recommended, so scheduled runs work) or clone this repository.
 
 ```sh
 git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
+
+pochi init              # answer a few questions to write config/
+pochi doctor            # check the setup; sends no prompt, costs nothing
+pochi run --dry-run     # print today's briefing without posting it
+pochi schedule install  # run it every morning
 ```
 
-**1. Start from your repository** (recommended). Ask a coding agent for a proposal, read-only, then build your config from it:
+### Let an agent read your repository (recommended)
+
+Instead of answering questions, have a coding agent read your project, read-only, and propose what to watch:
 
 ```sh
 pochi init --print-prompt > /tmp/pochi-prompt.md
@@ -103,20 +104,10 @@ pochi init --print-prompt > /tmp/pochi-prompt.md
 pochi init --from /tmp/proposal.md
 ```
 
-Or answer a few questions instead: `pochi init`.
+The agent looks at your tech stack, design, business, market and operations, and cites its evidence for every idea. `pochi init --from` lets you pick from the proposal, checks that each repository exists, fetches each source once to show what it carries, and writes `config/context.yml` and `config/sources.yml`. To follow particular players, add `--competitor`, `--adopter` or `--news-site` (all repeatable).
 
-**2. Check, then try a run** that posts nothing:
-
-```sh
-pochi doctor          # config, LLM key or login, keys and state; sends no prompt, costs nothing
-pochi run --dry-run   # prints today's briefing
-```
-
-**3. Run it every morning:** `pochi schedule install`. See [Scheduling](docs/scheduling.md) for GitHub Actions.
-
-## From your repository to a watchlist
-
-The prompt asks the agent to read your code, docs and config, and nothing secret, along five axes: your tech stack, your design, your business, your market and how you reach it, and how you operate. Every idea cites its evidence. This is part of what it proposed for Pochi itself (abridged):
+<details>
+<summary>Part of what it proposed for Pochi itself</summary>
 
 ```json
 "problems": [
@@ -129,7 +120,7 @@ The prompt asks the agent to read your code, docs and config, and nothing secret
 "queries": [{ "query": "AI changelog monitoring tool launch", "intent": "competitor", "topic": "news" }]
 ```
 
-`pochi init --from` lets you pick from it, checks that every repository exists, fetches each source once to show you what it carries, and writes `config/context.yml` and `config/sources.yml`. To follow particular players, name them: `--competitor`, `--adopter` and `--news-site` (all repeatable).
+</details>
 
 ## How it works
 
@@ -144,25 +135,18 @@ flowchart LR
 
 Only items new to you reach the LLM, and only the relevant ones reach the stronger model. A failing source or batch does not stop the run.
 
-## Commands
+## Learn more
 
 | Command | |
 | --- | --- |
 | `pochi init` | Create the config interactively, or `--from` an agent's proposal |
-| `pochi doctor` | Check the config, that the LLM key or login works, keys and state, without sending a prompt or anything else |
+| `pochi doctor` | Check the config, that the LLM key or login works, keys and state, without sending a prompt |
 | `pochi run` | Collect, filter and deliver today's briefing (`--dry-run` to only print it) |
 | `pochi schedule install` | Run it on the schedule in `context.yml`, with launchd, cron or GitHub Actions |
 
 Every command has `--help`.
 
-## Configuration
-
-Two files in `config/`, both written by `pochi init`:
-
-- **`context.yml`**: what your project is, the problems you care about, what to exclude, the language of the briefing, and where to deliver it.
-- **`sources.yml`**: the GitHub repositories, feeds, Google News searches and Tavily queries to watch.
-
-The briefing can be written in any language. `pochi init` offers English, Japanese, Chinese, Spanish, French, German, Portuguese and Korean, and its news searches use that language's Google News edition. Labels such as High and Action stay in English ([docs/configuration.md](docs/configuration.md)).
+**Configuration.** `config/context.yml` says what your project is, the problems you care about, what to exclude, the briefing's language and where to deliver it; `config/sources.yml` lists the repositories, feeds and searches to watch. The briefing can be written in any language; `pochi init` offers eight.
 
 <details>
 <summary>A minimal example</summary>
@@ -193,14 +177,9 @@ feeds:
 
 </details>
 
-Every key is in [docs/configuration.md](docs/configuration.md) and the commented [`config/context.example.yml`](config/context.example.yml) and [`config/sources.example.yml`](config/sources.example.yml).
+**Cost.** A small model (Claude Haiku) triages every new item and a stronger one (Claude Sonnet) writes up only the relevant few. The `claude` and `codex` subscriptions are for personal use, so use an API key for CI or anything shared. Tavily's free tier gives 1,000 credits a month, one per query per run.
 
-## Cost
-
-- **LLM.** A small model (Claude Haiku) triages every new item; a stronger one (Claude Sonnet) writes up only the relevant few. With the `claude` or `codex` CLI, runs use your subscription. Use an API key for CI or anything shared: the subscriptions are for personal use.
-- **Sources.** GitHub, feeds and Google News are free. Tavily has a free tier of 1,000 credits a month, one per query per run.
-
-## Documentation
+### Documentation
 
 - [Configuration](docs/configuration.md): every key, environment variables, the state file
 - [Scheduling](docs/scheduling.md): launchd, cron and GitHub Actions

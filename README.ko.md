@@ -8,12 +8,12 @@
 <h1 align="center">Pochi</h1>
 
 <p align="center">
-  <strong>쏟아지는 정보를 쫓지 마세요.<br>프로젝트에 필요한 것만 가져옵니다.</strong>
+  <strong>프로젝트 주변에서 바뀐 것을 매일 브리핑합니다.<br>중요한 것만, 무엇을 해야 하는지와 함께.</strong>
 </p>
 
 <p align="center">
-  리포지토리를 읽고 지켜볼 정보원을 정한 뒤,<br>
-  매일 짧은 브리핑을 Slack이나 Markdown으로 보내 주는 CLI입니다.
+  Pochi는 리포지토리를 읽고 지켜볼 대상을 정한 뒤,<br>
+  매일 아침 짧은 브리핑을 Slack이나 Markdown으로 보냅니다.
 </p>
 
 <p align="center">
@@ -25,8 +25,7 @@
 <p align="center">
   <a href="#빠른-시작">빠른 시작</a> ·
   <a href="#동작-방식">동작 방식</a> ·
-  <a href="docs/configuration.md">설정</a> ·
-  <a href="docs/scheduling.md">정기 실행</a>
+  <a href="#문서영어">문서</a>
 </p>
 
 <p align="center">
@@ -51,19 +50,9 @@
   <sub>설정을 점검한 뒤, 샘플 헬프데스크 SaaS를 대상으로 시험 실행하는 모습입니다.</sub>
 </p>
 
-## 왜 Pochi인가
+## 브리핑 예시
 
-기술 스택, 시장, 경쟁사에 관한 뉴스는 혼자서 다 따라갈 수 없을 만큼 많습니다. Pochi는 일단 모두 모은 다음 걸러 내는 도구가 아닙니다. 프로젝트에서 출발해, 프로젝트와 관련된 정보만 가져옵니다.
-
-**프로젝트가 의존하는 것만 지켜봅니다.** 코딩 에이전트가 리포지토리를 읽고, 신경 써야 할 과제와 지켜볼 정보원을 제안합니다. 사용 중인 라이브러리, 호출하는 서비스, 경쟁사, 시장 같은 것들입니다. 모든 제안에는 근거가 된 파일이 함께 표시됩니다. 프로젝트와 관계없는 정보는 애초에 가져오지 않습니다.
-
-**중요한 것만, 이유와 함께 전달합니다.** 가져온 항목도 등록한 과제에 비추어 한 건씩 다시 확인합니다. 통과한 항목에는 왜 중요한지, 얼마나 중요한지(High, Medium, Low), 무엇을 해야 하는지가 함께 붙습니다. 이미 본 항목은 다시 오지 않고, 같은 소식을 다룬 여러 기사는 한 건으로 묶이며, 별일 없는 날에는 아무것도 보내지 않습니다.
-
-<sub>정보원: GitHub 릴리스, RSS·Atom 피드, Google 뉴스(무료), Tavily 웹 검색 · LLM: Claude 또는 Codex 구독, 혹은 Anthropic API 키 · 실행 환경: launchd, cron, GitHub Actions</sub>
-
-## 받게 되는 것
-
-이 README를 작성한 날, 샘플 프로젝트를 대상으로 만든 브리핑입니다. 샘플은 Next.js로 만든 헬프데스크 SaaS로, AI로 답장 초안을 작성합니다([설정](docs/demo/)). 이날 12개의 정보원에서 읽어 볼 만한 항목 11건이 도착했으며, 보안뿐 아니라 시장, 경쟁사, 규제에 관한 내용도 포함되어 있었습니다. 그중 3건을 줄여서 싣습니다. 이 샘플은 `language: English`로 실행한 결과입니다. `language: Korean`으로 설정하면 요약과 대응 방안이 한국어로 작성되며, High나 Action 같은 레이블은 영어로 유지됩니다.
+Next.js로 만든 샘플 헬프데스크 SaaS를 대상으로 Pochi가 어느 날 찾아낸 11건 중 3건입니다([설정](docs/demo/)). 이 샘플은 `language: English`로 실행한 결과입니다.
 
 > ### [High] [HTTP2Shell Brotli vulnerability reaches beyond Node.js](https://news.google.com/rss/articles/CBMiowFBVV95cUxNaktOLUVHRnNGOUVQSHZFU2R5SDNxTWJjYlBaLVZfQXpZMFN5Ukl1T2JzNGtCaWp6bS1VTXlfTzRmbHVxanJMRS1nMHRydjRmaUVyeHRNV1VIakhHdE9qZjJKa0xNeWdINWtvWkFzU1ZKYjM5aEo1dkczNFR2ak1kWElKR1pmdEI5M3dfSTdpR2RXaTJ4YlRVSHQ3MUJXeVpSRk44?oc=5)
 >
@@ -83,25 +72,33 @@
 >
 > **Action:** Compare Zendesk's action flows with Helpdesk's roadmap and decide whether action-taking automation should be prioritized.
 
-브리핑은 `reports/`에 Markdown 파일로 저장하거나, Slack 메시지로 보내거나, 둘 다 할 수 있습니다.
+## 주요 특징
+
+- **프로젝트가 의존하는 것만 지켜봅니다.** 코딩 에이전트가 리포지토리를 읽고 신경 써야 할 과제와 지켜볼 정보원을 제안하며, 모든 제안에는 근거가 된 파일이 함께 표시됩니다. 관계없는 정보는 가져오지 않습니다.
+- **왜 중요한지, 무엇을 해야 하는지 알려 줍니다.** 모든 항목에는 관련성, High, Medium, Low 중 하나의 중요도, 권장 대응이 함께 붙습니다.
+- **같은 내용을 반복하지 않습니다.** 이미 본 항목은 다시 오지 않고, 같은 소식을 다룬 여러 기사는 한 건으로 묶이며, 별일 없는 날에는 아무것도 보내지 않습니다.
+- **가지고 있는 구독으로 실행됩니다.** `claude`나 `codex` CLI 로그인, 또는 Anthropic API 키를 사용합니다.
+- **무료 정보원.** GitHub 릴리스, RSS·Atom 피드, Google 뉴스는 비용이 들지 않으며, Tavily 웹 검색은 선택 사항입니다.
+- **매일 아침 알아서 실행됩니다.** `pochi schedule install`이 launchd, cron, GitHub Actions를 설정합니다.
 
 ## 빠른 시작
 
-필요한 것:
-
-- Node.js 22.18 이상
-- LLM: [`claude`](https://docs.claude.com/en/docs/claude-code) CLI, [`codex`](https://github.com/openai/codex) CLI, `ANTHROPIC_API_KEY` 중 하나
-- Slack과 Tavily는 없어도 동작합니다
-
-Pochi는 npm으로 배포하지 않습니다. 이 리포지토리를 자신의 복사본으로 만들어 실행합니다. 정기 실행이 제대로 동작하도록 GitHub의 **Use this template**으로 만드는 것을 권장합니다. clone해도 됩니다.
+Node.js 22.18 이상과 [`claude`](https://docs.claude.com/en/docs/claude-code) CLI, [`codex`](https://github.com/openai/codex) CLI, `ANTHROPIC_API_KEY` 중 하나가 필요합니다. Pochi는 npm으로 배포하지 않습니다. GitHub의 **Use this template**을 누르거나(정기 실행이 제대로 동작하므로 권장) 이 리포지토리를 clone하세요.
 
 ```sh
 git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
+
+pochi init              # answer a few questions to write config/
+pochi doctor            # check the setup; sends no prompt, costs nothing
+pochi run --dry-run     # print today's briefing without posting it
+pochi schedule install  # run it every morning
 ```
 
-**1. 리포지토리에서 시작하기**(권장). 코딩 에이전트에게 읽기 전용으로 제안을 받은 다음, 그 제안으로 설정을 만듭니다.
+### 에이전트에게 리포지토리 읽히기(권장)
+
+질문에 답하는 대신, 코딩 에이전트에게 읽기 전용으로 프로젝트를 읽게 하고 지켜볼 대상을 제안받습니다.
 
 ```sh
 pochi init --print-prompt > /tmp/pochi-prompt.md
@@ -109,20 +106,10 @@ pochi init --print-prompt > /tmp/pochi-prompt.md
 pochi init --from /tmp/proposal.md
 ```
 
-몇 가지 질문에 답하면서 만들 수도 있습니다: `pochi init`
+에이전트는 기술 스택, 디자인, 비즈니스, 시장, 운영을 살펴보고 모든 제안에 근거를 붙입니다. `pochi init --from`에서는 제안 중 사용할 항목을 고릅니다. 각 리포지토리가 실제로 존재하는지 확인하고, 정보원마다 한 번씩 가져와 어떤 내용이 오는지 보여 준 뒤 `config/context.yml`과 `config/sources.yml`을 작성합니다. 특정 경쟁사나 업계를 따라가고 싶다면 `--competitor`, `--adopter`, `--news-site`를 추가하세요(모두 여러 번 지정 가능).
 
-**2. 점검한 뒤 시험 실행하기.** 아무것도 전송하지 않습니다.
-
-```sh
-pochi doctor          # 설정, LLM, 키, 상태 파일 확인. 모델을 호출하지 않아 비용이 들지 않습니다
-pochi run --dry-run   # 오늘의 브리핑을 출력합니다
-```
-
-**3. 매일 아침 실행되게 하기:** `pochi schedule install`. GitHub Actions에서 실행하려면 [정기 실행](docs/scheduling.md)을 참고하세요.
-
-## 리포지토리에서 감시 목록까지
-
-`--print-prompt`가 출력하는 프롬프트는 에이전트에게 코드, 문서, 설정을 읽게 하며, 비밀 정보는 열지 않게 합니다. 기술 스택, 디자인, 비즈니스, 시장과 마케팅, 운영이라는 다섯 가지 관점에서 과제와 정보원을 근거와 함께 제안하도록 합니다. 다음은 Pochi 자신의 리포지토리에 대해 받은 제안의 일부입니다.
+<details>
+<summary>Pochi 자신의 리포지토리에 대해 받은 제안의 일부</summary>
 
 ```json
 "problems": [
@@ -135,7 +122,7 @@ pochi run --dry-run   # 오늘의 브리핑을 출력합니다
 "queries": [{ "query": "AI changelog monitoring tool launch", "intent": "competitor", "topic": "news" }]
 ```
 
-`pochi init --from`에서는 이 제안 중 사용할 항목을 고릅니다. 각 리포지토리가 실제로 존재하는지 확인하고, 정보원마다 한 번씩 가져와 어떤 내용이 오는지 보여 준 뒤 `config/context.yml`과 `config/sources.yml`을 작성합니다. 특정 경쟁사나 업계를 따라가고 싶다면 `--competitor`, `--adopter`, `--news-site`로 직접 지정할 수 있습니다(모두 여러 번 지정 가능).
+</details>
 
 ## 동작 방식
 
@@ -150,25 +137,18 @@ flowchart LR
 
 LLM에 전달되는 것은 처음 보는 항목뿐이고, 더 강한 모델에 전달되는 것은 관련 있는 항목뿐입니다. 일부 정보원이나 배치가 실패해도 실행은 멈추지 않습니다.
 
-## 명령어
+## 더 알아보기
 
 | 명령어 | 설명 |
 | --- | --- |
 | `pochi init` | 대화형으로 설정을 만듭니다. `--from`으로 에이전트의 제안에서 만들 수도 있습니다 |
-| `pochi doctor` | 설정, LLM, 키, 상태 파일을 점검합니다. 모델을 호출하거나 무언가를 전송하지 않습니다 |
+| `pochi doctor` | 설정, LLM 키나 로그인이 동작하는지, 키, 상태 파일을 점검합니다. 프롬프트는 보내지 않습니다 |
 | `pochi run` | 오늘의 브리핑을 수집하고 걸러서 전달합니다(`--dry-run`이면 화면에 출력만 합니다) |
 | `pochi schedule install` | `context.yml`의 일정에 따라 launchd, cron, GitHub Actions로 정기 실행합니다 |
 
 모든 명령어에서 `--help`를 사용할 수 있습니다.
 
-## 설정
-
-설정은 `config/`의 두 파일이며, 둘 다 `pochi init`이 작성합니다.
-
-- **`context.yml`**: 프로젝트 설명, 신경 쓰는 과제, 제외할 주제, 브리핑 언어, 전달 위치
-- **`sources.yml`**: 지켜볼 GitHub 리포지토리, 피드, Google 뉴스 검색어, Tavily 검색어
-
-브리핑은 어떤 언어로든 작성할 수 있습니다. `pochi init`에서는 영어, 일본어, 중국어, 스페인어, 프랑스어, 독일어, 포르투갈어, 한국어를 고를 수 있으며, 뉴스 검색도 해당 언어의 Google 뉴스 판을 사용합니다. High, Action 같은 레이블은 영어로 유지됩니다([docs/configuration.md](docs/configuration.md)).
+**설정.** `config/context.yml`에는 프로젝트 설명, 신경 쓰는 과제, 제외할 주제, 브리핑 언어, 전달 위치를 적고, `config/sources.yml`에는 지켜볼 리포지토리, 피드, 검색어를 나열합니다. 브리핑은 어떤 언어로든 작성할 수 있으며, `pochi init`에서는 8개 언어를 고를 수 있습니다.
 
 <details>
 <summary>최소 설정 예시</summary>
@@ -200,14 +180,9 @@ feeds:
 
 </details>
 
-모든 항목은 [docs/configuration.md](docs/configuration.md)(영어)와 주석이 달린 [`config/context.example.yml`](config/context.example.yml), [`config/sources.example.yml`](config/sources.example.yml)에서 확인할 수 있습니다.
+**비용.** 새 항목은 모두 작은 모델(Claude Haiku)이 선별하고, 관련 있는 몇 건만 더 강한 모델(Claude Sonnet)이 정리합니다. `claude`와 `codex` 구독은 개인 사용을 전제로 하므로, CI나 팀에서 공유하는 환경에서는 API 키를 사용하세요. Tavily의 무료 사용량은 월 1,000크레딧이며, 실행할 때마다 검색어 하나당 1크레딧을 사용합니다.
 
-## 비용
-
-- **LLM.** 새 항목은 모두 작은 모델(Claude Haiku)이 선별하고, 관련 있는 몇 건만 더 강한 모델(Claude Sonnet)이 정리합니다. `claude`나 `codex` CLI를 사용하면 보유한 구독 범위 안에서 실행됩니다. 구독은 개인 사용을 전제로 하므로, CI나 팀에서 공유하는 환경에서는 API 키를 사용하세요.
-- **정보원.** GitHub, 피드, Google 뉴스는 무료입니다. Tavily는 월 1,000크레딧의 무료 사용량이 있으며, 실행할 때마다 검색어 하나당 1크레딧을 사용합니다.
-
-## 문서(영어)
+### 문서(영어)
 
 - [설정](docs/configuration.md): 모든 항목, 환경 변수, 상태 파일
 - [정기 실행](docs/scheduling.md): launchd, cron, GitHub Actions
@@ -222,7 +197,7 @@ feeds:
 ```sh
 npm ci
 npm run typecheck && npm test
-npm run dev -- run --dry-run   # 소스에서 바로 실행
+npm run dev -- run --dry-run   # run from source
 ```
 
 커밋은 [Conventional Commits](https://www.conventionalcommits.org/ko/) 형식을 따르며, 릴리스는 release-please가 만듭니다.
