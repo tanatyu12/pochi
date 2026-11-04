@@ -8,12 +8,12 @@
 <h1 align="center">Pochi</h1>
 
 <p align="center">
-  <strong>Nicht die Flut durchwühlen.<br>Nur holen, was dein Projekt braucht.</strong>
+  <strong>Ein tägliches Briefing darüber, was sich rund um dein Projekt getan hat:<br>nur was zählt, und was zu tun ist.</strong>
 </p>
 
 <p align="center">
-  Ein CLI, das anhand deines Repositorys entscheidet, was es im Blick behält,<br>
-  und dir jeden Tag ein kurzes Briefing in Slack oder als Markdown schickt.
+  Pochi liest dein Repository, entscheidet, was es im Blick behält,<br>
+  und schickt dir jeden Morgen ein kurzes Briefing in Slack oder als Markdown.
 </p>
 
 <p align="center">
@@ -25,8 +25,7 @@
 <p align="center">
   <a href="#schnellstart">Schnellstart</a> ·
   <a href="#wie-es-funktioniert">Wie es funktioniert</a> ·
-  <a href="docs/configuration.md">Konfiguration</a> ·
-  <a href="docs/scheduling.md">Zeitplan</a>
+  <a href="#dokumentation-englisch">Doku</a>
 </p>
 
 <p align="center">
@@ -51,19 +50,9 @@
   <sub>Erst wird das Setup geprüft, dann folgt ein Probelauf für ein Beispiel-Helpdesk-SaaS.</sub>
 </p>
 
-## Warum Pochi
+## So sieht ein Briefing aus
 
-Zu deinem Tech-Stack, deinem Markt und deinen Wettbewerbern erscheint mehr, als irgendjemand verfolgen kann. Pochi sammelt nicht erst alles ein, um es dann zu filtern. Es geht von deinem Projekt aus und holt nur das, was dafür relevant ist.
-
-**Es beobachtet nur, wovon dein Projekt abhängt.** Ein Coding-Agent liest dein Repository und schlägt vor, welche Themen dich beschäftigen sollten und welche Quellen es zu beobachten gilt: die Bibliotheken, die du nutzt, die Dienste, die du aufrufst, deine Wettbewerber, deinen Markt. Zu jedem Vorschlag nennt er die Dateien, auf die er sich stützt. Was nichts mit deinem Projekt zu tun hat, wird gar nicht erst abgerufen.
-
-**Es reicht nur weiter, was zählt, und sagt dir, warum.** Auch was abgerufen wurde, wird Eintrag für Eintrag gegen deine Themen geprüft. Was durchkommt, bringt mit, warum es wichtig ist, wie wichtig (High, Medium, Low) und was zu tun ist. Nichts, was du schon gesehen hast, taucht wieder auf, mehrere Berichte über dieselbe Geschichte kommen als einer an, und an ruhigen Tagen bleibt Pochi still.
-
-<sub>Quellen: GitHub-Releases, RSS- und Atom-Feeds, Google News (kostenlos), Tavily-Websuche · LLM: dein Claude- oder Codex-Abo oder ein Anthropic-API-Key · Läuft mit: launchd, cron oder GitHub Actions</sub>
-
-## Was du bekommst
-
-Das Briefing für ein Beispielprojekt an dem Tag, an dem diese README entstand: ein Helpdesk-SaaS auf Next.js, das Antworten mit KI vorformuliert ([seine Konfiguration](docs/demo/)). Seine 12 Quellen brachten an diesem Tag 11 lesenswerte Einträge zu Sicherheit, Markt, Wettbewerbern und Regulierung. Drei davon, gekürzt. Das Beispiel wurde mit `language: English` erzeugt; mit `language: German` erscheinen Zusammenfassungen und Handlungsempfehlungen auf Deutsch, Labels wie High und Action bleiben englisch.
+Drei der 11 Einträge, die Pochi an einem Tag für ein Beispiel-Helpdesk-SaaS auf Next.js gefunden hat ([seine Konfiguration](docs/demo/)):
 
 > ### [High] [HTTP2Shell Brotli vulnerability reaches beyond Node.js](https://news.google.com/rss/articles/CBMiowFBVV95cUxNaktOLUVHRnNGOUVQSHZFU2R5SDNxTWJjYlBaLVZfQXpZMFN5Ukl1T2JzNGtCaWp6bS1VTXlfTzRmbHVxanJMRS1nMHRydjRmaUVyeHRNV1VIakhHdE9qZjJKa0xNeWdINWtvWkFzU1ZKYjM5aEo1dkczNFR2ak1kWElKR1pmdEI5M3dfSTdpR2RXaTJ4YlRVSHQ3MUJXeVpSRk44?oc=5)
 >
@@ -83,21 +72,33 @@ Das Briefing für ein Beispielprojekt an dem Tag, an dem diese README entstand: 
 >
 > **Action:** Compare Zendesk's action flows with Helpdesk's roadmap and decide whether action-taking automation should be prioritized.
 
-Das Briefing landet als Markdown-Datei in `reports/`, als Slack-Nachricht oder beides.
+## Highlights
+
+- **Beobachtet nur, wovon dein Projekt abhängt.** Ein Coding-Agent liest dein Repository und schlägt die Themen und Quellen vor, die es zu beobachten gilt, jeweils mit den Dateien, auf die er sich stützt. Was nichts damit zu tun hat, wird gar nicht erst abgerufen.
+- **Sagt, warum es wichtig ist und was zu tun ist.** Jeder Eintrag bringt seine Relevanz mit, eine Einstufung als High, Medium oder Low und eine vorgeschlagene Handlung.
+- **Wiederholt sich nie.** Was du schon gesehen hast, taucht nicht wieder auf, mehrere Berichte über dieselbe Geschichte kommen als einer an, und an ruhigen Tagen bleibt Pochi still.
+- **Läuft mit dem Abo, das du schon hast.** Nutze deinen Login für das `claude`- oder `codex`-CLI oder einen Anthropic-API-Key.
+- **Kostenlose Quellen.** GitHub-Releases, RSS- und Atom-Feeds und Google News kosten nichts; die Tavily-Websuche ist optional.
+- **Läuft jeden Morgen von selbst.** `pochi schedule install` richtet launchd, cron oder GitHub Actions ein.
 
 ## Schnellstart
 
-Du brauchst Node.js 22.18 oder neuer und eines von diesen: das [`claude`](https://docs.claude.com/en/docs/claude-code) CLI, das [`codex`](https://github.com/openai/codex) CLI oder einen `ANTHROPIC_API_KEY`. Slack und Tavily sind optional.
-
-Pochi gibt es nicht auf npm: Du betreibst es aus deiner eigenen Kopie dieses Repositorys. Klick auf **Use this template** (empfohlen, damit geplante Läufe funktionieren) oder klone es:
+Du brauchst Node.js 22.18 oder neuer und eines von diesen: das [`claude`](https://docs.claude.com/en/docs/claude-code) CLI, das [`codex`](https://github.com/openai/codex) CLI oder einen `ANTHROPIC_API_KEY`. Pochi gibt es nicht auf npm: Klick auf **Use this template** (empfohlen, damit geplante Läufe funktionieren) oder klone dieses Repository.
 
 ```sh
 git clone https://github.com/tanatyu12/pochi && cd pochi
 npm ci && npm run build
 alias pochi="node $PWD/dist/pochi.mjs"
+
+pochi init              # answer a few questions to write config/
+pochi doctor            # check the setup; sends no prompt, costs nothing
+pochi run --dry-run     # print today's briefing without posting it
+pochi schedule install  # run it every morning
 ```
 
-**1. Starte bei deinem Repository** (empfohlen). Lass dir von einem Coding-Agent einen Vorschlag schreiben, nur mit Lesezugriff, und baue daraus deine Konfiguration:
+### Lass einen Agenten dein Repository lesen (empfohlen)
+
+Statt Fragen zu beantworten, lass einen Coding-Agent dein Projekt lesen, nur mit Lesezugriff, und vorschlagen, was beobachtet werden soll:
 
 ```sh
 pochi init --print-prompt > /tmp/pochi-prompt.md
@@ -105,20 +106,10 @@ pochi init --print-prompt > /tmp/pochi-prompt.md
 pochi init --from /tmp/proposal.md
 ```
 
-Oder beantworte stattdessen ein paar Fragen: `pochi init`.
+Der Agent betrachtet deinen Tech-Stack, dein Design, dein Geschäft, deinen Markt und deinen Betrieb und nennt zu jedem Vorschlag seine Belege. Mit `pochi init --from` wählst du aus dem Vorschlag aus. Pochi prüft, ob jedes Repository existiert, ruft jede Quelle einmal ab, um zu zeigen, was sie liefert, und schreibt `config/context.yml` und `config/sources.yml`. Willst du bestimmte Akteure verfolgen, füge `--competitor`, `--adopter` oder `--news-site` hinzu (alle mehrfach verwendbar).
 
-**2. Prüfen, dann ein Probelauf**, der nichts verschickt:
-
-```sh
-pochi doctor          # Konfiguration, LLM, Schlüssel und Status; ruft kein Modell auf, kostet nichts
-pochi run --dry-run   # gibt das heutige Briefing aus
-```
-
-**3. Jeden Morgen laufen lassen:** `pochi schedule install`. Für GitHub Actions siehe [Zeitplan](docs/scheduling.md).
-
-## Vom Repository zur Watchlist
-
-Der Prompt bittet den Agenten, deinen Code, deine Doku und deine Konfiguration zu lesen, aber nichts Geheimes, und zwar entlang von fünf Achsen: dein Tech-Stack, dein Design, dein Geschäft, dein Markt und wie du ihn erreichst, sowie dein Betrieb. Jeder Vorschlag nennt seine Belege. Hier ein Teil dessen, was er für Pochi selbst vorgeschlagen hat (gekürzt):
+<details>
+<summary>Ein Teil dessen, was er für Pochi selbst vorgeschlagen hat</summary>
 
 ```json
 "problems": [
@@ -131,7 +122,7 @@ Der Prompt bittet den Agenten, deinen Code, deine Doku und deine Konfiguration z
 "queries": [{ "query": "AI changelog monitoring tool launch", "intent": "competitor", "topic": "news" }]
 ```
 
-Mit `pochi init --from` wählst du daraus aus. Pochi prüft, ob jedes Repository existiert, ruft jede Quelle einmal ab, um dir zu zeigen, was sie liefert, und schreibt `config/context.yml` und `config/sources.yml`. Willst du bestimmte Akteure verfolgen, nenn sie beim Namen: `--competitor`, `--adopter` und `--news-site` (alle mehrfach verwendbar).
+</details>
 
 ## Wie es funktioniert
 
@@ -146,25 +137,18 @@ flowchart LR
 
 Nur Einträge, die für dich neu sind, gehen ans LLM, und nur die relevanten erreichen das stärkere Modell. Fällt eine Quelle oder ein Batch aus, läuft der Rest trotzdem weiter.
 
-## Befehle
+## Mehr erfahren
 
 | Befehl | |
 | --- | --- |
 | `pochi init` | Konfiguration interaktiv erstellen oder mit `--from` aus dem Vorschlag eines Agenten |
-| `pochi doctor` | Konfiguration, LLM, Keys und State prüfen, ohne ein Modell aufzurufen oder etwas zu verschicken |
+| `pochi doctor` | Konfiguration, Funktion von LLM-Key oder Login, Keys und State prüfen, ohne einen Prompt zu senden |
 | `pochi run` | Das heutige Briefing sammeln, filtern und zustellen (`--dry-run`, um es nur auszugeben) |
 | `pochi schedule install` | Nach dem Zeitplan in `context.yml` ausführen, mit launchd, cron oder GitHub Actions |
 
 Jeder Befehl hat `--help`.
 
-## Konfiguration
-
-Zwei Dateien in `config/`, beide von `pochi init` erzeugt:
-
-- **`context.yml`**: worum es in deinem Projekt geht, welche Themen dich beschäftigen, was ausgeschlossen wird, die Sprache des Briefings und wohin es zugestellt wird.
-- **`sources.yml`**: die GitHub-Repositorys, Feeds, Google-News-Suchen und Tavily-Abfragen, die beobachtet werden.
-
-Das Briefing kann in jeder Sprache geschrieben werden. `pochi init` bietet Englisch, Japanisch, Chinesisch, Spanisch, Französisch, Deutsch, Portugiesisch und Koreanisch an, und die Nachrichtensuchen nutzen die Google-News-Ausgabe dieser Sprache. Labels wie High und Action bleiben englisch ([docs/configuration.md](docs/configuration.md)).
+**Konfiguration.** `config/context.yml` beschreibt, worum es in deinem Projekt geht, welche Themen dich beschäftigen, was ausgeschlossen wird, die Sprache des Briefings und wohin es zugestellt wird; `config/sources.yml` listet die Repositorys, Feeds und Suchen, die beobachtet werden. Das Briefing kann in jeder Sprache geschrieben werden; `pochi init` bietet acht an.
 
 <details>
 <summary>Ein minimales Beispiel</summary>
@@ -196,14 +180,9 @@ feeds:
 
 </details>
 
-Alle Schlüssel findest du in [docs/configuration.md](docs/configuration.md) (Englisch) und in den kommentierten Dateien [`config/context.example.yml`](config/context.example.yml) und [`config/sources.example.yml`](config/sources.example.yml).
+**Kosten.** Ein kleines Modell (Claude Haiku) sortiert jeden neuen Eintrag vor, und ein stärkeres (Claude Sonnet) schreibt nur die wenigen relevanten aus. Die `claude`- und `codex`-Abos sind für die persönliche Nutzung gedacht, nimm also für CI oder alles, was geteilt wird, einen API-Key. Das Gratiskontingent von Tavily umfasst 1.000 Credits pro Monat; jede Abfrage kostet einen Credit pro Lauf.
 
-## Kosten
-
-- **LLM.** Ein kleines Modell (Claude Haiku) sortiert jeden neuen Eintrag vor; ein stärkeres (Claude Sonnet) schreibt nur die wenigen relevanten aus. Mit dem `claude`- oder `codex`-CLI laufen die Durchläufe über dein Abo. Für CI oder alles, was geteilt wird, nimm einen API-Key: Die Abos sind für die persönliche Nutzung gedacht.
-- **Quellen.** GitHub, Feeds und Google News sind kostenlos. Tavily bietet ein Gratiskontingent von 1.000 Credits pro Monat; jede Abfrage kostet einen Credit pro Lauf.
-
-## Dokumentation (Englisch)
+### Dokumentation (Englisch)
 
 - [Konfiguration](docs/configuration.md): alle Schlüssel, Umgebungsvariablen, die State-Datei
 - [Zeitplan](docs/scheduling.md): launchd, cron und GitHub Actions
@@ -218,7 +197,7 @@ Issues und Pull Requests sind willkommen.
 ```sh
 npm ci
 npm run typecheck && npm test
-npm run dev -- run --dry-run   # direkt aus dem Quellcode starten
+npm run dev -- run --dry-run   # run from source
 ```
 
 Commits folgen den [Conventional Commits](https://www.conventionalcommits.org/de/); Releases erstellt release-please.
