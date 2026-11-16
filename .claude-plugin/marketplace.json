@@ -1,0 +1,11 @@
+{
+  "name": "pochi",
+  "owner": { "name": "tanatyu12" },
+  "plugins": [
+    {
+      "name": "pochi-tasks",
+      "source": "./plugins/pochi-tasks",
+      "description": "Turn Pochi reports into GitHub issues, and labeled issues into draft pull requests"
+    }
+  ]
+}

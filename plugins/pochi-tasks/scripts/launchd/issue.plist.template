@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- pochi-tasks issue: reports → issues, after Pochi's own run. Written by pochi-tasks.mjs schedule from config/tasks.json. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>sh.pochi-tasks.issue.{{ID}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{NODE}}</string>
+    <string>{{RUNNER}}</string>
+    <string>issue</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>{{PROJECT_DIR}}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{{PATH}}</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+{{CALENDAR}}
+  </array>
+  <key>StandardOutPath</key>
+  <string>{{PROJECT_DIR}}/logs/pochi-tasks.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{PROJECT_DIR}}/logs/pochi-tasks.log</string>
+</dict>
+</plist>
