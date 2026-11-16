@@ -3,6 +3,7 @@ import { ConfigError, loadConfig } from "../config/load.js";
 import { PochiError } from "../errors.js";
 import { resolveLlm as defaultResolveLlm } from "../llm/adapter.js";
 import { createNotifiers } from "../notifiers/index.js";
+import { insightJson } from "../notifiers/json.js";
 import { buildSlackMessages, type SlackMessage } from "../notifiers/slack.js";
 import { toText } from "../notifiers/text.js";
 import type { Briefing } from "../notifiers/types.js";
@@ -10,7 +11,6 @@ import { briefingDate, briefingError, interrupted, runBriefing, type Sent } from
 import type { FilterResult } from "../pipeline/filter.js";
 import { tavilyApiKey } from "../sources/tavily.js";
 import { fileStateStore, memoryStateStore, resolveStatePath } from "../state/store.js";
-import type { Insight } from "../types.js";
 import { configureLog, log } from "../util/log.js";
 import { isFancy, purple } from "../util/pochiArt.js";
 import { displayLine } from "../util/text.js";
@@ -118,18 +118,4 @@ function toJson(
     null,
     2,
   )}\n`;
-}
-
-function insightJson(f: Insight) {
-  return {
-    id: f.item.id,
-    title: f.title,
-    url: f.item.url,
-    impact: f.impact,
-    summary: f.summary,
-    action: f.action,
-    source: f.item.sourceName,
-    publishedAt: f.item.publishedAt,
-    related: (f.related ?? []).map((r) => ({ id: r.id, title: r.title, url: r.url, source: r.sourceName })),
-  };
 }

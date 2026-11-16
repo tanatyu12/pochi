@@ -220,7 +220,7 @@ async function checkNotify(report: Report, config: LoadedConfig | undefined, env
       case "file": {
         const problem = await unwritableDir(channel.dir);
         if (problem) report.fail("Notify", "file", `${channel.dir}: ${problem}`, ExitCode.DELIVERY);
-        else report.ok("Notify", "file", `writes ${channel.dir}/<date>.md`);
+        else report.ok("Notify", "file", `writes ${(channel.formats ?? ["md"]).map((f) => `${channel.dir}/<date>.${f}`).join(" and ")}`);
         break;
       }
     }

@@ -429,14 +429,14 @@ function recordFiltered(
   for (const item of filtered.irrelevant) record(state, stateKeys(item), "i", today);
   for (const item of filtered.undecided) record(state, stateKeys(item), "u", today);
   for (const item of filtered.pending) record(state, stateKeys(item), "r", today);
-  for (const { item, related = [], title, summary, impact, action } of filtered.insights) {
+  for (const { item, related = [], title, summary, impact, category, action } of filtered.insights) {
     const has = [...(reached.get(item.id) ?? [])];
     // The other reports of a story were shown with it, so they share its fate.
     if (channels.length > 0 && channels.every((c) => has.includes(c))) {
       for (const one of [item, ...related]) record(state, stateKeys(one), "n", today);
       continue;
     }
-    const a = storeAnalyses ? { title, summary, impact, action } : undefined;
+    const a = storeAnalyses ? { title, summary, impact, ...(category && { category }), action } : undefined;
     record(state, stateKeys(item), "r", today, { c: has, ...(a && { a }) });
     for (const one of related) record(state, stateKeys(one), "r", today, { c: has, p: item.id });
     waiting.push(item, ...related);

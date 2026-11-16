@@ -161,6 +161,12 @@ export function analyzeRequest(
     "  - High: needs action this week (breaking changes, security fixes, deprecations that affect the project).",
     "  - Medium: worth planning for.",
     "  - Low: good to know.",
+    "- category: the side of the project it touches most:",
+    "  - tech: code, dependencies, APIs, SDKs and the platforms the product runs on.",
+    "  - design: UI, UX, accessibility and the product's look and feel.",
+    "  - business: pricing, payments, legal and regulatory rules, partners and how the product earns.",
+    "  - market: competitors, customer trends, demand and marketing channels.",
+    "  - ops: infrastructure, CI, cost, reliability and running the service.",
     "- action: one concrete next step for the team.",
   ].join("\n");
   return {

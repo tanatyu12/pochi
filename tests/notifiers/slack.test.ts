@@ -99,7 +99,12 @@ describe("escapeMrkdwn", () => {
 describe("buildSlackMessages", () => {
   it("matches the payload for two insights", () => {
     const insights = [
-      insight(1, { impact: "High", title: "Next.js 17 drops the pages router", summary: "Breaking.\nMigrate now." }),
+      insight(1, {
+        impact: "High",
+        category: "tech",
+        title: "Next.js 17 drops the pages router",
+        summary: "Breaking.\nMigrate now.",
+      }),
       insight(2, { impact: "Low", title: "Release notes", action: "" }),
     ];
     expect(buildSlackMessages(briefing(insights), { postWhenEmpty: false })).toMatchSnapshot();
@@ -112,6 +117,12 @@ describe("buildSlackMessages", () => {
         `${emoji[impact]} *[${impact}]* <https://example.com/posts/1|Title 1>\nSummary 1\n*Action:* Action 1\n_Next.js releases_`,
       );
     }
+  });
+
+  it("shows the category after the impact when there is one", () => {
+    expect(sections(only(briefing([insight(1, { impact: "High", category: "ops" })])))[0]).toMatch(
+      /^:red_circle: \*\[High\]\* \[ops\] <https:\/\/example.com\/posts\/1\|Title 1>/,
+    );
   });
 
   it("splits 100 insights into 45, 45 and 10, keeping the order", () => {

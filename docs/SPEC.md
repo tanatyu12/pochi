@@ -339,7 +339,7 @@ An unknown label means UTF-8. A body without a BOM that claims UTF-16 is ignored
 | --- | --- |
 | `TriageOutput` | `decisions[{ id, relevant, reason }]` |
 | `GroupingOutput` | `groups[{ ids[], primary }]` |
-| `AnalysisOutput` | `insights[{ id, title, summary, impact: High/Medium/Low, action }]` |
+| `AnalysisOutput` | `insights[{ id, title, summary, impact: High/Medium/Low, category: tech/design/business/market/ops, action }]` |
 | `RepoInferenceOutput` | `results[{ id, candidates[{ repo, note }] }]` (ids `q1…qN`) |
 | `QuerySuggestionOutput` | `queries[]` |
 | `IdeaSuggestionOutput` | `ideas[{ perspective: tech/design/marketing/industry/business/ops, problem, why, sites[], queries[] }]` |
@@ -530,7 +530,7 @@ An unknown label means UTF-8. A body without a BOM that claims UTF-16 is ignored
   "sources": { "<source id>": "2026-10-25T22:17:03Z" },
   "entries": { "<key1>": { "s": "n", "f": "2026-10-20", "l": "2026-10-25" },
                "<key2>": { "s": "r", "f": "2026-10-24", "l": "2026-10-25", "c": ["file"],
-                           "a": { "title": "…", "summary": "…", "impact": "High", "action": "…" } },
+                           "a": { "title": "…", "summary": "…", "impact": "High", "category": "tech", "action": "…" } },
                "<key3>": { "s": "r", "f": "2026-10-24", "l": "2026-10-25", "c": ["file"], "p": "<key2>" } } }
 ```
 
@@ -631,12 +631,12 @@ The steps:
   - **`deliver` never throws.** `runBriefing` decides what counts as delivered, and `run` decides the exit code.
 - **`createNotifiers(context, { env })` (`index.ts`):** builds the notifiers in channel order. Slack without `SLACK_WEBHOOK_URL` (blank counts as unset) is a `ConfigError`.
 - **File (`file.ts`):**
-  - Writes Markdown (`toMarkdown`) to `<dir>/<YYYY-MM-DD>.md` at mode 600, creating `dir`.
-  - A second run on the same day writes `-2.md`, then `-3.md`, up to `-99`. Earlier reports are never overwritten, since their items are already marked delivered.
-  - The report goes to a temp file `.<date>.<hex>.tmp` in the same directory, is fsynced, then linked to the first free name, so a crash leaves no half-written report. Where hard links are not supported (EPERM, ENOTSUP, EOPNOTSUPP, ENOSYS), it writes with `wx` instead.
+  - Writes each of `formats` (default `[md]`) at mode 600, creating `dir`: Markdown (`toMarkdown`) to `<dir>/<YYYY-MM-DD>.md` and, with `json`, `toReportJson` (`json.ts`) to `<dir>/<YYYY-MM-DD>.json`. The JSON is `{ pochi: "report/v1", project, date, collected, attempted, failedSources, insights }`, each insight as in `run --json`, so scripts can read a report without parsing Markdown.
+  - A second run on the same day writes `-2.md`, then `-3.md`, up to `-99`. The first format claims the first free name and the others take the same one, so the files of one briefing share it. Earlier reports are never overwritten, since their items are already marked delivered.
+  - The report goes to a temp file `.<date>.<hex>.tmp` in the same directory, is fsynced, then linked to the first name free for every format (all formats are written or none: a file linked before a later one fails is removed again), so a crash leaves no half-written report. Where hard links are not supported (EPERM, ENOTSUP, EOPNOTSUPP, ENOSYS), it writes with `wx` instead.
   - A failed write fails every insight. With no insights, nothing is written unless `postWhenEmpty`.
 - **Text (`text.ts`):** `toText` for dry-run stdout and `toMarkdown` for files.
-  - Each insight shows `[Impact] title`, the URL, summary, action, source, and up to 3 related links (`Also: … · and N more`).
+  - Each insight shows `[Impact] [category] title` (the category is left out when unknown: stored before categories, or one the model gave outside the list), the URL, summary, action, source, and up to 3 related links (`Also: … · and N more`).
   - Titles, summaries, actions and source names are collapsed to one line.
   - Markdown escapes `` \ ` * _ [ ] < > # ``, plus a leading `-`, `+`, `~`, `1.` or `1)`, so feed or LLM text cannot create headings, links, lists, rules or code blocks.
   - Control characters are removed (newline and tab kept).
@@ -647,7 +647,7 @@ The steps:
     - A context footer of at most 3000 characters, on every message.
     - At most 45 insights and 47 blocks per message (Slack allows 50).
   - **Each insight:**
-    - Impact emoji (`:red_circle:` / `:large_orange_circle:` / `:large_blue_circle:`), `[Impact]`, `<url|title>`, then the summary and `*Action:*` (each omitted when empty), the source name, and `_Also:_` related links.
+    - Impact emoji (`:red_circle:` / `:large_orange_circle:` / `:large_blue_circle:`), `[Impact]`, `[category]` when known, `<url|title>`, then the summary and `*Action:*` (each omitted when empty), the source name, and `_Also:_` related links.
     - Related links: up to 3, titles at 80 characters, lines at 900. They take their room before the summary and action do.
     - Titles are cut to 300 characters and source names to 200.
     - URLs are at most 1000 characters after escaping. A longer URL loses its query and fragment; if it is still too long, the title is shown in bold without a link.
@@ -713,7 +713,7 @@ The steps:
    - real run: the log line `delivered N updates to <channels>`.
 
    The JSON holds `date`, `dryRun`, `collected`, `attempted`, `failedSources`, `stats`, `insights`, `messages`, `delivered` and `error`:
-   - each insight carries `id`, `title`, `url`, `impact`, `summary`, `action`, `source`, `publishedAt` and `related[]`;
+   - each insight carries `id`, `title`, `url`, `impact`, `category` (when known), `summary`, `action`, `source`, `publishedAt` and `related[]`;
    - `messages` is present on a dry run with Slack configured;
    - `delivered` is per channel;
    - `error` holds the kind and message.

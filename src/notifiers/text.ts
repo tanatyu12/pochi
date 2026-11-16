@@ -28,7 +28,7 @@ function renderText(b: Briefing): string {
   if (b.insights.length === 0) return `${head}\n${quietLine(b) ?? "No relevant updates."}\n${foot}`;
   const body = b.insights.map((f) =>
     [
-      `[${f.impact}] ${f.title}`,
+      `${labels(f)} ${f.title}`,
       `  ${f.item.url}`,
       ...(f.summary ? [`  ${f.summary}`] : []),
       ...(f.action ? [`  Action: ${f.action}`] : []),
@@ -75,13 +75,18 @@ function insightMarkdown(f: Insight): string {
   const [title, summary, action] = [f.title, f.summary, f.action].map((s) => escapeMarkdown(collapseWhitespace(s)));
   return [
     // <...> keeps parentheses and spaces in the URL from ending the link.
-    `## [${f.impact}] [${title}](<${f.item.url.replaceAll(">", "%3E")}>)`,
+    `## ${labels(f)} [${title}](<${f.item.url.replaceAll(">", "%3E")}>)`,
     ...(summary ? ["", summary] : []),
     ...(action ? ["", `**Action:** ${action}`] : []),
     "",
     `Source: ${escapeMarkdown(collapseWhitespace(f.item.sourceName))}`,
     ...relatedMarkdown(f),
   ].join("\n");
+}
+
+/** "[High] [tech]"; the category is left out for an analysis stored without one. */
+function labels(f: Insight): string {
+  return f.category ? `[${f.impact}] [${f.category}]` : `[${f.impact}]`;
 }
 
 function failedText(b: Briefing, escape = (s: string) => s): string {

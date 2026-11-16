@@ -62,7 +62,7 @@ describe("toJsonSchema", () => {
 
 describe("output schemas", () => {
   it("parses well-formed output", () => {
-    const insight = { id: "i1", title: "t", summary: "s", impact: "High", action: "a" };
+    const insight = { id: "i1", title: "t", summary: "s", impact: "High", category: "tech", action: "a" };
     expect(AnalysisOutputSchema.parse({ insights: [insight] })).toEqual({ insights: [insight] });
     expect(TriageOutputSchema.parse({ decisions: [{ id: "i1", relevant: false, reason: "r" }] }).decisions).toHaveLength(1);
     expect(RepoInferenceOutputSchema.parse({ results: [{ id: "q1", candidates: [] }] }).results).toHaveLength(1);
@@ -70,9 +70,16 @@ describe("output schemas", () => {
   });
 
   it("rejects an unknown impact and missing keys", () => {
-    const insight = { id: "i1", title: "t", summary: "s", impact: "Critical", action: "a" };
+    const insight = { id: "i1", title: "t", summary: "s", impact: "Critical", category: "tech", action: "a" };
     expect(AnalysisOutputSchema.safeParse({ insights: [insight] }).success).toBe(false);
     expect(TriageOutputSchema.safeParse({ decisions: [{ id: "i1", relevant: true }] }).success).toBe(false);
+  });
+
+  it("reads an unknown or missing category as none rather than failing the batch", () => {
+    const insight = { id: "i1", title: "t", summary: "s", impact: "High", category: "security", action: "a" };
+    const { category: _, ...rest } = insight;
+    expect(AnalysisOutputSchema.parse({ insights: [insight] })).toEqual({ insights: [{ ...rest, category: null }] });
+    expect(AnalysisOutputSchema.parse({ insights: [rest] }).insights[0]?.category).toBeNull();
   });
 });
 

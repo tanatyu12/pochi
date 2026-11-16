@@ -289,6 +289,23 @@ describe("touch", () => {
     expect(state.entries.get(B)).toEqual({ s: "r", f: "2026-10-24", l: "2026-10-25", c: ["file"], a: analysis });
   });
 
+  it("keeps a stored category, and reads an analysis with an unknown one as uncategorized", () => {
+    const analysis = { title: "T", summary: "S", impact: "High" as const, category: "ops" as const, action: "A" };
+    const doc = (a: unknown) =>
+      JSON.stringify({ version: 1, updatedAt: "2026-10-24T00:00:00Z", briefings: 0, entries: { [B]: { s: "r", f: "2026-10-24", l: "2026-10-24", a } } });
+    const stored = (a: unknown) => {
+      const parsed = parseState(doc(a));
+      return parsed.kind === "ok" ? parsed.state.entries.get(B)?.a : undefined;
+    };
+    expect(stored(analysis)).toEqual(analysis);
+    expect(stored({ ...analysis, category: "legal" })).toEqual({
+      title: "T",
+      summary: "S",
+      impact: "High",
+      action: "A",
+    });
+  });
+
   it("does nothing for an unknown item", () => {
     const state = emptyState();
     touch(state, [A, B], "2026-10-25");

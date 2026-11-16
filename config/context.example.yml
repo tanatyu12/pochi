@@ -34,6 +34,7 @@ notify:
     - type: slack       # the webhook is read from SLACK_WEBHOOK_URL only
     # - type: file      # writes <dir>/<YYYY-MM-DD>.md
     #   dir: reports
+    #   formats: [md]   # add json for <dir>/<YYYY-MM-DD>.json, for scripts
 
 state:
   ttlDays: 45           # must be greater than maxItemAgeDays

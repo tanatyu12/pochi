@@ -1,5 +1,5 @@
 import * as z from "zod";
-import { ImpactSchema } from "../config/schema.js";
+import { CategorySchema, ImpactSchema } from "../config/schema.js";
 import { ExitCode, PochiError } from "../errors.js";
 
 // No length or count limits: models break them now and then, and one overlong summary should
@@ -13,7 +13,15 @@ export type TriageOutput = z.output<typeof TriageOutputSchema>;
 
 export const AnalysisOutputSchema = z.object({
   insights: z.array(
-    z.object({ id: z.string(), title: z.string(), summary: z.string(), impact: ImpactSchema, action: z.string() }),
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      summary: z.string(),
+      impact: ImpactSchema,
+      // Required, as structured outputs want every key; a category outside the list (or none) only loses the label, not the batch.
+      category: z.preprocess((v) => (CategorySchema.safeParse(v).success ? v : null), CategorySchema.nullable()),
+      action: z.string(),
+    }),
   ),
 });
 export type AnalysisOutput = z.output<typeof AnalysisOutputSchema>;

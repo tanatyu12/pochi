@@ -11,6 +11,23 @@ exports[`toJsonSchema > matches the snapshot for AnalysisOutput > AnalysisOutput
           "action": {
             "type": "string",
           },
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "tech",
+                  "design",
+                  "business",
+                  "market",
+                  "ops",
+                ],
+                "type": "string",
+              },
+              {
+                "type": "null",
+              },
+            ],
+          },
           "id": {
             "type": "string",
           },
@@ -34,6 +51,7 @@ exports[`toJsonSchema > matches the snapshot for AnalysisOutput > AnalysisOutput
           "title",
           "summary",
           "impact",
+          "category",
           "action",
         ],
         "type": "object",

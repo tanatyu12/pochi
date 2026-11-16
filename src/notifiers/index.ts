@@ -27,7 +27,7 @@ export function createNotifiers(
         return slackNotifier(webhookUrl, { postWhenEmpty, intervalMs: opts.slackIntervalMs });
       }
       case "file":
-        return fileNotifier({ dir: channel.dir, postWhenEmpty });
+        return fileNotifier({ dir: channel.dir, postWhenEmpty, formats: channel.formats });
     }
   });
 }

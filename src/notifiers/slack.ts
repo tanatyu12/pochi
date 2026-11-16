@@ -279,7 +279,7 @@ function relatedLine(f: Insight): string {
 }
 
 function impactLabel(f: Insight): string {
-  return `${EMOJI[f.impact]} *[${f.impact}]*`;
+  return `${EMOJI[f.impact]} *[${f.impact}]*${f.category ? ` [${f.category}]` : ""}`;
 }
 
 function sourceText(f: Insight): string {

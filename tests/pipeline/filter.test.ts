@@ -94,6 +94,7 @@ function insightAll(impactOf: (title: string) => Impact = () => "Medium"): Handl
       title: `Insight for ${call.titles[i]}`,
       summary: "s",
       impact: impactOf(call.titles[i]!),
+      category: "tech",
       action: "a",
     })),
   });

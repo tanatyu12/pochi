@@ -39,7 +39,7 @@ language: English    # the language of the summaries
 | `notify.minImpact` | `Low` | `High`, `Medium` or `Low`: drop anything below |
 | `notify.postWhenEmpty` | `false` | Deliver a "No relevant updates" note on quiet days |
 | `notify.personality` | `true` | Pochi's voice in the report's footer and quiet-day note |
-| `notify.channels` | `[{ type: slack }]` | `slack` (webhook from `SLACK_WEBHOOK_URL`) and/or `file` (`dir`, default `reports`), in delivery order |
+| `notify.channels` | `[{ type: slack }]` | `slack` (webhook from `SLACK_WEBHOOK_URL`) and/or `file` (`dir`, default `reports`; `formats`, default `[md]`, add `json` for a machine-readable `<date>.json` beside each report), in delivery order |
 | `state.ttlDays` | `45` | Forget items not seen in a feed for this long |
 | `state.maxItemAgeDays` | from the schedule | How far back a run looks: daily 2, weekly 8, monthly 32 days, or back to the last run if one was missed |
 | `schedule` | daily at 06:17 | See [Scheduling](scheduling.md) |
