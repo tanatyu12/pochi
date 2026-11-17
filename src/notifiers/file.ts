@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { link, mkdir, open, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, open, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { ReportFormat } from "../config/schema.js";
+import { type ReportFormat, reportFormats } from "../config/schema.js";
 import { log } from "../util/log.js";
 import { toReportJson } from "./json.js";
 import { toMarkdown } from "./text.js";
@@ -20,7 +20,7 @@ const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
  * would lose them.
  */
 export function fileNotifier(opts: { dir: string; postWhenEmpty: boolean; formats?: readonly ReportFormat[] }): Notifier {
-  const formats = opts.formats ?? ["md"];
+  const formats = reportFormats(opts);
   return {
     name: "file",
     async deliver(b: Briefing): Promise<Delivery> {
@@ -49,10 +49,11 @@ function render(format: ReportFormat, b: Briefing): string {
 
 /**
  * Claims the first <date>[-n] name free for every format, so the files of one briefing always
- * share a name, and writes them all or none: a file linked before a later one fails is removed
- * again, since its insights are reported undelivered and will be written again. Each file goes to
- * a temporary file first, written and fsynced once, so a crash never leaves half a report under a
- * real name; link then claims names without replacing an existing one. Returns the paths written.
+ * share a name. Every file is written to a temporary file and fsynced first, so claiming the real
+ * names is only a few quick links that never replace an existing file. A failure while claiming
+ * removes every name this call created, since its insights are reported undelivered and will be
+ * written again. A crash between two links can still leave the earlier formats alone under their
+ * names (and temp files behind); a later run then moves on to the next n. Returns the paths written.
  */
 async function writeNew(dir: string, date: string, files: readonly { ext: string; content: string }[]): Promise<string[]> {
   await mkdir(dir, { recursive: true });
@@ -75,9 +76,8 @@ async function writeNew(dir: string, date: string, files: readonly { ext: string
       const claimed: string[] = [];
       try {
         for (const [i, f] of files.entries()) {
-          const path = `${base}.${f.ext}`;
-          if (!(await claim(tmps[i]!, path, f.content))) break;
-          claimed.push(path);
+          const tmp = tmps[i];
+          if (tmp === undefined || !(await claim(tmp, `${base}.${f.ext}`, f.content, claimed))) break;
         }
       } catch (err) {
         await removeAll(claimed);
@@ -93,25 +93,38 @@ async function writeNew(dir: string, date: string, files: readonly { ext: string
   }
 }
 
-/** Links tmp to path; false when path exists. */
-async function claim(tmp: string, path: string, content: string): Promise<boolean> {
+/**
+ * Links tmp to path and adds path to claimed as soon as it exists, so a failure after that removes
+ * it again; false when path was already taken.
+ */
+async function claim(tmp: string, path: string, content: string, claimed: string[]): Promise<boolean> {
   try {
     await link(tmp, path);
+    claimed.push(path);
     return true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "EEXIST") return false;
     if (!LINK_UNSUPPORTED.has(code ?? "")) throw err;
   }
-  // Without hard links (exFAT, some network drives), wx still never replaces a report; only a
-  // crash mid-write can leave a partial one.
+  // Without hard links (exFAT, some network drives), wx still never replaces a report. The name
+  // is claimed once the file exists, so a write that fails partway (ENOSPC) is removed; only a
+  // crash mid-write can leave a partial report.
+  let fh;
   try {
-    await writeFile(path, content, { flag: "wx", mode: REPORT_MODE });
-    return true;
+    fh = await open(path, "wx", REPORT_MODE);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    return false;
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
   }
+  claimed.push(path);
+  try {
+    await fh.writeFile(content);
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  return true;
 }
 
 async function removeAll(paths: readonly string[]): Promise<void> {

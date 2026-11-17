@@ -13,6 +13,8 @@ const fsMock = vi.hoisted(() => ({
   linkError: undefined as string | undefined,
   /** Only links to a path ending in this fail; every link fails when unset. */
   linkErrorFor: undefined as string | undefined,
+  /** Writing through a handle opened on a path ending in this writes a part, then fails. */
+  writeErrorFor: undefined as string | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -21,6 +23,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     link: async (from: string, to: string) => {
       if (fsMock.linkError && (!fsMock.linkErrorFor || to.endsWith(fsMock.linkErrorFor))) throw Object.assign(new Error(fsMock.linkError), { code: fsMock.linkError });
       return actual.link(from, to);
+    },
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const fh = await actual.open(...args);
+      const suffix = fsMock.writeErrorFor;
+      if (suffix && String(args[0]).endsWith(suffix)) {
+        fh.writeFile = async (data) => {
+          await actual.writeFile(String(args[0]), String(data).slice(0, 5));
+          throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+        };
+      }
+      return fh;
     },
   };
 });
@@ -62,6 +75,7 @@ beforeEach(async () => {
 afterEach(async () => {
   fsMock.linkError = undefined;
   fsMock.linkErrorFor = undefined;
+  fsMock.writeErrorFor = undefined;
   resetLog();
   await rm(dir, { recursive: true, force: true });
 });
@@ -229,6 +243,15 @@ describe("fileNotifier", () => {
   it("removes the formats already written when a later one fails, leaving no report", async () => {
     fsMock.linkErrorFor = ".json";
     fsMock.linkError = "EIO";
+    const result = await fileNotifier({ dir, postWhenEmpty: false, formats: ["md", "json"] }).deliver(briefing([insight(1)]), {});
+    expect(result.deliveredIds).toEqual([]);
+    expect(result.failures[0]?.itemIds).toEqual(["id1"]);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("removes a report left partly written without hard links, leaving no report", async () => {
+    fsMock.linkError = "EPERM";
+    fsMock.writeErrorFor = ".json";
     const result = await fileNotifier({ dir, postWhenEmpty: false, formats: ["md", "json"] }).deliver(briefing([insight(1)]), {});
     expect(result.deliveredIds).toEqual([]);
     expect(result.failures[0]?.itemIds).toEqual(["id1"]);

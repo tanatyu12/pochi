@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { styleText } from "node:util";
 import { Command } from "commander";
 import { CONFIG_ENV_NAMES, type ConfigEnvName, ConfigError, type LoadedConfig, loadConfig } from "../config/load.js";
+import { reportFormats } from "../config/schema.js";
 import { ExitCode, type ExitCodeValue, PochiError } from "../errors.js";
 import { resolveLlm } from "../llm/adapter.js";
 import type { SpawnFn } from "../llm/cli.js";
@@ -220,7 +221,7 @@ async function checkNotify(report: Report, config: LoadedConfig | undefined, env
       case "file": {
         const problem = await unwritableDir(channel.dir);
         if (problem) report.fail("Notify", "file", `${channel.dir}: ${problem}`, ExitCode.DELIVERY);
-        else report.ok("Notify", "file", `writes ${(channel.formats ?? ["md"]).map((f) => `${channel.dir}/<date>.${f}`).join(" and ")}`);
+        else report.ok("Notify", "file", `writes ${reportFormats(channel).map((f) => `${channel.dir}/<date>.${f}`).join(" and ")}`);
         break;
       }
     }
