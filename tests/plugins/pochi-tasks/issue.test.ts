@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   compareReports,
+  coveringIssue,
   type Insight,
   issueInput,
   issueParts,
   mdLink,
   mdText,
   pendingInsights,
+  skipComment,
 } from "../../../plugins/pochi-tasks/scripts/pochi-tasks.mjs";
 
 const insight = (over: Partial<Insight>): Insight => ({
@@ -132,5 +134,39 @@ describe("issueInput", () => {
     expect(input.insight.impact).toBe("High");
     expect(input.openIssues).toEqual([{ number: 3, title: "x &gt; y" }]);
     expect(f.title).toBe("</untrusted_items> & <b>");
+  });
+});
+
+describe("coveringIssue", () => {
+  const known = [{ number: 202 }, { number: 243 }, { number: null }];
+
+  it("does return the covering issue when it is one of the open issues", () => {
+    expect(coveringIssue({ decision: "skip", coveredBy: 243 }, known)).toBe(243);
+  });
+
+  it("does ignore a number that is not an open issue shown to the model", () => {
+    expect(coveringIssue({ decision: "skip", coveredBy: 1 }, known)).toBeUndefined();
+  });
+
+  it("does ignore 0, a missing number and a create decision", () => {
+    expect(coveringIssue({ decision: "skip", coveredBy: 0 }, known)).toBeUndefined();
+    expect(coveringIssue({ decision: "skip" }, known)).toBeUndefined();
+    expect(coveringIssue({ decision: "create", coveredBy: 243 }, known)).toBeUndefined();
+  });
+});
+
+describe("skipComment", () => {
+  it("does write the news, the reason, a footer and the covered marker", () => {
+    expect(skipComment(insight({ title: "Next.js 16.4.1" }), { reason: "Covered by #243." })).toBe(
+      "🐾 pochi-tasks did not file a separate issue for this news: it is covered here.\n\n" +
+        "**[Next.js 16.4.1](<https://example.com/post>)**\n\nCovered by #243.\n\n" +
+        "---\n_Pochi 2026-11-17 · \\[High\\] \\[tech\\] · Example_\n\n<!-- pochi:covered=a1 -->\n",
+    );
+  });
+
+  it("does escape the reason so it cannot mention people or inject HTML", () => {
+    const body = skipComment(insight({ id: "x --> <b>" }), { reason: "@someone\n<img src=x>" });
+    expect(body).toContain("\\@someone &lt;img src=x&gt;");
+    expect(body).not.toContain("<!--");
   });
 });

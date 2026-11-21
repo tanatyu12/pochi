@@ -174,9 +174,14 @@ node <pochi>/plugins/pochi-tasks/scripts/pochi-tasks.mjs status
 5. Creates the issue with labels `pochi`, `pochi:<impact>`, `pochi:<category>` (and
    `pochi:chore` for work outside the code). The body ends with a hidden
    `<!-- pochi:item=<id> -->`, so an item is never filed twice even if the state file is lost.
+6. When it skips because an open issue already covers the change, it comments on that issue
+   with the news and the reason (ending in `<!-- pochi:covered=<id> -->`). The skips then
+   collect where the work is tracked, and an issue that sits untouched shows how much news is
+   waiting on it. Only one of the open issues shown to the model can receive the comment; a
+   failed comment is logged and does not stop the run.
 
 `--dry-run` only lists the insights that would be considered. `--preview` also runs the
-investigation, but writes each draft (or the reason for skipping) to `previews/<date>-<id>.md`
+investigation, but writes each draft (or the reason for skipping, with the comment it would post) to `previews/<date>-<id>.md`
 instead of creating issues; it does not touch `state/tasks.json` or GitHub, so a later real run
 considers the same insights again. Use it to tune `select` and check the issue text first.
 

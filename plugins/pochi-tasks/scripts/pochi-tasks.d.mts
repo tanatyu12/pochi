@@ -30,6 +30,12 @@ export function issueParts(
   out: { body: string; kind?: string },
 ): { labels: string[]; body: string };
 
+export function coveringIssue(
+  out: { decision: string; coveredBy?: number },
+  known: { number: number | null }[],
+): number | undefined;
+export function skipComment(f: Insight, out: { reason: string }): string;
+
 export interface ReportInsight {
   id: string;
   title: string;

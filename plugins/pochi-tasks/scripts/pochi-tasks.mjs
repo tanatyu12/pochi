@@ -300,10 +300,14 @@ async function ensureLabels(cfg) {
 const ISSUE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["decision", "reason", "kind", "title", "body"],
+  required: ["decision", "reason", "kind", "title", "body", "coveredBy"],
   properties: {
     decision: { type: "string", enum: ["create", "skip"] },
     reason: { type: "string", description: "Why, in one or two sentences" },
+    coveredBy: {
+      type: "integer",
+      description: "When skipping because an open issue already covers the change: its number; otherwise 0",
+    },
     kind: { type: "string", enum: ["code", "chore"] },
     title: { type: "string", description: "Issue title; empty when skipping" },
     body: { type: "string", description: "Issue body in Markdown; empty when skipping" },
@@ -645,6 +649,26 @@ export function issueInput(cfg, f, known) {
   };
 }
 
+// The issue a skip points at, but only one of the open issues the model was shown: the number
+// comes from model output that read a fetched article, so it must not pick an arbitrary issue.
+export function coveringIssue(out, known) {
+  const n = out?.decision === "skip" ? out.coveredBy : undefined;
+  if (!Number.isInteger(n) || n <= 0) return undefined;
+  return known.some((k) => k.number === n) ? n : undefined;
+}
+
+// Collects on the covering issue the news it absorbed and why, so a skip is visible where the work
+// is tracked, and a covering issue that sits untouched keeps gathering reasons to act on it.
+export function skipComment(f, out) {
+  const tags = `\\[${mdText(f.impact)}\\]${f.category ? ` \\[${mdText(f.category)}\\]` : ""}`;
+  const marker = /^[\w.:-]+$/.test(String(f.id)) ? `\n\n<!-- pochi:covered=${f.id} -->` : "";
+  return (
+    `🐾 pochi-tasks did not file a separate issue for this news: it is covered here.\n\n` +
+    `**${mdLink(f.title, f.url)}**\n\n${mdText(out.reason)}\n\n` +
+    `---\n_Pochi ${mdText(f.report.replace(/\.json$/, ""))} · ${tags} · ${mdText(f.source)}_${marker}\n`
+  );
+}
+
 async function writePreview(cfg, f, out) {
   await mkdir("previews", { recursive: true });
   // The id comes from a report file, so it is kept to safe characters before it names a file.
@@ -652,7 +676,9 @@ async function writePreview(cfg, f, out) {
   const comment = (v) => String(v).replace(/--+>?/g, "-").replace(/[\r\n]+/g, " ");
   const head = `<!-- decision: ${comment(out.decision)} (${comment(out.kind)}) — ${comment(out.reason)} -->\n`;
   if (out.decision === "skip" || !out.title.trim()) {
-    await writeFile(file, `${head}# (skip) ${mdText(f.title)}\n\n${out.reason}\n`);
+    const covered = coveringIssue(out, cfg.knownIssues ?? []);
+    const note = covered ? `\n<!-- would comment on #${covered} -->\n\n${skipComment(f, out)}` : "";
+    await writeFile(file, `${head}# (skip) ${mdText(f.title)}\n\n${out.reason}\n${note}`);
   } else {
     const { labels, body } = issueParts(cfg, f, out);
     await writeFile(file, `${head}<!-- labels: ${comment(labels.join(", "))} -->\n# ${out.title.trim()}\n\n${body}`);
@@ -747,7 +773,7 @@ async function issueCommand(cfg, opts) {
         continue;
       }
       if (opts.preview) {
-        const file = await writePreview(cfg, f, out);
+        const file = await writePreview({ ...cfg, knownIssues: known }, f, out);
         log(`${out.decision === "skip" ? "would skip" : "would create"}: ${out.reason} → ${file}`);
         if (out.decision === "create" && out.title.trim()) filed++;
         if (out.decision === "create" && out.title.trim()) known.push({ number: null, title: `${out.title.trim()} (preview, not filed)` });
@@ -755,7 +781,17 @@ async function issueCommand(cfg, opts) {
       }
       if (out.decision === "skip" || !out.title.trim()) {
         log(`no issue: ${out.reason}`);
-        state.items[f.id] = { decision: "skip", reason: out.reason, report: f.report, at: now() };
+        const covered = coveringIssue(out, known);
+        state.items[f.id] = { decision: "skip", reason: out.reason, ...(covered ? { coveredBy: covered } : {}), report: f.report, at: now() };
+        if (covered) {
+          // A failed comment only loses the note; the decision itself is already made and recorded.
+          try {
+            await comment(cfg, covered, skipComment(f, out));
+            log(`commented on #${covered}`);
+          } catch (err) {
+            log(`could not comment on #${covered}: ${err.message}`);
+          }
+        }
       } else {
         const { labels, body } = issueParts(cfg, f, out);
         const url = (

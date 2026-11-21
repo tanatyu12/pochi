@@ -66,5 +66,7 @@ Return the structured output pochi-tasks asks for:
 - `decision`: `create` or `skip`
 - `reason`: one or two sentences, in `language` (why this decision; for skip, the evidence)
 - `kind`: `code` or `chore` (`code` when skipping)
+- `coveredBy`: when skipping because an entry in `openIssues` already covers it, that issue's
+  number (pochi-tasks posts the reason there as a comment); otherwise `0`
 - `title`, `body`: the issue (empty strings when skipping). Do not add the source link or the
   hidden marker; pochi-tasks appends them.
