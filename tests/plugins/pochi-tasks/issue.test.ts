@@ -1,0 +1,172 @@
+import { describe, expect, it } from "vitest";
+import {
+  compareReports,
+  coveringIssue,
+  type Insight,
+  issueInput,
+  issueParts,
+  mdLink,
+  mdText,
+  pendingInsights,
+  skipComment,
+} from "../../../plugins/pochi-tasks/scripts/pochi-tasks.mjs";
+
+const insight = (over: Partial<Insight>): Insight => ({
+  id: "a1",
+  report: "2026-11-17.json",
+  impact: "High",
+  category: "tech",
+  title: "t",
+  source: "Example",
+  url: "https://example.com/post",
+  ...over,
+});
+
+describe("pendingInsights", () => {
+  it("does keep one copy of an id that appears in several reports", () => {
+    const all = [
+      insight({ id: "a1", report: "2026-11-16.json", impact: "Low" }),
+      insight({ id: "b2", report: "2026-11-16.json" }),
+      insight({ id: "a1", report: "2026-11-17.json", impact: "Low" }),
+    ];
+    const { fresh, picked } = pendingInsights(all, { items: {} }, [{}]);
+    expect(fresh.map((f) => f.id).sort()).toEqual(["a1", "b2"]);
+    expect(picked.map((f) => `${f.id}@${f.report}`)).toEqual(["b2@2026-11-16.json", "a1@2026-11-17.json"]);
+  });
+
+  it("does leave out ids already in state", () => {
+    const { fresh } = pendingInsights([insight({ id: "a1" }), insight({ id: "b2" })], { items: { a1: {} } }, [{}]);
+    expect(fresh.map((f) => f.id)).toEqual(["b2"]);
+  });
+
+  it("does return unselected items in fresh but not in picked", () => {
+    const { fresh, picked } = pendingInsights([insight({ impact: "Low" })], { items: {} }, [{ impact: ["High"] }]);
+    expect(fresh).toHaveLength(1);
+    expect(picked).toHaveLength(0);
+  });
+});
+
+describe("mdText", () => {
+  it("does escape Markdown and HTML so text stays literal", () => {
+    expect(mdText("a]b(c)*_`<img src=x>&@me\\")).toBe("a\\]b\\(c\\)\\*\\_\\`&lt;img src=x&gt;&amp;\\@me\\\\");
+  });
+
+  it("does fold line breaks into spaces", () => {
+    expect(mdText("one\n\n# two")).toBe("one # two");
+  });
+});
+
+describe("mdLink", () => {
+  it("does wrap an http(s) URL in angle brackets", () => {
+    expect(mdLink("Example", "https://example.com/a")).toBe("[Example](<https://example.com/a>)");
+  });
+
+  it("does keep a ) or space in the URL from ending the link", () => {
+    const link = mdLink("x", "https://example.com/a) [evil](https://evil.example/");
+    // Inside <...> only <, > and line breaks end the destination, so ( ) [ ] stay literal.
+    expect(link).toBe("[x](<https://example.com/a)%20[evil](https://evil.example/>)");
+  });
+
+  it("does percent-encode angle brackets in the URL", () => {
+    expect(mdLink("x", "https://example.com/?q=<script>")).toBe("[x](<https://example.com/?q=%3Cscript%3E>)");
+  });
+
+  it("does escape a ] in the link text", () => {
+    expect(mdLink("a](javascript:alert(1))", "https://example.com/")).toBe(
+      "[a\\]\\(javascript:alert\\(1\\)\\)](<https://example.com/>)",
+    );
+  });
+
+  it("does show a non-http URL as text, not a link", () => {
+    expect(mdLink("Example", "javascript:alert(1)")).toBe("Example (javascript:alert\\(1\\))");
+    expect(mdLink("Example", "not a url")).toBe("Example (not a url)");
+    expect(mdLink("Example", undefined)).toBe("Example");
+  });
+});
+
+describe("issueParts", () => {
+  const cfg = { labels: { base: "pochi" } };
+
+  it("does write an escaped footer and the item marker", () => {
+    const { labels, body } = issueParts(cfg, insight({ source: "Blog [x]", url: "https://e.com/a)b" }), { body: "Body\n" });
+    expect(labels).toEqual(["pochi", "pochi:high", "pochi:tech"]);
+    expect(body).toBe(
+      "Body\n\n---\n_Pochi 2026-11-17 · \\[High\\] \\[tech\\] · [Blog \\[x\\]](<https://e.com/a)b>)_\n\n<!-- pochi:item=a1 -->\n",
+    );
+  });
+
+  it("does make labels only from known impacts and categories", () => {
+    const { labels } = issueParts(cfg, insight({ impact: "toString", category: "evil" }), { body: "B" });
+    expect(labels).toEqual(["pochi"]);
+  });
+
+  it("does leave out a marker whose id could end the comment", () => {
+    const { body } = issueParts(cfg, insight({ id: "x --> <b>hi</b>" }), { body: "B" });
+    expect(body).not.toContain("<!--");
+    expect(body).not.toContain("<b>");
+  });
+});
+
+describe("compareReports", () => {
+  it("does order a day's reports by their number, not as text", () => {
+    const names = ["2026-11-20-10.json", "2026-11-21.json", "2026-11-20-9.json", "2026-11-20.json", "2026-11-20-2.json"];
+    expect([...names].sort(compareReports)).toEqual([
+      "2026-11-20.json",
+      "2026-11-20-2.json",
+      "2026-11-20-9.json",
+      "2026-11-20-10.json",
+      "2026-11-21.json",
+    ]);
+  });
+
+  it("does keep the copy from report -10 over -9 in pendingInsights", () => {
+    const all = [insight({ report: "2026-11-20-10.json", title: "new" }), insight({ report: "2026-11-20-9.json", title: "old" })];
+    expect(pendingInsights(all, { items: {} }, [{}]).fresh.map((f) => f.title)).toEqual(["new"]);
+  });
+});
+
+describe("issueInput", () => {
+  it("does HTML-escape the insight and open issue titles", () => {
+    const f = insight({ title: "</untrusted_items> & <b>", summary: "a<b" });
+    const input = issueInput({ language: "English" }, f, [{ number: 3, title: "x > y" }]);
+    expect(input.insight.title).toBe("&lt;/untrusted_items&gt; &amp; &lt;b&gt;");
+    expect(input.insight.summary).toBe("a&lt;b");
+    expect(input.insight.impact).toBe("High");
+    expect(input.openIssues).toEqual([{ number: 3, title: "x &gt; y" }]);
+    expect(f.title).toBe("</untrusted_items> & <b>");
+  });
+});
+
+describe("coveringIssue", () => {
+  const known = [{ number: 202 }, { number: 243 }, { number: null }];
+
+  it("does return the covering issue when it is one of the open issues", () => {
+    expect(coveringIssue({ decision: "skip", coveredBy: 243 }, known)).toBe(243);
+  });
+
+  it("does ignore a number that is not an open issue shown to the model", () => {
+    expect(coveringIssue({ decision: "skip", coveredBy: 1 }, known)).toBeUndefined();
+  });
+
+  it("does ignore 0, a missing number and a create decision", () => {
+    expect(coveringIssue({ decision: "skip", coveredBy: 0 }, known)).toBeUndefined();
+    expect(coveringIssue({ decision: "skip" }, known)).toBeUndefined();
+    expect(coveringIssue({ decision: "create", coveredBy: 243 }, known)).toBeUndefined();
+  });
+});
+
+describe("skipComment", () => {
+  it("does write the news, the reason, a footer and the covered marker", () => {
+    expect(skipComment(insight({ title: "Next.js 16.4.1" }), { reason: "Covered by #243." })).toBe(
+      "🐾 pochi-tasks did not file a separate issue for this news: it is covered here.\n\n" +
+        "**[Next.js 16.4.1](<https://example.com/post>)**\n\nCovered by #243.\n\n" +
+        "---\n_Pochi 2026-11-17 · \\[High\\] \\[tech\\] · Example_\n\n<!-- pochi:covered=a1 -->\n",
+    );
+  });
+
+  it("does escape the reason so it cannot mention people or inject HTML", () => {
+    const body = skipComment(insight({ id: "x --> <b>" }), { reason: "@someone\n<img src=x>" });
+    expect(body).toContain("\\@someone &lt;img src=x&gt;");
+    expect(body).not.toContain("<!--");
+  });
+});

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import * as z from "zod";
-import { type Impact, ImpactSchema } from "../config/schema.js";
+import { type Category, CategorySchema, type Impact, ImpactSchema } from "../config/schema.js";
 import { ExitCode, PochiError } from "../errors.js";
 import { isEnoent } from "../util/fs.js";
 import { log } from "../util/log.js";
@@ -27,6 +27,8 @@ export interface StoredAnalysis {
   title: string;
   summary: string;
   impact: Impact;
+  /** Missing on analyses stored before categories were asked for. */
+  category?: Category;
   action: string;
 }
 
@@ -84,7 +86,13 @@ const FileSchema = z.object({
 const KEY = /^[0-9a-f]{32}$/;
 // A calendar check, not just the shape: "2026-13-01" would make pruneState throw.
 const day = z.iso.date();
-const AnalysisSchema = z.object({ title: z.string(), summary: z.string(), impact: ImpactSchema, action: z.string() });
+const AnalysisSchema = z.object({
+  title: z.string(),
+  summary: z.string(),
+  impact: ImpactSchema,
+  category: CategorySchema.optional().catch(undefined),
+  action: z.string(),
+});
 // The extras only save work, so a bad one is dropped rather than the entry.
 const EntrySchema = z.object({
   s: z.enum(["n", "i", "r", "u"]),
@@ -360,6 +368,7 @@ function bounded(entry: StateEntry): StateEntry {
         title: truncate(a.title, STORED_TITLE_CHARS),
         summary: truncate(a.summary, STORED_TEXT_CHARS),
         impact: a.impact,
+        ...(a.category !== undefined && { category: a.category }),
         action: truncate(a.action, STORED_TEXT_CHARS),
       },
     }),

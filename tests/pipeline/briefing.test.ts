@@ -50,7 +50,7 @@ const llm: LlmClient = {
       return out as T;
     }
     const out: AnalysisOutput = {
-      insights: ids.map((id) => ({ id, title: "", summary: "Read it", impact: "High", action: "Upgrade" })),
+      insights: ids.map((id) => ({ id, title: "", summary: "Read it", impact: "High", category: "tech", action: "Upgrade" })),
     };
     return out as T;
   },

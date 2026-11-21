@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { link, mkdir, open, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, open, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { type ReportFormat, reportFormats } from "../config/schema.js";
 import { log } from "../util/log.js";
+import { toReportJson } from "./json.js";
 import { toMarkdown } from "./text.js";
 import type { Briefing, Delivery, Notifier } from "./types.js";
 
@@ -13,18 +15,20 @@ const REPORT_MODE = 0o600;
 const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
 
 /**
- * Writes the briefing to <dir>/<date>.md. An earlier report is never overwritten: its items are
- * already marked notified, so losing the file would lose them.
+ * Writes the briefing to <dir>/<date>.md, and <date>.json when json is among the formats. An
+ * earlier report is never overwritten: its items are already marked notified, so losing the file
+ * would lose them.
  */
-export function fileNotifier(opts: { dir: string; postWhenEmpty: boolean }): Notifier {
+export function fileNotifier(opts: { dir: string; postWhenEmpty: boolean; formats?: readonly ReportFormat[] }): Notifier {
+  const formats = reportFormats(opts);
   return {
     name: "file",
     async deliver(b: Briefing): Promise<Delivery> {
       const ids = b.insights.map((f) => f.item.id);
       if (ids.length === 0 && !opts.postWhenEmpty) return { deliveredIds: [], failures: [], aborted: false };
       try {
-        const path = await writeNew(opts.dir, b.date, toMarkdown(b));
-        log.info(`wrote ${path}`);
+        const files = formats.map((f) => ({ ext: f, content: render(f, b) }));
+        for (const path of await writeNew(opts.dir, b.date, files)) log.info(`wrote ${path}`);
         return { deliveredIds: ids, failures: [], aborted: false };
       } catch (err) {
         log.warn(`the report was not written to ${opts.dir}`, err);
@@ -34,41 +38,95 @@ export function fileNotifier(opts: { dir: string; postWhenEmpty: boolean }): Not
   };
 }
 
-// Written to a temporary file first, so a crash never leaves half a report under the real name;
-// link then claims the first free name without replacing an existing one.
-async function writeNew(dir: string, date: string, content: string): Promise<string> {
+function render(format: ReportFormat, b: Briefing): string {
+  switch (format) {
+    case "md":
+      return toMarkdown(b);
+    case "json":
+      return toReportJson(b);
+  }
+}
+
+/**
+ * Claims the first <date>[-n] name free for every format, so the files of one briefing always
+ * share a name. Every file is written to a temporary file and fsynced first, so claiming the real
+ * names is only a few quick links that never replace an existing file. A failure while claiming
+ * removes every name this call created, since its insights are reported undelivered and will be
+ * written again. A crash between two links can still leave the earlier formats alone under their
+ * names (and temp files behind); a later run then moves on to the next n. Returns the paths written.
+ */
+async function writeNew(dir: string, date: string, files: readonly { ext: string; content: string }[]): Promise<string[]> {
   await mkdir(dir, { recursive: true });
-  const tmp = join(dir, `.${date}.${randomBytes(6).toString("hex")}.tmp`);
+  const tmps: string[] = [];
   try {
-    // Owner-only, like the config files: a report says what a private project is working on.
-    const fh = await open(tmp, "wx", REPORT_MODE);
-    try {
-      await fh.writeFile(content);
-      await fh.sync();
-    } finally {
-      await fh.close();
+    for (const f of files) {
+      const tmp = join(dir, `.${date}.${randomBytes(6).toString("hex")}.tmp`);
+      tmps.push(tmp);
+      // Owner-only, like the config files: a report says what a private project is working on.
+      const fh = await open(tmp, "wx", REPORT_MODE);
+      try {
+        await fh.writeFile(f.content);
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
     }
     for (let n = 1; n <= MAX_REPORTS_PER_DAY; n++) {
-      const path = join(dir, n === 1 ? `${date}.md` : `${date}-${n}.md`);
+      const base = join(dir, n === 1 ? date : `${date}-${n}`);
+      const claimed: string[] = [];
       try {
-        await link(tmp, path);
-        return path;
+        for (const [i, f] of files.entries()) {
+          const tmp = tmps[i];
+          if (tmp === undefined || !(await claim(tmp, `${base}.${f.ext}`, f.content, claimed))) break;
+        }
       } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === "EEXIST") continue;
-        if (!LINK_UNSUPPORTED.has(code ?? "")) throw err;
+        await removeAll(claimed);
+        throw err;
       }
-      // Without hard links (exFAT, some network drives), wx still never replaces a report; only
-      // a crash mid-write can leave a partial one.
-      try {
-        await writeFile(path, content, { flag: "wx", mode: REPORT_MODE });
-        return path;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      }
+      if (claimed.length === files.length) return claimed;
+      // One of the names is taken: try the next n for all of them.
+      await removeAll(claimed);
     }
     throw new Error(`${MAX_REPORTS_PER_DAY} reports for ${date} already exist`);
   } finally {
-    await rm(tmp, { force: true }).catch(() => {});
+    await removeAll(tmps);
   }
+}
+
+/**
+ * Links tmp to path and adds path to claimed as soon as it exists, so a failure after that removes
+ * it again; false when path was already taken.
+ */
+async function claim(tmp: string, path: string, content: string, claimed: string[]): Promise<boolean> {
+  try {
+    await link(tmp, path);
+    claimed.push(path);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") return false;
+    if (!LINK_UNSUPPORTED.has(code ?? "")) throw err;
+  }
+  // Without hard links (exFAT, some network drives), wx still never replaces a report. The name
+  // is claimed once the file exists, so a write that fails partway (ENOSPC) is removed; only a
+  // crash mid-write can leave a partial report.
+  let fh;
+  try {
+    fh = await open(path, "wx", REPORT_MODE);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
+  }
+  claimed.push(path);
+  try {
+    await fh.writeFile(content);
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  return true;
+}
+
+async function removeAll(paths: readonly string[]): Promise<void> {
+  await Promise.all(paths.map((p) => rm(p, { force: true }).catch(() => {})));
 }

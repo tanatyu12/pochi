@@ -1,0 +1,47 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`toReportJson > does write the report/v1 document 1`] = `
+"{
+  "pochi": "report/v1",
+  "project": "my-app",
+  "date": "2026-10-26",
+  "collected": 120,
+  "attempted": 8,
+  "failedSources": [
+    "Broken feed"
+  ],
+  "insights": [
+    {
+      "id": "id1",
+      "title": "Title 1",
+      "url": "https://example.com/posts/1",
+      "impact": "High",
+      "category": "tech",
+      "summary": "Summary 1",
+      "action": "Action 1",
+      "source": "Next.js releases",
+      "publishedAt": "2026-10-25T09:00:00.000Z",
+      "related": [
+        {
+          "id": "id3",
+          "title": "Original 3",
+          "url": "https://example.com/posts/3",
+          "source": "Next.js releases"
+        }
+      ]
+    },
+    {
+      "id": "id2",
+      "title": "Title 2",
+      "url": "https://example.com/posts/2",
+      "impact": "Medium",
+      "summary": "Summary 2",
+      "action": "Action 2",
+      "source": "Next.js releases",
+      "publishedAt": "2026-10-25T09:00:00.000Z",
+      "related": []
+    }
+  ]
+}
+"
+`;

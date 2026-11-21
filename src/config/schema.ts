@@ -18,6 +18,21 @@ export const MAX_EXCLUDE = 30;
 export const ImpactSchema = z.enum(["High", "Medium", "Low"]);
 export type Impact = z.output<typeof ImpactSchema>;
 
+// The axes a proposal/v1 tags its problems with, so a report can be cut the same way as the
+// interests. init's idea suggestions use their own, finer perspectives (PerspectiveSchema in
+// llm/schema.ts); those only label a suggestion and are never stored.
+export const CategorySchema = z.enum(["tech", "design", "business", "market", "ops"]);
+export type Category = z.output<typeof CategorySchema>;
+
+/** Formats the file channel writes; json carries the same fields as run --json's insights. */
+export const ReportFormatSchema = z.enum(["md", "json"]);
+export type ReportFormat = z.output<typeof ReportFormatSchema>;
+
+/** The formats a file channel writes; omitted means md only. */
+export function reportFormats(channel: { formats?: readonly ReportFormat[] | undefined }): readonly ReportFormat[] {
+  return channel.formats ?? ["md"];
+}
+
 // The webhook is a secret, so it is read from SLACK_WEBHOOK_URL only and never written here.
 const SlackChannelSchema = z.strictObject({ type: z.literal("slack") });
 
@@ -25,6 +40,12 @@ const FileChannelSchema = z.strictObject({
   type: z.literal("file"),
   /** Relative paths are taken from the working directory, like config/ and state/. */
   dir: text.default("reports"),
+  /** Omitted means md only, so a context.yml written before json existed stays as it was. */
+  formats: z
+    .array(ReportFormatSchema)
+    .min(1)
+    .refine((f) => new Set(f).size === f.length, { error: "must not repeat a format" })
+    .optional(),
 });
 
 const WeekdaySchema = z.enum(WEEKDAYS);

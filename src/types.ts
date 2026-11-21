@@ -1,4 +1,4 @@
-import type { Impact, Sources } from "./config/schema.js";
+import type { Category, Impact, Sources } from "./config/schema.js";
 
 export type SourceKind = "rss" | "github" | "googlenews" | "tavily";
 
@@ -38,6 +38,8 @@ export interface Insight {
   /** May be empty when the model left it blank. */
   summary: string;
   impact: Impact;
+  /** Missing on analyses stored by a version of Pochi that did not ask for one. */
+  category?: Category;
   /** May be empty when the model left it blank. */
   action: string;
   /** Other articles on the same story, newest first; only item was analyzed. */

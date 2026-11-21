@@ -186,6 +186,7 @@ feeds:
 - [定期実行](docs/scheduling.md)：launchd、cron、GitHub Actions
 - [アップデート](docs/updating.md)：新しいリリースを自分のコピーに取り込む
 - [困ったときは](docs/troubleshooting.md)：`pochi doctor` の見方と終了コード
+- [レポートから PR まで](docs/tasks.md)：Claude Code プラグイン `pochi-tasks` が、レポートから Issue を作り、印を付けた Issue の Draft PR を開く（`claude plugin marketplace add tanatyu12/pochi && claude plugin install pochi-tasks@pochi`）
 - [セキュリティ](SECURITY.md)：キーや外部の文章の扱い、脆弱性の報告先
 
 ## 開発に参加する

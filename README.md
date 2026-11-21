@@ -185,6 +185,7 @@ feeds:
 - [Scheduling](docs/scheduling.md): launchd, cron and GitHub Actions
 - [Updating](docs/updating.md): bringing a new release into your copy
 - [Troubleshooting](docs/troubleshooting.md): `pochi doctor` and exit codes
+- [From report to pull request](docs/tasks.md): the `pochi-tasks` Claude Code plugin files issues from reports and opens draft PRs for the ones you label (`claude plugin marketplace add tanatyu12/pochi && claude plugin install pochi-tasks@pochi`)
 - [Security](SECURITY.md): how keys and untrusted text are handled, and how to report a vulnerability
 
 ## Contributing

@@ -1,0 +1,10 @@
+{
+  "name": "pochi-tasks",
+  "version": "0.1.0",
+  "description": "Turn Pochi reports into GitHub issues, and issues labeled pochi:go into draft pull requests",
+  "author": {
+    "name": "tanatyu12"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tanatyu12/pochi"
+}

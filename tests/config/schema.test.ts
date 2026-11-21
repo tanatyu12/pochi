@@ -62,6 +62,16 @@ describe("ContextSchema", () => {
     expect(parsed.notify.channels).toEqual([{ type: "file", dir: "reports" }, { type: "slack" }]);
   });
 
+  it("takes the file channel's formats, rejecting an empty, repeated or unknown one", () => {
+    const channels = (formats: unknown) => ({ ...minimalContext, notify: { channels: [{ type: "file", formats }] } });
+    expect(ContextSchema.parse(channels(["md", "json"])).notify.channels).toEqual([
+      { type: "file", dir: "reports", formats: ["md", "json"] },
+    ]);
+    expect(contextErrors(channels([]))).toEqual(["context.yml: notify.channels[0].formats: must have at least 1 item"]);
+    expect(contextErrors(channels(["md", "md"]))).toEqual(["context.yml: notify.channels[0].formats: must not repeat a format"]);
+    expect(contextErrors(channels(["html"]))).toEqual(["context.yml: notify.channels[0].formats[0]: invalid option"]);
+  });
+
   it("rejects no channels, a repeated channel type and an unknown one", () => {
     const errors = (channels: unknown[]) => contextErrors({ ...minimalContext, notify: { channels } });
     expect(errors([])).toEqual(["context.yml: notify.channels: must have at least 1 item"]);

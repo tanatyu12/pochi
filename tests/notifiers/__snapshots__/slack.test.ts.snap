@@ -20,7 +20,7 @@ exports[`buildSlackMessages > matches the payload for two insights 1`] = `
         },
         {
           "text": {
-            "text": ":red_circle: *[High]* <https://example.com/posts/1|Next.js 17 drops the pages router>
+            "text": ":red_circle: *[High]* [tech] <https://example.com/posts/1|Next.js 17 drops the pages router>
 Breaking.
 Migrate now.
 *Action:* Action 1

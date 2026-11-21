@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "repo": "owner/name",
+  "repoPath": "~/workspace/name",
+  "reportsDir": "reports",
+  "select": [
+    { "impact": ["High"] },
+    { "impact": ["Medium"], "category": ["tech", "ops"] }
+  ],
+  "maxIssuesPerRun": 5,
+  "issue": {
+    "timeoutMinutes": 15
+  },
+  "implement": {
+    "allowedLabelers": ["your-github-login"],
+    "setup": ["npm ci"],
+    "checks": ["npm run typecheck", "npm run lint", "npm test"],
+    "draft": true,
+    "timeoutMinutes": 90
+  }
+}

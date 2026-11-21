@@ -216,6 +216,7 @@ export async function filterAndAnalyze(
               title: insight.title.trim() || item.title,
               summary: insight.summary.trim(),
               impact: insight.impact,
+              ...(insight.category && { category: insight.category }),
               action: insight.action.trim(),
             });
           }

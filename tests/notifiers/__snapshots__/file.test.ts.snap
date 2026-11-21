@@ -3,7 +3,7 @@
 exports[`toMarkdown > renders each insight under its own heading 1`] = `
 "# Pochi · my-app · 2026-10-26
 
-## [High] [Title 1](<https://example.com/posts/1>)
+## [High] [tech] [Title 1](<https://example.com/posts/1>)
 
 Summary 1
 

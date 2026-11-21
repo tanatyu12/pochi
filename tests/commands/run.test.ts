@@ -79,7 +79,7 @@ function fakeLlm(
         return out as T;
       }
       const out: AnalysisOutput = over.analyze?.(ids) ?? {
-        insights: ids.map((id) => ({ id, title: "", summary: "Read it", impact: "High", action: "Upgrade" })),
+        insights: ids.map((id) => ({ id, title: "", summary: "Read it", impact: "High", category: "tech", action: "Upgrade" })),
       };
       return out as T;
     },
@@ -219,7 +219,7 @@ describe("runCommand", () => {
     // The first run leaves the security fix unanswered by Analyze: state r.
     await run(
       fakeLlm({
-        analyze: (ids) => ({ insights: [{ id: ids[0]!, title: "", summary: "", impact: "High", action: "" }] }),
+        analyze: (ids) => ({ insights: [{ id: ids[0]!, title: "", summary: "", impact: "High", category: "tech", action: "" }] }),
       }),
     );
     expect(slackTexts(fetch)).toEqual(["Pochi: 1 update for my-app (1 High)"]);
@@ -244,7 +244,7 @@ describe("runCommand", () => {
 
     expect(fetch.callsTo(WEBHOOK)).toHaveLength(0);
     expect(stdout).toContain("Pochi · my-app · 2026-10-26");
-    expect(stdout).toContain("[High] Breaking change in lib");
+    expect(stdout).toContain("[High] [tech] Breaking change in lib");
     expect(stdout).toContain("Action: Upgrade");
     expect(await readFile(statePath, "utf8")).toBe("not json");
   });
@@ -278,14 +278,19 @@ describe("runCommand", () => {
 
   it("writes a report without a webhook when the file is the only channel", async () => {
     const reports = join(dir, "reports");
-    await writeFile(join(dir, "config", "context.yml"), withChannels(`[{ type: file, dir: "${reports}" }]`));
+    await writeFile(
+      join(dir, "config", "context.yml"),
+      withChannels(`[{ type: file, dir: "${reports}", formats: [md, json] }]`),
+    );
     vi.stubEnv("SLACK_WEBHOOK_URL", "");
     const fetch = routes();
     expect(await exitOf(run(fakeLlm(), { json: true }))).toBe(ExitCode.OK);
 
     expect(fetch.callsTo(WEBHOOK)).toHaveLength(0);
     const report = await readFile(join(reports, "2026-10-26.md"), "utf8");
-    expect(report).toContain("[High] [Breaking change in lib]");
+    expect(report).toContain("[High] [tech] [Breaking change in lib]");
+    const json = JSON.parse(await readFile(join(reports, "2026-10-26.json"), "utf8"));
+    expect(json.insights.map((f: { category: string }) => f.category)).toEqual(["tech", "tech"]);
     expect(await statuses()).toEqual(["i", "i", "n", "n", "n", "n"]);
     expect(JSON.parse(stdout).delivered.file).toHaveLength(2);
 
@@ -293,7 +298,7 @@ describe("runCommand", () => {
     vi.unstubAllGlobals();
     routes();
     expect(await exitOf(run(fakeLlm()))).toBe(ExitCode.OK);
-    expect(await readdir(reports)).toEqual(["2026-10-26.md"]);
+    expect(await readdir(reports)).toEqual(["2026-10-26.json", "2026-10-26.md"]);
   });
 
   it("marks items notified only once every channel has them, and exits 4 naming the one that failed", async () => {
@@ -549,7 +554,7 @@ describe("runCommand", () => {
     routes();
     await run(
       fakeLlm({
-        analyze: (ids) => ({ insights: [{ id: ids[0]!, title: "", summary: "", impact: "High", action: "" }] }),
+        analyze: (ids) => ({ insights: [{ id: ids[0]!, title: "", summary: "", impact: "High", category: "tech", action: "" }] }),
       }),
     );
     // The security fix is r; pretend it was first seen 15 days ago (maxItemAgeDays is 14).

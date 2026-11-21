@@ -3,19 +3,37 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fileNotifier } from "../../src/notifiers/file.js";
+import { toReportJson } from "../../src/notifiers/json.js";
 import { escapeMarkdown, toMarkdown, toText } from "../../src/notifiers/text.js";
 import type { Briefing } from "../../src/notifiers/types.js";
 import type { Insight, Item } from "../../src/types.js";
 import { configureLog, resetLog } from "../../src/util/log.js";
 
-const fsMock = vi.hoisted(() => ({ linkError: undefined as string | undefined }));
+const fsMock = vi.hoisted(() => ({
+  linkError: undefined as string | undefined,
+  /** Only links to a path ending in this fail; every link fails when unset. */
+  linkErrorFor: undefined as string | undefined,
+  /** Writing through a handle opened on a path ending in this writes a part, then fails. */
+  writeErrorFor: undefined as string | undefined,
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
     link: async (from: string, to: string) => {
-      if (fsMock.linkError) throw Object.assign(new Error(fsMock.linkError), { code: fsMock.linkError });
+      if (fsMock.linkError && (!fsMock.linkErrorFor || to.endsWith(fsMock.linkErrorFor))) throw Object.assign(new Error(fsMock.linkError), { code: fsMock.linkError });
       return actual.link(from, to);
+    },
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const fh = await actual.open(...args);
+      const suffix = fsMock.writeErrorFor;
+      if (suffix && String(args[0]).endsWith(suffix)) {
+        fh.writeFile = async (data) => {
+          await actual.writeFile(String(args[0]), String(data).slice(0, 5));
+          throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+        };
+      }
+      return fh;
     },
   };
 });
@@ -56,13 +74,15 @@ beforeEach(async () => {
 
 afterEach(async () => {
   fsMock.linkError = undefined;
+  fsMock.linkErrorFor = undefined;
+  fsMock.writeErrorFor = undefined;
   resetLog();
   await rm(dir, { recursive: true, force: true });
 });
 
 describe("toMarkdown", () => {
   it("renders each insight under its own heading", () => {
-    const b = briefing([insight(1, { impact: "High" }), insight(2, { summary: "", action: "" })], {
+    const b = briefing([insight(1, { impact: "High", category: "tech" }), insight(2, { summary: "", action: "" })], {
       failedSources: ["Blog A"],
     });
     expect(toMarkdown(b)).toMatchSnapshot();
@@ -185,6 +205,62 @@ describe("fileNotifier", () => {
     expect((await notifier.deliver(briefing([insight(2)]), {})).deliveredIds).toEqual(["id2"]);
     expect((await readdir(dir)).sort()).toEqual(["2026-10-26-2.md", "2026-10-26.md"]);
     expect(await readFile(join(dir, "2026-10-26.md"), "utf8")).toContain("Title 1");
+  });
+
+  it("writes <date>.json next to the report when json is among the formats", async () => {
+    const notifier = fileNotifier({ dir, postWhenEmpty: false, formats: ["md", "json"] });
+    const b = briefing([insight(1, { impact: "High", category: "tech" }), insight(2)]);
+    expect((await notifier.deliver(b, {})).deliveredIds).toEqual(["id1", "id2"]);
+    await notifier.deliver(briefing([insight(3)]), {});
+    expect((await readdir(dir)).sort()).toEqual([
+      "2026-10-26-2.json",
+      "2026-10-26-2.md",
+      "2026-10-26.json",
+      "2026-10-26.md",
+    ]);
+    const json = JSON.parse(await readFile(join(dir, "2026-10-26.json"), "utf8"));
+    expect(await readFile(join(dir, "2026-10-26.json"), "utf8")).toBe(toReportJson(b));
+    expect(json).toMatchObject({ pochi: "report/v1", project: "my-app", date: "2026-10-26", collected: 120 });
+    expect(json.insights).toEqual([
+      expect.objectContaining({ id: "id1", impact: "High", category: "tech", action: "Action 1" }),
+      expect.not.objectContaining({ category: expect.anything() }),
+    ]);
+  });
+
+  it("takes the next free name for every format when only one of them is taken", async () => {
+    await writeFile(join(dir, "2026-10-26.md"), "earlier");
+    await fileNotifier({ dir, postWhenEmpty: false, formats: ["md", "json"] }).deliver(briefing([insight(1)]), {});
+    expect((await readdir(dir)).sort()).toEqual(["2026-10-26-2.json", "2026-10-26-2.md", "2026-10-26.md"]);
+  });
+
+  it("moves every format to the next name when a later format's name is taken", async () => {
+    await writeFile(join(dir, "2026-10-26.md"), "earlier");
+    await fileNotifier({ dir, postWhenEmpty: false, formats: ["json", "md"] }).deliver(briefing([insight(1)]), {});
+    expect((await readdir(dir)).sort()).toEqual(["2026-10-26-2.json", "2026-10-26-2.md", "2026-10-26.md"]);
+    expect(await readFile(join(dir, "2026-10-26.md"), "utf8")).toBe("earlier");
+  });
+
+  it("removes the formats already written when a later one fails, leaving no report", async () => {
+    fsMock.linkErrorFor = ".json";
+    fsMock.linkError = "EIO";
+    const result = await fileNotifier({ dir, postWhenEmpty: false, formats: ["md", "json"] }).deliver(briefing([insight(1)]), {});
+    expect(result.deliveredIds).toEqual([]);
+    expect(result.failures[0]?.itemIds).toEqual(["id1"]);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("removes a report left partly written without hard links, leaving no report", async () => {
+    fsMock.linkError = "EPERM";
+    fsMock.writeErrorFor = ".json";
+    const result = await fileNotifier({ dir, postWhenEmpty: false, formats: ["md", "json"] }).deliver(briefing([insight(1)]), {});
+    expect(result.deliveredIds).toEqual([]);
+    expect(result.failures[0]?.itemIds).toEqual(["id1"]);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("writes only json when that is the one format", async () => {
+    await fileNotifier({ dir, postWhenEmpty: false, formats: ["json"] }).deliver(briefing([insight(1)]), {});
+    expect(await readdir(dir)).toEqual(["2026-10-26.json"]);
   });
 
   it("writes nothing for no insights unless postWhenEmpty is on", async () => {
