@@ -228,7 +228,10 @@ and did not last exit with an error. Exits 1 if anything fails, with the fix for
 
 - Item text comes from the web. The skills treat it as data, the issue run has no tools that
   change anything, and the implement run has no network or push access.
-- Only labels added by `allowedLabelers` start an implementation.
+- Only labels added by `allowedLabelers` start an implementation, and only their comments on the
+  issue reach the implement run; comments by anyone else are left out.
+- Setup and check commands run in their own process group, so a timeout stops everything they
+  started.
 - PRs are drafts by default and target the base branch; nothing is pushed to it.
 - Each claude call has a timeout, and optionally a budget (`maxBudgetUsd`).
   With a Claude subscription login, calls count against the plan's usage limits and are not

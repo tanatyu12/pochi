@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type CalendarEntry, shiftCalendar } from "../../../plugins/pochi-tasks/scripts/pochi-tasks.mjs";
+import { type CalendarEntry, sameCalendar, shiftCalendar } from "../../../plugins/pochi-tasks/scripts/pochi-tasks.mjs";
 
 // Whether a launchd entry fires at a moment: every key present must match.
 function fires(e: CalendarEntry, d: Date): boolean {
@@ -71,5 +71,19 @@ describe("shiftCalendar", () => {
 
   it("does handle delays longer than a day", () => {
     expectFollows([{ Weekday: 5, Hour: 22, Minute: 0 }], 26 * 60);
+  });
+});
+
+describe("sameCalendar", () => {
+  it("does ignore the order of keys inside an entry, as plutil writes them", () => {
+    const shifted = shiftCalendar([{ Minute: 50, Weekday: 1 }], 20);
+    const fromPlutil = shifted.map((e) => Object.fromEntries(Object.entries(e).sort()));
+    expect(JSON.stringify(shifted)).not.toBe(JSON.stringify(fromPlutil));
+    expect(sameCalendar(shifted, fromPlutil)).toBe(true);
+  });
+
+  it("does tell different times apart", () => {
+    expect(sameCalendar([{ Hour: 8, Minute: 0 }], [{ Hour: 8, Minute: 30 }])).toBe(false);
+    expect(sameCalendar([{ Hour: 8, Minute: 0 }], [])).toBe(false);
   });
 });

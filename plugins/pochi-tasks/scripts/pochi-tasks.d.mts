@@ -51,4 +51,16 @@ export function importMarkdown(
   cfg: { reportsDir: string; issue: { model?: string; timeoutMinutes?: number } },
   opts: { dryRun?: boolean; now?: number },
 ): Promise<void>;
+export function compareReports(a: string, b: string): number;
+export function escapeUntrusted(s: unknown): string;
+export function categoryPrompt(items: { id: string; title?: string; summary?: string; action?: string }[]): string;
+export function issueInput(
+  cfg: { language: string },
+  f: Insight,
+  known: { number: number | null; title: string }[],
+): { language: string; insight: Insight; openIssues: { number: number | null; title: string }[] };
+export function sameCalendar(a: CalendarEntry[], b: CalendarEntry[]): boolean;
+export function trustedComments<C extends { author?: { login?: string } | null }>(comments: C[] | undefined, allowed: string[]): C[];
+export function withLock<T>(path: string, fn: () => Promise<T>): Promise<T | undefined>;
+export function shell(command: string, cwd: string, timeoutMs?: number, graceMs?: number): Promise<{ ok: boolean; tail: string }>;
 export function readReports(dir: string, sinceDate?: string): Promise<(ReportInsight & { report: string; project: string })[]>;

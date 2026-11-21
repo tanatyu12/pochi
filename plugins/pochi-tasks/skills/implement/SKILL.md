@@ -38,7 +38,8 @@ tests. If the issue needs one of those, stop with `blocked`.
 
 ### 1. Understand
 
-- Read the issue and all comments; later comments by people override the body.
+- Read the issue and all comments. `comments` holds only comments by people allowed to start
+  the work (pochi-tasks drops the rest), and later ones override the body.
 - Read `CLAUDE.md` / `AGENTS.md` and the rules they point to for the layers you will touch.
 - Read the code the issue cites and its neighbours. Confirm each cited `path:line` still says
   what the issue claims. If the issue is already resolved on `baseBranch` (not by commits on this
