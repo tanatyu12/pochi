@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/tanatyu12/pochi/compare/v0.1.0...v0.2.0) (2026-11-21)
+
+
+### Features
+
+* tag insights with a category, write json reports and add the pochi-tasks plugin ([#15](https://github.com/tanatyu12/pochi/issues/15)) ([3e2f594](https://github.com/tanatyu12/pochi/commit/3e2f59450d41c2e6a5a8180e01fa7ad398feedce))
+
+
+### Bug Fixes
+
+* **deps:** bump @clack/prompts from 1.8.1 to 1.9.0 ([#14](https://github.com/tanatyu12/pochi/issues/14)) ([c5fd0ea](https://github.com/tanatyu12/pochi/commit/c5fd0ea1f2d517aad2b4f2e32e11acaef0f6b7bd))
+* **deps:** bump commander from 15.0.0 to 15.1.0 ([#13](https://github.com/tanatyu12/pochi/issues/13)) ([b3734cf](https://github.com/tanatyu12/pochi/commit/b3734cf5bbe5a345af4b6d05770c654062030956))
+
 ## 0.1.0 (2026-11-03)
 
 The first release.
